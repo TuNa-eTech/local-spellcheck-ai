@@ -41,6 +41,11 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: desktop
+          workspaces: apps/desktop/src-tauri -> target
+
       - name: Verify tag matches application versions
         run: uv run --project engine python scripts/check-release-version.py "${{ github.ref_name }}"
 
@@ -89,6 +94,11 @@ jobs:
           cache-dependency-path: apps/desktop/package-lock.json
 
       - uses: dtolnay/rust-toolchain@1.98.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: desktop
+          workspaces: apps/desktop/src-tauri -> target
 
       - name: Build NSIS installer
         run: npm run build:windows
@@ -158,6 +168,11 @@ jobs:
           cache-dependency-path: apps/desktop/package-lock.json
 
       - uses: dtolnay/rust-toolchain@1.98.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: desktop
+          workspaces: apps/desktop/src-tauri -> target
 
       - name: Build DMG
         run: npm run build:macos
