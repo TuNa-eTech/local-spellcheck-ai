@@ -1,0 +1,22 @@
+{
+  "date": "2026-08-22",
+  "artifact": "docs/mockup.html",
+  "existing_signals": {
+    "framework": null,
+    "global_stylesheets": [],
+    "design_tokens": [],
+    "font_stack": [],
+    "palette": [],
+    "motion_system": [],
+    "spacing_scale": []
+  },
+  "introduced": {
+    "framework": "vanilla HTML, CSS and JavaScript",
+    "token_file": "tokens.css",
+    "font_policy": "offline Windows system fonts",
+    "macrostructure": "Guided Task",
+    "theme": "Cobalt",
+    "navigation": "none",
+    "footer": "Ft2 status strip"
+  }
+}

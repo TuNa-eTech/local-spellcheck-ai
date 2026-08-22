@@ -1,0 +1,28 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "SoátVăn",
+  "version": "0.1.0",
+  "identifier": "vn.soatvan.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [{ "title": "SoátVăn", "width": 1040, "height": 760, "minWidth": 720, "minHeight": 600, "center": true }],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; script-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "icon": ["icons/icon.png"],
+    "targets": ["nsis"],
+    "resources": { "resources/engine/": "engine/" },
+    "windows": {
+      "webviewInstallMode": { "type": "offlineInstaller" },
+      "nsis": { "installMode": "currentUser" }
+    }
+  }
+}

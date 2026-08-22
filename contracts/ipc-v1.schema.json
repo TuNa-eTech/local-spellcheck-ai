@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://soatvan.local/contracts/ipc-v1.schema.json",
+  "title": "SoatVan NDJSON frame v1",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "id", "method", "params"],
+      "properties": {
+        "v": {"const": 1},
+        "id": {"type": "string", "minLength": 1},
+        "method": {"enum": ["engine.hello", "document.inspect", "job.start", "job.cancel", "dictionary.list", "dictionary.upsert", "dictionary.delete", "dictionary.import", "dictionary.export", "model.status", "model.download", "model.import", "model.cancel", "model.remove"]},
+        "params": {"type": "object"}
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "id", "ok"],
+      "properties": {
+        "v": {"const": 1}, "id": {"type": "string"}, "ok": {"type": "boolean"},
+        "result": {},
+        "error": {"type": "object", "required": ["code", "message"], "properties": {"code": {"type": "string"}, "message": {"type": "string"}}, "additionalProperties": false}
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "event", "data"],
+      "properties": {
+        "v": {"const": 1},
+        "event": {"enum": ["job.progress", "job.completed", "job.no_findings", "job.failed", "model.progress", "model.state_changed"]},
+        "data": {"type": "object"}
+      }
+    }
+  ]
+}

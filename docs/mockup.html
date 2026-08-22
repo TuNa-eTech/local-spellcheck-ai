@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light" />
+  <title>SoátVăn — Mockup luồng xử lý</title>
+  <link rel="stylesheet" href="../tokens.css" />
+  <link rel="stylesheet" href="./mockup.css" />
+</head>
+<body>
+  <svg class="icon-sprite" aria-hidden="true">
+    <symbol id="icon-file" viewBox="0 0 24 24"><path d="M6 2.8h8l4 4V21H6z"/><path d="M14 2.8V7h4M9 12h6M9 16h6"/></symbol>
+    <symbol id="icon-upload" viewBox="0 0 24 24"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 15v5h14v-5"/></symbol>
+    <symbol id="icon-shield" viewBox="0 0 24 24"><path d="M12 2.8 19 6v5.2c0 4.6-2.8 8.3-7 10-4.2-1.7-7-5.4-7-10V6z"/><path d="m9 12 2 2 4-4"/></symbol>
+    <symbol id="icon-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></symbol>
+    <symbol id="icon-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-5-5 5 5-5 5"/></symbol>
+    <symbol id="icon-back" viewBox="0 0 24 24"><path d="M19 12H5m5-5-5 5 5 5"/></symbol>
+    <symbol id="icon-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="icon-folder" viewBox="0 0 24 24"><path d="M3 6h7l2 2h9v11H3z"/></symbol>
+    <symbol id="icon-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="icon-cpu" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4m6-4v4M9 18v4m6-4v4M2 9h4m-4 6h4m12-6h4m-4 6h4M10 10h4v4h-4z"/></symbol>
+  </svg>
+
+  <a class="skip-link" href="#workflow">Bỏ qua điều hướng</a>
+
+  <div class="app-shell">
+    <header class="app-header">
+      <div class="brand" aria-label="SoátVăn">
+        <span class="brand__mark">SV</span>
+        <div><strong>SoátVăn</strong><span>Kiểm tra văn bản trên máy</span></div>
+      </div>
+      <button class="button button--quiet" id="settings-button" type="button" aria-label="Cài đặt model">
+        <svg class="icon" aria-hidden="true"><use href="#icon-settings"></use></svg>
+        <span>Cài đặt model</span>
+      </button>
+    </header>
+
+    <main class="workflow-shell" id="workflow" tabindex="-1">
+      <ol class="stepper" aria-label="Tiến trình xử lý">
+        <li data-step-indicator="file" aria-current="step"><span>1</span><strong>Chọn file</strong></li>
+        <li data-step-indicator="rules"><span>2</span><strong>Quy tắc</strong></li>
+        <li data-step-indicator="processing"><span>3</span><strong>Xử lý</strong></li>
+        <li data-step-indicator="result"><span>4</span><strong>Kết quả</strong></li>
+      </ol>
+
+      <section class="workflow-card" id="step-file" data-step-panel="file" aria-labelledby="file-title">
+        <div class="section-copy">
+          <p class="step-label">Bước 1</p>
+          <h1 id="file-title">Chọn tệp Word cần kiểm tra</h1>
+          <p>SoátVăn tạo một file kết quả mới. File gốc không bị thay đổi.</p>
+        </div>
+        <div class="drop-zone" id="drop-zone">
+          <svg class="icon drop-zone__icon" aria-hidden="true"><use href="#icon-upload"></use></svg>
+          <strong>Kéo thả tệp <code>.docx</code> vào đây</strong>
+          <span>hoặc</span>
+          <div class="button-row">
+            <button class="button button--primary" id="choose-file-button" type="button">Chọn tệp Word</button>
+            <button class="button button--secondary" id="sample-file-button" type="button">Dùng file minh hoạ</button>
+          </div>
+        </div>
+        <p class="field-message field-message--error is-hidden" id="file-error" role="alert"></p>
+      </section>
+
+      <section class="workflow-card is-hidden" id="step-rules" data-step-panel="rules" aria-labelledby="rules-title">
+        <button class="back-button" id="back-to-file" type="button"><svg class="icon" aria-hidden="true"><use href="#icon-back"></use></svg>Chọn file khác</button>
+        <div class="file-chip">
+          <svg class="icon" aria-hidden="true"><use href="#icon-file"></use></svg>
+          <div><strong id="selected-file-name">—</strong><span id="selected-file-size">—</span></div>
+          <svg class="icon file-chip__check" aria-hidden="true"><use href="#icon-check"></use></svg>
+        </div>
+        <div class="section-copy">
+          <p class="step-label">Bước 2</p>
+          <h1 id="rules-title">Chọn hoặc nhập quy tắc riêng</h1>
+          <p>Bạn có thể dùng mẫu có sẵn rồi chỉnh lại nội dung cho tài liệu này.</p>
+        </div>
+        <div class="form-stack">
+          <label for="prompt-template">Mẫu quy tắc</label>
+          <select id="prompt-template">
+            <option value="standard">Soát tiêu chuẩn</option>
+            <option value="administrative">Văn bản hành chính</option>
+            <option value="spelling">Chỉ kiểm tra chính tả</option>
+            <option value="custom">Tự nhập quy tắc</option>
+          </select>
+          <div class="field-heading"><label for="custom-prompt">Prompt quy tắc riêng</label><output id="prompt-count" for="custom-prompt">0/1.000</output></div>
+          <textarea id="custom-prompt" maxlength="1000" rows="7"></textarea>
+          <p class="field-message" id="prompt-help">Quy tắc chỉ áp dụng cho lần xử lý này.</p>
+        </div>
+        <div class="model-note">
+          <svg class="icon" aria-hidden="true"><use href="#icon-cpu"></use></svg>
+          <p><strong id="model-inline-title">Đang dùng tầng luật</strong><span id="model-inline-copy">Model AI chưa cài; quy tắc cơ bản vẫn hoạt động.</span></p>
+        </div>
+        <div class="workflow-actions">
+          <button class="button button--primary" id="start-button" type="button">Bắt đầu xử lý<svg class="icon" aria-hidden="true"><use href="#icon-arrow"></use></svg></button>
+        </div>
+      </section>
+
+      <section class="workflow-card workflow-card--center is-hidden" id="step-processing" data-step-panel="processing" aria-labelledby="processing-title" aria-live="polite">
+        <span class="spinner" aria-hidden="true"></span>
+        <div class="section-copy section-copy--center">
+          <p class="step-label">Bước 3</p>
+          <h1 id="processing-title">Đang đọc cấu trúc tệp Word…</h1>
+          <p id="processing-detail">Mọi xử lý diễn ra trên máy này.</p>
+        </div>
+        <div class="progress-block">
+          <div class="progress-track" id="processing-progress" role="progressbar" aria-label="Tiến độ xử lý" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span></span></div>
+          <output id="progress-label">0%</output>
+        </div>
+        <button class="button button--secondary" id="cancel-button" type="button">Dừng xử lý</button>
+      </section>
+
+      <section class="workflow-card workflow-card--center is-hidden" id="step-result" data-step-panel="result" aria-labelledby="result-title">
+        <span class="success-mark" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="#icon-check"></use></svg></span>
+        <div class="section-copy section-copy--center">
+          <p class="step-label">Bước 4</p>
+          <h1 id="result-title">Đã tạo file kết quả</h1>
+          <p>SoátVăn không hiển thị preview. Hãy mở file bằng Microsoft Word để xem kết quả.</p>
+        </div>
+        <div class="result-file">
+          <svg class="icon" aria-hidden="true"><use href="#icon-file"></use></svg>
+          <div><strong id="output-file-name">—</strong><span id="output-file-path">C:\Users\…\Documents</span></div>
+        </div>
+        <dl class="result-summary">
+          <div><dt>Trạng thái</dt><dd>Hoàn tất</dd></div>
+          <div><dt>Cảnh báo đã đánh dấu</dt><dd id="finding-count">5</dd></div>
+          <div><dt>File gốc</dt><dd>Không thay đổi</dd></div>
+        </dl>
+        <div class="button-row button-row--center">
+          <button class="button button--primary" id="open-output-button" type="button">Mở file kết quả</button>
+          <button class="button button--secondary" id="open-folder-button" type="button"><svg class="icon" aria-hidden="true"><use href="#icon-folder"></use></svg>Mở thư mục</button>
+        </div>
+        <button class="back-button" id="restart-button" type="button">Xử lý file khác</button>
+      </section>
+    </main>
+
+    <footer class="status-bar">
+      <p><span class="status-dot"></span>Xử lý cục bộ · không gửi nội dung tài liệu lên mạng</p>
+      <p>Mockup v0.2 · không xử lý DOCX thật</p>
+    </footer>
+  </div>
+
+  <input id="file-input" type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" hidden />
+  <input id="model-input" type="file" accept=".svmodel,.gguf,application/octet-stream" hidden />
+
+  <dialog class="dialog" id="settings-dialog" aria-labelledby="settings-title">
+    <form method="dialog" id="settings-form">
+      <div class="dialog__heading">
+        <div><h2 id="settings-title">Cài đặt model AI</h2><p>Model được lưu trên máy và chỉ dùng khi xử lý.</p></div>
+        <button class="icon-button" value="cancel" aria-label="Đóng cài đặt"><svg class="icon" aria-hidden="true"><use href="#icon-close"></use></svg></button>
+      </div>
+      <div class="model-panel" id="model-panel" data-state="empty">
+        <span class="model-panel__icon"><svg class="icon" aria-hidden="true"><use href="#icon-cpu"></use></svg></span>
+        <div><strong id="model-title">Chưa cài model AI</strong><p id="model-copy">Ứng dụng vẫn chạy bằng tầng luật.</p></div>
+      </div>
+      <div class="progress-block is-hidden" id="model-progress-wrap">
+        <div class="progress-track" id="model-progress" role="progressbar" aria-label="Tiến độ tải model" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span></span></div>
+        <output id="model-progress-label">0%</output>
+      </div>
+      <p class="network-note"><svg class="icon" aria-hidden="true"><use href="#icon-shield"></use></svg><span>Chỉ kết nối khi bạn bấm tải model. Nội dung tài liệu không được gửi lên mạng.</span></p>
+      <div class="dialog__actions">
+        <button class="button button--secondary" id="import-model-button" type="button">Chọn gói có sẵn</button>
+        <button class="button button--primary" id="download-model-button" type="button">Tải model về máy</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="snackbar is-hidden" id="snackbar" role="status" aria-live="polite"></div>
+  <script src="./mockup.js"></script>
+</body>
+</html>

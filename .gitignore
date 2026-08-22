@@ -1,0 +1,16 @@
+.DS_Store
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+node_modules/
+dist/
+build/
+target/
+apps/desktop/src-tauri/binaries/soatvan-engine-*
+apps/desktop/src-tauri/gen/
+*.db
+*.db-shm
+*.db-wal

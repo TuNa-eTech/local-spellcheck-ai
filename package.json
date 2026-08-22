@@ -1,0 +1,11 @@
+{
+  "name": "soatvan-workspace",
+  "private": true,
+  "scripts": {
+    "dev": "npm --prefix apps/desktop run dev",
+    "build": "npm --prefix apps/desktop run build",
+    "tauri": "npm --prefix apps/desktop run tauri",
+    "test:engine": "uv run --project engine pytest",
+    "check:engine": "uv run --project engine ruff check engine && uv run --project engine mypy --config-file engine/pyproject.toml"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://soatvan.local/contracts/finding.schema.json",
+  "title": "Finding",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "category", "origin", "detector_id", "block_id", "start", "end", "source_text", "suggestion", "reason", "rule_version"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "category": {"enum": ["spelling", "compound_word", "capitalization", "technical", "custom_rule"]},
+    "origin": {"enum": ["rule", "llm"]},
+    "detector_id": {"type": "string", "minLength": 1},
+    "block_id": {"type": "string", "minLength": 1},
+    "start": {"type": "integer", "minimum": 0},
+    "end": {"type": "integer", "minimum": 1},
+    "source_text": {"type": "string", "minLength": 1},
+    "suggestion": {"type": "string"},
+    "reason": {"type": "string", "minLength": 1},
+    "rule_version": {"type": "string", "minLength": 1},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+  }
+}

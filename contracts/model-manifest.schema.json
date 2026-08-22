@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://soatvan.local/contracts/model-manifest.schema.json",
+  "title": "Signed model manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "model_id", "version", "engine_protocol", "file", "size", "sha256", "license_file", "signature"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "model_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]+$"},
+    "version": {"type": "string", "minLength": 1},
+    "engine_protocol": {"type": "integer", "minimum": 1},
+    "file": {"type": "string", "pattern": "^[^/\\\\]+$"},
+    "size": {"type": "integer", "minimum": 1},
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "license_file": {"type": "string", "pattern": "^[^/\\\\]+$"},
+    "memory_mb": {"type": "integer", "minimum": 1},
+    "signature": {"type": "string", "minLength": 32}
+  }
+}

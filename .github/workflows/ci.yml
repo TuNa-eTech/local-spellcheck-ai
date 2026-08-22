@@ -1,0 +1,64 @@
+name: verify
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  engine:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with: { python-version: "3.12" }
+      - run: uv sync --project engine --extra dev --locked
+      - run: uv run --project engine ruff check engine
+      - run: uv run --project engine mypy --config-file engine/pyproject.toml
+      - run: uv run --project engine pytest engine
+      - name: Build Python onedir
+        working-directory: engine
+        run: uv run pyinstaller --clean --noconfirm soatvan-engine.spec
+      - uses: actions/upload-artifact@v4
+        with:
+          name: engine-windows-x64
+          path: engine/dist/soatvan-engine/
+
+  desktop:
+    needs: engine
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: engine-windows-x64
+          path: apps/desktop/src-tauri/resources/engine/
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with: { node-version: "24", cache: npm, cache-dependency-path: apps/desktop/package-lock.json }
+      - run: npm ci
+        working-directory: apps/desktop
+      - run: npm run build
+        working-directory: apps/desktop
+      - run: cargo fmt --check
+        working-directory: apps/desktop/src-tauri
+      - run: cargo test
+        working-directory: apps/desktop/src-tauri
+      - name: Build offline NSIS installer
+        run: npm run tauri build -- --bundles nsis
+        working-directory: apps/desktop
+        env:
+          SOATVAN_MODEL_ENDPOINT: ${{ vars.SOATVAN_MODEL_ENDPOINT }}
+          SOATVAN_MODEL_ALLOWLIST: ${{ vars.SOATVAN_MODEL_ALLOWLIST }}
+          SOATVAN_MODEL_PUBLIC_KEY: ${{ vars.SOATVAN_MODEL_PUBLIC_KEY }}
+      - name: Verify Authenticode when release certificate is configured
+        if: ${{ vars.AUTHENTICODE_ENABLED == 'true' }}
+        shell: pwsh
+        run: |
+          Get-ChildItem apps/desktop/src-tauri/target/release/bundle/nsis/*.exe | ForEach-Object {
+            $signature = Get-AuthenticodeSignature $_.FullName
+            if ($signature.Status -ne 'Valid') { throw "Invalid signature: $($_.FullName)" }
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: soatvan-windows-installer
+          path: apps/desktop/src-tauri/target/release/bundle/nsis/*.exe

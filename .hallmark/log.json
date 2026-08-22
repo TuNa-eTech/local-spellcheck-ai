@@ -1,0 +1,24 @@
+[
+  {
+    "date": "2026-08-22",
+    "artifact": "docs/mockup.html",
+    "brief": "SoátVăn linear file-to-output workflow",
+    "macrostructure": "Guided Task",
+    "theme": "Cobalt",
+    "tone": "utilitarian",
+    "navigation": "none",
+    "footer": "Ft2 status strip",
+    "enrichment": "none"
+  },
+  {
+    "date": "2026-08-22",
+    "artifact": "docs/mockup.html",
+    "brief": "SoátVăn Windows desktop review workbench",
+    "macrostructure": "Workbench",
+    "theme": "Cobalt",
+    "tone": "utilitarian",
+    "navigation": "N3 side rail",
+    "footer": "Ft2 status strip",
+    "enrichment": "F5 annotated product surface"
+  }
+]
