@@ -226,8 +226,11 @@ def validate_request(frame: object) -> tuple[str, str, dict[str, Any]]:
 
 def emit(frame: dict[str, Any]) -> None:
     with EMIT_LOCK:
-        sys.stdout.write(json.dumps(frame, ensure_ascii=False, separators=(",", ":")) + "\n")
-        sys.stdout.flush()
+        payload = (json.dumps(frame, ensure_ascii=False, separators=(",", ":")) + "\n").encode(
+            "utf-8"
+        )
+        sys.stdout.buffer.write(payload)
+        sys.stdout.buffer.flush()
 
 
 def error_code(error: Exception) -> str:

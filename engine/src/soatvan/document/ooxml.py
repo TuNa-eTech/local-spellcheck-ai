@@ -264,21 +264,25 @@ class DocxPackage:
                 seen: set[str] = set()
                 total = 0
                 for info in infos:
-                    raw_name = info.filename
-                    name = PurePosixPath(raw_name)
+                    # ZipInfo normalizes the platform separator in ``filename``
+                    # on Windows. ``orig_filename`` retains the archive spelling,
+                    # which is required to reject crafted backslash paths.
+                    raw_name = info.orig_filename
+                    normalized_name = info.filename
+                    name = PurePosixPath(normalized_name)
                     unsafe_name = (
                         not raw_name
                         or "\\" in raw_name
                         or "\x00" in raw_name
                         or re.match(r"^[A-Za-z]:", raw_name) is not None
-                        or raw_name in seen
+                        or normalized_name in seen
                         or name.is_absolute()
                         or ".." in name.parts
                         or info.flag_bits & 0x1
                     )
                     if unsafe_name:
                         raise InvalidDocument("DOCUMENT_UNSAFE_ZIP_ENTRY")
-                    seen.add(raw_name)
+                    seen.add(normalized_name)
                     total += info.file_size
                     if total > MAX_UNCOMPRESSED or (
                         info.file_size
