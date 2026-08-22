@@ -281,14 +281,23 @@ mod windows_tests {
         let job = attach_kill_on_parent(&child).expect("attach job");
         close_parent_job(job);
         let deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < deadline {
+        let exited = loop {
             if child.try_wait().expect("wait child").is_some() {
-                return;
+                break true;
+            }
+            if Instant::now() >= deadline {
+                break false;
             }
             thread::sleep(Duration::from_millis(25));
+        };
+        if !exited {
+            let _ = child.kill();
         }
-        let _ = child.kill();
-        panic!("child survived closing the kill-on-close Job Object");
+        child.wait().expect("reap child");
+        assert!(
+            exited,
+            "child survived closing the kill-on-close Job Object"
+        );
     }
 }
 
