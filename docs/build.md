@@ -48,6 +48,24 @@ apps/desktop/src-tauri/target/release/bundle/nsis/*.exe
 
 Installer dùng WebView2 `offlineInstaller`, vì vậy kích thước lớn hơn nhưng không cần tải WebView2 trong lúc cài đặt.
 
+### Windows acceptance
+
+Không chạy hoặc mô phỏng Windows acceptance trên macOS. Workflow `.github/workflows/ci.yml` chạy toàn bộ phần phụ thuộc Windows trên `windows-latest`:
+
+- chạy sidecar PyInstaller trực tiếp khi `PATH` không chứa Python;
+- xử lý DOCX trong đường dẫn Unicode, có khoảng trắng và dài;
+- kiểm tra cancel không để output tạm;
+- validate output bằng Microsoft Open XML SDK;
+- build/cài NSIS với manifest `asInvoker`;
+- launch app đã cài, xác nhận sidecar được bundle, không có established TCP connection và không còn process sau khi host bị kill;
+- scan installer bằng Microsoft Defender.
+
+Script kiểm tra package có thể gọi lại trên Windows runner:
+
+```powershell
+./scripts/test-windows-package.ps1 -InstallerPath "apps/desktop/src-tauri/target/release/bundle/nsis/SoatVan-setup.exe"
+```
+
 ## Build macOS `.dmg`
 
 Chạy trên macOS:
@@ -80,14 +98,35 @@ Model không được đóng trong installer. Tải model chỉ được compile
 
 Nếu không có đủ cấu hình, ứng dụng vẫn build và chạy rule-only; chức năng tải model fail-closed. Import gói model offline vẫn yêu cầu manifest, checksum và chữ ký hợp lệ.
 
-## Ký bản phát hành
+## Chữ ký cho nhu cầu cá nhân
 
-Script local không tự ký bằng certificate:
+Dự án mặc định dùng chữ ký nội bộ, không cần certificate thương mại và không lưu private key trong repository.
 
-- Windows: cần Authenticode-sign ứng dụng, sidecar, DLL và NSIS installer trước khi phát hành.
-- macOS: cần Apple Developer ID, hardened runtime, code signing và notarization để tránh cảnh báo Gatekeeper trên máy người dùng.
+### Windows self-signed
 
-CI release nên quản lý certificate và secret trong secret store của runner, không commit vào repository.
+`scripts/build-windows.ps1` tìm hoặc tạo certificate với thông số mặc định:
+
+- Subject: `CN=SoatVan Personal Use`.
+- RSA 3072 bit.
+- SHA-256.
+- Hiệu lực 5 năm.
+- Private key không export được.
+
+Có thể đổi subject bằng biến môi trường `SOATVAN_WINDOWS_CERT_SUBJECT`. Script ký Python sidecar, yêu cầu Tauri ký app/installer bằng thumbprint động và xuất public certificate `SoatVan-Personal-CodeSigning.cer` cạnh installer.
+
+Certificate self-signed chỉ phù hợp kiểm thử hoặc máy cá nhân. Nó không tạo uy tín SmartScreen. Trước khi trust file `.cer` trên một máy khác, phải đối chiếu SHA-256/checksum từ Release và hiểu rằng certificate được thêm vào trust store có quyền xác nhận code ký bởi certificate đó. Runner GitHub là máy tạm nên mỗi Release sẽ tạo certificate mới; muốn có identity ổn định phải dùng PFX thật trong GitHub Secrets hoặc dịch vụ ký code.
+
+### macOS ad-hoc
+
+Tauri được cấu hình `bundle.macOS.signingIdentity: "-"`, tức pseudo-identity ad-hoc. Script build giữ lại `.app`, chạy `codesign --verify --deep --strict` và xác minh checksum DMG bằng `hdiutil verify`.
+
+Ad-hoc signing không phải Apple Developer ID và không qua notarization. Khi mở app tải từ GitHub, macOS vẫn có thể yêu cầu cho phép thủ công trong Privacy & Security. Không thể tạo Apple Developer ID hợp lệ bằng thông số giả định; identity thật phải do Apple cấp và gắn với Apple ID/Team ID.
+
+Nếu sau này phát hành công khai:
+
+- Windows: dùng Authenticode certificate thật hoặc Azure Trusted Signing.
+- macOS: dùng Developer ID Application, hardened runtime và notarization.
+- Certificate/password phải nằm trong GitHub Secrets hoặc secret manager, không commit vào repository.
 
 ## GitHub Release tự động
 
@@ -112,7 +151,7 @@ Pipeline chạy test trước, sau đó build song song:
 
 Khi tất cả job thành công, pipeline tạo `SHA256SUMS.txt`, sinh release notes và publish GitHub Release gắn với tag đã tồn tại. Nếu một job thất bại, Release không được tạo; sửa source, tăng patch version và tạo tag mới. Không di chuyển hoặc tái sử dụng tag đã phát hành.
 
-Các artifact hiện chưa được ký nếu repository chưa cấu hình certificate tương ứng. Không nên phân phối bản unsigned cho người dùng cuối ngoài môi trường kiểm thử.
+Artifact Windows được self-sign và đính kèm public `.cer`; artifact macOS được ad-hoc sign. Cả hai chỉ dành cho sử dụng cá nhân, không nên phân phối công khai.
 
 ## Dữ liệu tạm khi build
 

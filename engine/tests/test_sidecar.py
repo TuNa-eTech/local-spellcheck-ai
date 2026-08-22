@@ -4,7 +4,14 @@ import json
 import os
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
+
+import pytest
+
+from soatvan.entrypoints import sidecar as sidecar_module
+from soatvan.entrypoints.sidecar import Sidecar, validate_request
 
 
 def test_handshake_and_protocol_mismatch(tmp_path: Path) -> None:
@@ -64,16 +71,97 @@ def test_job_start_is_async_and_emits_terminal_event(make_docx, tmp_path: Path) 
     process.stdin.flush()
     accepted = False
     terminal = None
+    progress: list[int] = []
     for _ in range(12):
         frame = json.loads(process.stdout.readline())
         if frame.get("id") == "start":
             accepted = frame["result"]["accepted"]
         if frame.get("event") in {"job.completed", "job.no_findings", "job.failed"}:
             terminal = frame
+        if frame.get("event") == "job.progress":
+            progress.append(frame["data"]["percent"])
         if accepted and terminal:
             break
     assert accepted is True
     assert terminal and terminal["event"] == "job.completed"
+    assert terminal["data"]["counts"] == {
+        "category": {"spelling": 1},
+        "origin": {"rule": 1},
+    }
+    assert progress == sorted(progress)
+    assert progress == [10, 35, 72, 88, 100]
     assert output.is_file()
     process.stdin.close()
     process.wait(timeout=5)
+
+
+@pytest.mark.parametrize(
+    "frame",
+    [
+        [],
+        {"v": 1, "id": "", "method": "engine.hello", "params": {}},
+        {"v": 1, "id": "x", "method": "engine.hello", "params": {}, "extra": True},
+        {"v": 1, "id": "x", "method": "engine.hello", "params": []},
+    ],
+)
+def test_invalid_contract_frames_are_rejected(frame: object) -> None:
+    with pytest.raises(ValueError, match="INVALID_FRAME"):
+        validate_request(frame)
+
+
+def test_frame_limit_is_stable_and_engine_recovers(tmp_path: Path) -> None:
+    environment = {**os.environ, "LOCALAPPDATA": str(tmp_path)}
+    process = subprocess.Popen(
+        [sys.executable, "-m", "soatvan.entrypoints.sidecar"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=environment,
+    )
+    assert process.stdin and process.stdout
+    process.stdin.write(b"{" + b"x" * (1024 * 1024) + b"}\n")
+    process.stdin.flush()
+    too_large = json.loads(process.stdout.readline())
+    assert too_large["error"]["code"] == "FRAME_TOO_LARGE"
+    process.stdin.write(b'{"v":1,"id":"ok","method":"engine.hello","params":{}}\n')
+    process.stdin.flush()
+    assert json.loads(process.stdout.readline())["result"]["protocol"] == 1
+    process.stdin.close()
+    process.wait(timeout=5)
+
+
+def test_cancel_emits_one_terminal_failure_and_cleans_job(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    started = threading.Event()
+    frames: list[dict[str, object]] = []
+
+    class BlockingProcessor:
+        def execute(self, request, progress, token):
+            del request, progress
+            started.set()
+            while True:
+                token.raise_if_cancelled()
+                time.sleep(0.005)
+
+    engine = Sidecar()
+    engine.processor = BlockingProcessor()  # type: ignore[assignment]
+    monkeypatch.setattr(sidecar_module, "emit", frames.append)
+    assert engine.start_job(
+        {
+            "job_id": "cancel-me",
+            "source_path": str(tmp_path / "source.docx"),
+            "temporary_output_path": str(tmp_path / "temporary.docx"),
+            "preset": "standard",
+        }
+    )["accepted"]
+    assert started.wait(timeout=1)
+    assert engine.cancel_job({"job_id": "cancel-me"}) == {"cancelled": True}
+    deadline = time.monotonic() + 2
+    while "cancel-me" in engine.jobs and time.monotonic() < deadline:
+        time.sleep(0.01)
+    terminals = [frame for frame in frames if frame.get("event") == "job.failed"]
+    assert len(terminals) == 1
+    assert terminals[0]["data"]["code"] == "JOB_CANCELLED"  # type: ignore[index]
+    assert "cancel-me" not in engine.jobs

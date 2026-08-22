@@ -20,7 +20,7 @@ class ProcessRequest:
 class ProcessResult:
     finding_count: int
     output_path: Path | None
-    counts: dict[str, int]
+    counts: dict[str, dict[str, int]]
 
 
 class ProcessDocument:
@@ -38,20 +38,33 @@ class ProcessDocument:
         blocks = self._documents.read_blocks(request.source)
         cancel.raise_if_cancelled()
         progress("rules", 35, "job.applying_rules")
-        findings = self._rules.check(blocks, request.preset, self._dictionary.ignored_words())
+        findings = self._rules.check(
+            blocks,
+            request.preset,
+            self._dictionary.ignored_words(),
+            cancellation=cancel.raise_if_cancelled,
+        )
         cancel.raise_if_cancelled()
         if not findings:
             request.temporary_output.unlink(missing_ok=True)
             return ProcessResult(0, None, {})
         progress("validating", 72, "job.validating_anchors")
-        counts: dict[str, int] = {}
-        for finding in findings:
-            counts[finding.category] = counts.get(finding.category, 0) + 1
         cancel.raise_if_cancelled()
         progress("exporting", 88, "job.exporting")
-        written = self._documents.write_annotations(
-            request.source, request.temporary_output, findings
+        annotation = self._documents.write_annotations(
+            request.source, request.temporary_output, findings, cancel
         )
         cancel.raise_if_cancelled()
+        written_ids = frozenset(annotation.written_ids)
+        category_counts: dict[str, int] = {}
+        origin_counts: dict[str, int] = {}
+        for finding in findings:
+            if finding.id in written_ids:
+                category_counts[finding.category] = category_counts.get(finding.category, 0) + 1
+                origin_counts[finding.origin] = origin_counts.get(finding.origin, 0) + 1
         progress("complete", 100, "job.complete")
-        return ProcessResult(written, request.temporary_output if written else None, counts)
+        return ProcessResult(
+            annotation.count,
+            request.temporary_output if annotation.count else None,
+            {"category": category_counts, "origin": origin_counts},
+        )

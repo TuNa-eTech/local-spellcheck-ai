@@ -1,4 +1,14 @@
-from soatvan.checking import Block, Preset, RuleEngine
+from soatvan.checking import Block, Preset, RuleConfig, RuleEngine
+
+
+def test_presets_map_to_structured_rule_configuration() -> None:
+    assert RuleConfig.for_preset(Preset.STANDARD) == RuleConfig(True, True, True, True, False)
+    assert RuleConfig.for_preset(Preset.ADMINISTRATIVE) == RuleConfig(
+        True, True, True, True, True
+    )
+    assert RuleConfig.for_preset(Preset.SPELLING) == RuleConfig(
+        False, False, True, True, False
+    )
 
 
 def test_rules_are_deterministic_and_resolve_overlaps() -> None:
@@ -27,9 +37,49 @@ def test_dictionary_suppresses_confusion() -> None:
     assert findings == []
 
 
+def test_dictionary_word_suppresses_every_word_based_detector() -> None:
+    findings = RuleEngine().check(
+        [Block("document:p0", "ủy ban nhân dân xử lí")],
+        Preset.ADMINISTRATIVE,
+        frozenset({"ủy", "xử"}),
+    )
+    assert findings == []
+
+
 def test_nfc_offsets_map_back_to_decomposed_source() -> None:
     source = "xu\u031b\u0309 lí"
     finding = RuleEngine().check([Block("document:p0", source)], Preset.STANDARD)[0]
     assert finding.suggestion == "xử lý"
     assert finding.source_text == source
     assert (finding.start, finding.end) == (0, len(source))
+
+
+def test_spelling_preset_excludes_technical_rules() -> None:
+    findings = RuleEngine().check(
+        [Block("document:p0", "Nội  dung ngiên cứu,và")],
+        Preset.SPELLING,
+    )
+    assert [(item.detector_id, item.suggestion) for item in findings] == [
+        ("confusion.ngiên_cứu.v1", "nghiên cứu")
+    ]
+
+
+def test_syllable_onset_repairs_are_conservative_and_dictionary_aware() -> None:
+    findings = RuleEngine().check(
+        [Block("document:p0", "Tài liệu gế cẻ qản ngiên API OpenAI")],
+        Preset.SPELLING,
+        frozenset({"cẻ"}),
+    )
+    assert [(item.source_text, item.suggestion) for item in findings] == [
+        ("gế", "ghế"),
+        ("qản", "quản"),
+        ("ngiên", "nghiên"),
+    ]
+
+
+def test_rule_limit_is_global_and_deterministic() -> None:
+    blocks = [Block(f"document:p{index}", "sát nhập  ") for index in range(10)]
+    first = RuleEngine().check(blocks, Preset.STANDARD, limit=5)
+    second = RuleEngine().check(blocks, Preset.STANDARD, limit=5)
+    assert first == second
+    assert len(first) == 5

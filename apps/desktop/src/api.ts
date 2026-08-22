@@ -14,7 +14,7 @@ export const api = {
   async startJob(jobId: string, sourcePath: string, preset: Preset, customPrompt: string): Promise<JobResult> {
     if (!isTauri()) {
       await new Promise(resolve => setTimeout(resolve, 1400));
-      return { job_id: jobId, status: "completed", output_path: sourcePath.replace(/\.docx$/i, "-soat.docx"), finding_count: 5, counts: { spelling: 2, technical: 3 } };
+      return { job_id: jobId, status: "completed", output_path: sourcePath.replace(/\.docx$/i, "-soat.docx"), finding_count: 5, counts: { category: { spelling: 2, technical: 3 }, origin: { rule: 5 } } };
     }
     return invoke("start_job", { jobId, sourcePath, preset, customPrompt });
   },

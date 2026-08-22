@@ -331,7 +331,7 @@ validate package
 → extract structural blocks
 → normalize NFC + build source map
 → technical rules
-→ Vietnamese syllable dictionary
+→ conservative Vietnamese syllable orthography + versioned confusion sets
 → confusion sets
 → capitalization rules
 → organization/custom candidate rules
@@ -535,7 +535,7 @@ Không có preview, editor, finding list hoặc review action. Settings có ba t
 ### 16.2. Golden DOCX
 
 - Synthetic fixtures cho bold/italic split, hyperlink, table, image, header/footer, existing comments, tracked change và content control.
-- 20 tài liệu thật được đóng băng trước khi code.
+- 20 tài liệu thật do người dùng cung cấp được đóng băng cùng ground truth trước khi chạy customer quality gate; không thay bằng corpus tổng hợp.
 - Inventory toàn bộ ZIP part trước/sau.
 - Part không liên quan phải byte-identical; part liên quan dùng semantic XML diff.
 - Mở bằng Word 2016/2019/365 trên VM, không repair prompt; giữ ảnh/bảng/header/footer/comment cũ theo scope đã chốt.

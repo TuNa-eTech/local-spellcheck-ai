@@ -54,12 +54,13 @@ jobs:
           uv sync --project engine --extra dev --locked
           uv run --project engine ruff check engine
           uv run --project engine mypy --config-file engine/pyproject.toml
-          uv run --project engine pytest engine
+          uv run --project engine pytest --cov=soatvan --cov-report=term-missing --cov-fail-under=85 engine
 
       - name: Verify frontend
         working-directory: apps/desktop
         run: |
           npm ci
+          npm test
           npm run build
 
       - name: Verify Rust host
@@ -96,18 +97,35 @@ jobs:
           SOATVAN_MODEL_ALLOWLIST: ${{ vars.SOATVAN_MODEL_ALLOWLIST }}
           SOATVAN_MODEL_PUBLIC_KEY: ${{ vars.SOATVAN_MODEL_PUBLIC_KEY }}
 
+      - name: Run Windows M0/M1 acceptance
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts/windows-acceptance | Out-Null
+          uv run --project engine python engine/tests/windows_frozen_acceptance.py `
+            --engine engine/dist/soatvan-engine/soatvan-engine.exe `
+            --artifacts artifacts/windows-acceptance
+          $env:SOATVAN_ACCEPTANCE_OUTPUT = "artifacts/windows-acceptance/golden-output.docx"
+          uv run --project engine pytest engine/tests/test_docx.py::test_golden_package_preserves_unsupported_parts_and_existing_annotations
+          $documents = Get-ChildItem artifacts/windows-acceptance/*.docx
+          dotnet run --project tools/OpenXmlValidator/OpenXmlValidator.csproj -- $documents.FullName
+          $installer = Get-ChildItem apps/desktop/src-tauri/target/release/bundle/nsis/*.exe | Select-Object -First 1
+          ./scripts/test-windows-package.ps1 -InstallerPath $installer.FullName
+
       - name: Give release asset a stable name
         shell: pwsh
         run: |
           $installer = Get-ChildItem "apps/desktop/src-tauri/target/release/bundle/nsis/*.exe" | Select-Object -First 1
           if (-not $installer) { throw "NSIS installer not found" }
+          $certificate = Get-ChildItem "apps/desktop/src-tauri/target/release/bundle/nsis/*.cer" | Select-Object -First 1
+          if (-not $certificate) { throw "Personal signing certificate not found" }
           New-Item -ItemType Directory -Force release-assets | Out-Null
           Copy-Item -LiteralPath $installer.FullName -Destination "release-assets/SoatVan-${{ github.ref_name }}-windows-x64-setup.exe"
+          Copy-Item -LiteralPath $certificate.FullName -Destination "release-assets/SoatVan-${{ github.ref_name }}-windows-personal-signing.cer"
 
       - uses: actions/upload-artifact@v4
         with:
           name: release-windows-x64
-          path: release-assets/*.exe
+          path: release-assets/*
           if-no-files-found: error
           compression-level: 0
           retention-days: 14

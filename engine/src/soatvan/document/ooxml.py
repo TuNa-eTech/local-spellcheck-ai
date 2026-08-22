@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import os
+import re
 import tempfile
 import zipfile
 from collections.abc import Iterable
@@ -10,6 +11,7 @@ from pathlib import Path, PurePosixPath
 from lxml import etree
 
 from soatvan.checking.domain import Block, Finding
+from soatvan.workflow.ports import AnnotationResult, CancellationToken
 
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -17,8 +19,10 @@ REL = "http://schemas.openxmlformats.org/package/2006/relationships"
 CT = "http://schemas.openxmlformats.org/package/2006/content-types"
 NS = {"w": W, "r": R}
 MAX_ENTRIES = 10_000
+MAX_ARCHIVE_BYTES = 128 * 1024 * 1024
 MAX_UNCOMPRESSED = 256 * 1024 * 1024
 MAX_RATIO = 200
+REQUIRED_PARTS = frozenset({"[Content_Types].xml", "_rels/.rels", "word/document.xml"})
 
 
 class InvalidDocument(ValueError):
@@ -42,7 +46,7 @@ class DocxPackage:
     def read_blocks(self, source: Path) -> list[Block]:
         self._validate_archive(source)
         with zipfile.ZipFile(source) as archive:
-            root = etree.fromstring(archive.read("word/document.xml"), parser=self._parser())
+            root = self._parse_xml(archive.read("word/document.xml"))
         blocks: list[Block] = []
         for index, paragraph in enumerate(root.xpath("//w:body//w:p", namespaces=NS)):
             text = "".join(paragraph.xpath(".//w:t/text()", namespaces=NS))
@@ -53,33 +57,51 @@ class DocxPackage:
                 )
         return blocks
 
-    def write_annotations(self, source: Path, target: Path, findings: Iterable[Finding]) -> int:
+    def write_annotations(
+        self,
+        source: Path,
+        target: Path,
+        findings: Iterable[Finding],
+        cancellation: CancellationToken | None = None,
+    ) -> AnnotationResult:
         self._validate_archive(source)
+        if source.resolve() == target.resolve():
+            raise InvalidDocument("OUTPUT_SOURCE_CONFLICT")
+        if cancellation:
+            cancellation.raise_if_cancelled()
+        target_existed = target.exists()
         target.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=target.parent) as folder:
             stage = Path(folder) / "annotated.docx"
-            written = self._rewrite(source, stage, list(findings))
-            if written:
+            written_ids = self._rewrite(source, stage, list(findings), cancellation)
+            if written_ids:
                 with zipfile.ZipFile(stage) as check:
                     check.testzip()
-                    etree.fromstring(check.read("word/document.xml"), parser=self._parser())
+                    self._parse_xml(check.read("word/document.xml"))
+                if cancellation:
+                    cancellation.raise_if_cancelled()
                 os.replace(stage, target)
             else:
-                target.unlink(missing_ok=True)
-            return written
+                if not target_existed:
+                    target.unlink(missing_ok=True)
+            return AnnotationResult(tuple(written_ids))
 
-    def _rewrite(self, source: Path, target: Path, findings: list[Finding]) -> int:
+    def _rewrite(
+        self,
+        source: Path,
+        target: Path,
+        findings: list[Finding],
+        cancellation: CancellationToken | None,
+    ) -> list[str]:
         with zipfile.ZipFile(source) as archive:
-            document = etree.fromstring(archive.read("word/document.xml"), parser=self._parser())
+            document = self._parse_xml(archive.read("word/document.xml"))
             comments = self._load_comments(archive)
             rels = self._load_rels(archive)
-            content_types = etree.fromstring(
-                archive.read("[Content_Types].xml"), parser=self._parser()
-            )
+            content_types = self._parse_xml(archive.read("[Content_Types].xml"))
             replacements: dict[str, bytes] = {}
-            written = self._annotate(document, comments, findings)
-            if not written:
-                return 0
+            written_ids = self._annotate(document, comments, findings, cancellation)
+            if not written_ids:
+                return []
             self._ensure_comment_relationship(rels)
             self._ensure_comment_content_type(content_types)
             replacements["word/document.xml"] = self._xml(document)
@@ -88,15 +110,21 @@ class DocxPackage:
             replacements["[Content_Types].xml"] = self._xml(content_types)
             with zipfile.ZipFile(target, "w") as output:
                 for info in archive.infolist():
+                    if cancellation:
+                        cancellation.raise_if_cancelled()
                     if info.filename not in replacements:
                         output.writestr(info, archive.read(info.filename))
                 for name, data in replacements.items():
                     output.writestr(name, data)
-        return written
+        return written_ids
 
     def _annotate(
-        self, document: etree._Element, comments: etree._Element, findings: list[Finding]
-    ) -> int:
+        self,
+        document: etree._Element,
+        comments: etree._Element,
+        findings: list[Finding],
+        cancellation: CancellationToken | None,
+    ) -> list[str]:
         paragraphs = document.xpath("//w:body//w:p", namespaces=NS)
         grouped: dict[int, list[Finding]] = {}
         for finding in findings:
@@ -109,21 +137,31 @@ class DocxPackage:
         existing = comments.xpath("./w:comment/@w:id", namespaces=NS)
         if existing:
             next_id = max(int(value) for value in existing) + 1
-        written = 0
+        written_ids: list[str] = []
         for index, items in grouped.items():
             if index >= len(paragraphs):
                 continue
             paragraph = paragraphs[index]
             for finding in sorted(items, key=lambda item: item.start, reverse=True):
+                if cancellation:
+                    cancellation.raise_if_cancelled()
                 if self._annotate_one(paragraph, comments, finding, next_id):
                     next_id += 1
-                    written += 1
-        return written
+                    written_ids.append(finding.id)
+        return written_ids
 
     def _annotate_one(
         self, paragraph: etree._Element, comments: etree._Element, finding: Finding, comment_id: int
     ) -> bool:
         runs = paragraph.xpath("./w:r", namespaces=NS)
+        all_texts = paragraph.xpath(".//w:t", namespaces=NS)
+        if any(
+            text.getparent() is None or text.getparent().getparent() is not paragraph
+            for text in all_texts
+        ):
+            # Hyperlinks, tracked changes and content controls are preserved but
+            # intentionally not mutated in M1 because their anchors are not flat.
+            return False
         spans: list[tuple[etree._Element, int, int, int, int]] = []
         cursor = 0
         for run in runs:
@@ -215,42 +253,88 @@ class DocxPackage:
     def _validate_archive(self, source: Path) -> None:
         if source.suffix.lower() != ".docx" or not source.is_file():
             raise InvalidDocument("DOCUMENT_INVALID_TYPE")
+        if source.stat().st_size > MAX_ARCHIVE_BYTES:
+            raise InvalidDocument("DOCUMENT_ARCHIVE_LIMIT")
         try:
             with zipfile.ZipFile(source) as archive:
                 infos = archive.infolist()
-                if len(infos) > MAX_ENTRIES or "word/document.xml" not in archive.namelist():
+                names = set(archive.namelist())
+                if len(infos) > MAX_ENTRIES or not REQUIRED_PARTS.issubset(names):
                     raise InvalidDocument("DOCUMENT_INVALID_PACKAGE")
                 seen: set[str] = set()
                 total = 0
                 for info in infos:
-                    name = PurePosixPath(info.filename)
-                    if info.filename in seen or name.is_absolute() or ".." in name.parts:
+                    raw_name = info.filename
+                    name = PurePosixPath(raw_name)
+                    unsafe_name = (
+                        not raw_name
+                        or "\\" in raw_name
+                        or "\x00" in raw_name
+                        or re.match(r"^[A-Za-z]:", raw_name) is not None
+                        or raw_name in seen
+                        or name.is_absolute()
+                        or ".." in name.parts
+                        or info.flag_bits & 0x1
+                    )
+                    if unsafe_name:
                         raise InvalidDocument("DOCUMENT_UNSAFE_ZIP_ENTRY")
-                    seen.add(info.filename)
+                    seen.add(raw_name)
                     total += info.file_size
                     if total > MAX_UNCOMPRESSED or (
-                        info.compress_size and info.file_size / info.compress_size > MAX_RATIO
+                        info.file_size
+                        and (
+                            not info.compress_size
+                            or info.file_size / info.compress_size > MAX_RATIO
+                        )
                     ):
                         raise InvalidDocument("DOCUMENT_ARCHIVE_LIMIT")
-                etree.fromstring(archive.read("word/document.xml"), parser=self._parser())
+                content_types = self._parse_xml(archive.read("[Content_Types].xml"))
+                root_rels = self._parse_xml(archive.read("_rels/.rels"))
+                document = self._parse_xml(archive.read("word/document.xml"))
+                if (
+                    content_types.tag != f"{{{CT}}}Types"
+                    or root_rels.tag != f"{{{REL}}}Relationships"
+                    or document.tag != f"{{{W}}}document"
+                ):
+                    raise InvalidDocument("DOCUMENT_INVALID_PACKAGE")
+                office_document_type = (
+                    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/"
+                    "officeDocument"
+                )
+                if not root_rels.xpath(
+                    "./rel:Relationship[@Type=$kind and @Target='word/document.xml']",
+                    namespaces={"rel": REL},
+                    kind=office_document_type,
+                ):
+                    raise InvalidDocument("DOCUMENT_INVALID_PACKAGE")
         except (zipfile.BadZipFile, KeyError, etree.XMLSyntaxError) as error:
             raise InvalidDocument("DOCUMENT_INVALID_PACKAGE") from error
 
     @staticmethod
     def _parser() -> etree.XMLParser:
         return etree.XMLParser(
-            resolve_entities=False, no_network=True, huge_tree=False, remove_blank_text=False
+            resolve_entities=False,
+            load_dtd=False,
+            no_network=True,
+            huge_tree=False,
+            remove_blank_text=False,
         )
+
+    def _parse_xml(self, data: bytes) -> etree._Element:
+        lowered = data.lstrip().lower()
+        if b"<!doctype" in lowered or b"<!entity" in lowered:
+            raise InvalidDocument("DOCUMENT_INVALID_PACKAGE")
+        return etree.fromstring(data, parser=self._parser())
 
     def _load_comments(self, archive: zipfile.ZipFile) -> etree._Element:
         if "word/comments.xml" in archive.namelist():
-            return etree.fromstring(archive.read("word/comments.xml"), parser=self._parser())
+            return self._parse_xml(archive.read("word/comments.xml"))
         return etree.Element(f"{{{W}}}comments", nsmap={"w": W})
 
     def _load_rels(self, archive: zipfile.ZipFile) -> etree._Element:
         name = "word/_rels/document.xml.rels"
         if name in archive.namelist():
-            return etree.fromstring(archive.read(name), parser=self._parser())
+            return self._parse_xml(archive.read(name))
         return etree.Element(f"{{{REL}}}Relationships", nsmap={None: REL})
 
     @staticmethod

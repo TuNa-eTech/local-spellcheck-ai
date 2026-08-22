@@ -89,10 +89,7 @@ impl EngineBroker {
                         }
                     }
                 }
-                let mut pending = reader_waiters.lock().expect("waiters poisoned");
-                for (_, sender) in pending.drain() {
-                    let _ = sender.send(Err(AppError::EngineUnavailable));
-                }
+                fail_pending(&reader_waiters, &reader_jobs);
             })?;
         let broker = Self {
             child: Mutex::new(child),
@@ -126,9 +123,13 @@ impl EngineBroker {
             self.waiters.lock().expect("waiters poisoned").remove(&id);
             return Err(error.into());
         }
-        receiver
-            .recv_timeout(timeout)
-            .map_err(|_| AppError::EngineTimeout)?
+        match receiver.recv_timeout(timeout) {
+            Ok(result) => result,
+            Err(_) => {
+                self.waiters.lock().expect("waiters poisoned").remove(&id);
+                Err(AppError::EngineTimeout)
+            }
+        }
     }
 
     pub fn stop(&self) {
@@ -153,10 +154,31 @@ impl EngineBroker {
             self.jobs.lock().expect("jobs poisoned").remove(&job_id);
             return Err(error);
         }
-        receiver.recv_timeout(timeout).map_err(|_| {
-            self.jobs.lock().expect("jobs poisoned").remove(&job_id);
-            AppError::EngineTimeout
-        })?
+        match receiver.recv_timeout(timeout) {
+            Ok(result) => result,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                self.jobs.lock().expect("jobs poisoned").remove(&job_id);
+                let _ = self.call(
+                    "job.cancel",
+                    json!({"job_id": job_id}),
+                    Duration::from_secs(3),
+                );
+                Err(AppError::EngineTimeout)
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(AppError::EngineUnavailable),
+        }
+    }
+}
+
+fn fail_pending(waiters: &Waiters, jobs: &JobWaiters) {
+    let mut pending = waiters.lock().expect("waiters poisoned");
+    for (_, sender) in pending.drain() {
+        let _ = sender.send(Err(AppError::EngineUnavailable));
+    }
+    drop(pending);
+    let mut pending_jobs = jobs.lock().expect("jobs poisoned");
+    for (_, sender) in pending_jobs.drain() {
+        let _ = sender.send(Err(AppError::EngineUnavailable));
     }
 }
 
@@ -243,4 +265,58 @@ fn close_parent_job(_: ParentJob) {}
 #[cfg(windows)]
 fn close_parent_job(job: ParentJob) {
     unsafe { windows_sys::Win32::Foundation::CloseHandle(job as *mut core::ffi::c_void) };
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    fn closing_job_object_terminates_engine_process() {
+        let mut child = Command::new("cmd")
+            .args(["/C", "ping 127.0.0.1 -n 30 >nul"])
+            .spawn()
+            .expect("spawn child");
+        let job = attach_kill_on_parent(&child).expect("attach job");
+        close_parent_job(job);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if child.try_wait().expect("wait child").is_some() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        let _ = child.kill();
+        panic!("child survived closing the kill-on-close Job Object");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn engine_eof_releases_request_and_job_waiters() {
+        let waiters: Waiters = Arc::new(Mutex::new(HashMap::new()));
+        let jobs: JobWaiters = Arc::new(Mutex::new(HashMap::new()));
+        let (request_sender, request_receiver) = mpsc::channel();
+        let (job_sender, job_receiver) = mpsc::channel();
+        waiters
+            .lock()
+            .unwrap()
+            .insert("request".into(), request_sender);
+        jobs.lock().unwrap().insert("job".into(), job_sender);
+        fail_pending(&waiters, &jobs);
+        assert!(matches!(
+            request_receiver.recv().unwrap(),
+            Err(AppError::EngineUnavailable)
+        ));
+        assert!(matches!(
+            job_receiver.recv().unwrap(),
+            Err(AppError::EngineUnavailable)
+        ));
+        assert!(waiters.lock().unwrap().is_empty());
+        assert!(jobs.lock().unwrap().is_empty());
+    }
 }

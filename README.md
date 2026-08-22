@@ -30,12 +30,16 @@ Trong browser-only mode (`npm run dev`), UI dùng dữ liệu demo. Khi chạy T
 ## Kiểm tra
 
 ```sh
-uv run --project engine pytest
+uv run --project engine pytest --cov=soatvan --cov-fail-under=85
 uv run --project engine ruff check engine
 uv run --project engine mypy --config-file engine/pyproject.toml
+npm test --prefix apps/desktop
 npm run build --prefix apps/desktop
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
+cargo clippy --all-targets --manifest-path apps/desktop/src-tauri/Cargo.toml -- -D warnings
 ```
+
+Mọi gate phụ thuộc Windows chạy trong GitHub Actions: sidecar PyInstaller không có Python trên `PATH`, đường dẫn Unicode/dài, cancel, Open XML SDK, NSIS standard-user, Microsoft Defender, zero-egress khi khởi động và Windows Job Object không để process mồ côi. Xem ma trận tại [docs/m0-m1-acceptance.md](docs/m0-m1-acceptance.md).
 
 ## Build Windows
 
@@ -57,6 +61,8 @@ Xem yêu cầu môi trường, vị trí artifact và hướng dẫn ký ứng d
 
 Push tag `vMAJOR.MINOR.PATCH` sẽ chạy GitHub Actions để kiểm tra source, build Windows x64 cùng macOS arm64/Intel, tạo checksum và publish GitHub Release tự động.
 
+Build cá nhân dùng Windows self-signed certificate (`CN=SoatVan Personal Use`) và macOS ad-hoc identity `-`. Đây không phải chữ ký tin cậy công khai; xem giới hạn và cách xác minh trong [docs/build.md](docs/build.md).
+
 CI Windows build PyInstaller `onedir`, copy toàn bộ onedir vào Tauri resources, rồi build NSIS với WebView2 `offlineInstaller`. Model không nằm trong installer.
 
 Provisioning qua mạng chỉ được compile khi có đủ ba biến:
@@ -69,9 +75,9 @@ Không có cấu hình trên, lệnh tải fail-closed với `MODEL_NOT_CONFIGUR
 
 ## Trạng thái milestone
 
-- M0: source layout, protocol, persistent sidecar, crash/error boundary, safe DOCX ZIP validation, PyInstaller spec và Windows Job Object đã có. Việc chứng nhận “Word không repair” trên máy Windows sạch cần chạy acceptance corpus.
-- M1: workflow, 3 preset, technical/confusion/capitalization rules, NFC source mapping, annotation-only DOCX, collision-safe output, no-finding, Settings và SQLite/CSV đã có. Bộ âm tiết tiếng Việt production và quality corpus vẫn là data gate, chưa được giả lập bằng một wordlist nhỏ thiếu bằng chứng.
+- M0: source layout, protocol, persistent sidecar, crash/error boundary, safe DOCX ZIP validation, PyInstaller `onedir`, advanced golden DOCX và Windows Job Object đã được tự động hoá trong workflow `verify`.
+- M1: workflow, 3 preset, technical/confusion/capitalization/conservative-syllable rules, NFC source mapping, annotation-only DOCX, atomic no-clobber output, no-finding, Settings và SQLite/CSV đã có unit/property/security/contract/UI/performance tests.
 - M2: signed provisioning/import/download source đã có; model được giữ ở trạng thái `installed` cho đến khi `llama.cpp` classifier và benchmark 8/16 GB vượt gate. Prompt vì thế vẫn bị khóa fail-closed.
-- M3: Windows CI/NSIS/WebView2 offline config đã có. Authenticode, Defender và Word 2016/2019/365 cần certificate và runner/VM nghiệm thu thực tế.
+- M3: Windows CI/NSIS/WebView2 offline config, personal signing và Defender gate đã có. Developer ID/notarization và certificate công khai không nằm trong M0/M1.
 
-Quality gate recall/precision chưa thể tuyên bố đạt cho đến khi có 20 DOCX ẩn danh và ground truth do khách hàng duyệt.
+Corpus regression tổng hợp có 20 trường hợp và gate precision/recall tự động. Quality gate trên 20 DOCX thật vẫn cần bộ tài liệu ẩn danh và ground truth do người dùng duyệt; đây là evidence đầu vào, không được thay thế bằng dữ liệu giả.

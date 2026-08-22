@@ -5,10 +5,13 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+.coverage
+htmlcov/
 node_modules/
 dist/
 build/
 target/
+artifacts/
 apps/desktop/src-tauri/binaries/soatvan-engine-*
 apps/desktop/src-tauri/gen/
 apps/desktop/src-tauri/resources/engine/*

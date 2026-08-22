@@ -39,10 +39,15 @@ class SqliteDictionaryRepository:
     def list(self, query: str = "") -> list[DictionaryEntry]:
         with self._lock:
             rows = self._connection.execute(
-                "SELECT word, note FROM dictionary WHERE word LIKE ? ORDER BY word COLLATE NOCASE",
-                (f"%{query.strip()}%",),
+                "SELECT word, note FROM dictionary",
             ).fetchall()
-        return [DictionaryEntry(row["word"], row["note"]) for row in rows]
+        needle = unicodedata.normalize("NFC", query).strip().casefold()
+        entries = [
+            DictionaryEntry(row["word"], row["note"])
+            for row in rows
+            if not needle or needle in unicodedata.normalize("NFC", row["word"]).casefold()
+        ]
+        return sorted(entries, key=lambda entry: entry.word.casefold())
 
     def ignored_words(self) -> frozenset[str]:
         return frozenset(entry.word for entry in self.list())
@@ -50,15 +55,15 @@ class SqliteDictionaryRepository:
     def upsert(self, word: str, note: str = "") -> DictionaryEntry:
         entry = self._validate(word, note)
         with self._lock, self._connection:
-            self._connection.execute(
-                "INSERT INTO dictionary(word, note) VALUES (?, ?) ON CONFLICT(word) DO UPDATE SET note=excluded.note, updated_at=CURRENT_TIMESTAMP",
-                (entry.word, entry.note),
-            )
+            self._upsert(entry)
         return entry
 
     def delete(self, word: str) -> bool:
         with self._lock, self._connection:
-            cursor = self._connection.execute("DELETE FROM dictionary WHERE word = ?", (word,))
+            canonical = self._matching_word(word)
+            if canonical is None:
+                return False
+            cursor = self._connection.execute("DELETE FROM dictionary WHERE word = ?", (canonical,))
         return cursor.rowcount > 0
 
     def import_csv(self, path: Path) -> int:
@@ -69,11 +74,34 @@ class SqliteDictionaryRepository:
         entries = [self._validate(row.get("word", ""), row.get("note", "")) for row in reader]
         with self._lock, self._connection:
             for entry in entries:
-                self._connection.execute(
-                    "INSERT INTO dictionary(word, note) VALUES (?, ?) ON CONFLICT(word) DO UPDATE SET note=excluded.note, updated_at=CURRENT_TIMESTAMP",
-                    (entry.word, entry.note),
-                )
+                self._upsert(entry)
         return len(entries)
+
+    def _matching_word(self, word: str) -> str | None:
+        key = unicodedata.normalize("NFC", word).strip().casefold()
+        rows = self._connection.execute("SELECT word FROM dictionary").fetchall()
+        return next(
+            (
+                str(row["word"])
+                for row in rows
+                if unicodedata.normalize("NFC", row["word"]).casefold() == key
+            ),
+            None,
+        )
+
+    def _upsert(self, entry: DictionaryEntry) -> None:
+        existing = self._matching_word(entry.word)
+        if existing is not None:
+            self._connection.execute(
+                "UPDATE dictionary SET word = ?, note = ?, updated_at = CURRENT_TIMESTAMP "
+                "WHERE word = ?",
+                (entry.word, entry.note, existing),
+            )
+            return
+        self._connection.execute(
+            "INSERT INTO dictionary(word, note) VALUES (?, ?)",
+            (entry.word, entry.note),
+        )
 
     def export_csv(self, path: Path) -> int:
         entries = self.list()

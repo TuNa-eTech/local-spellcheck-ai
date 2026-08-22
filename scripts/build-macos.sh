@@ -7,7 +7,7 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 1
 fi
 
-for command_name in uv npm cargo rsync; do
+for command_name in uv npm cargo rsync codesign hdiutil; do
   if ! command -v "${command_name}" >/dev/null 2>&1; then
     echo "Loi: khong tim thay lenh '${command_name}'." >&2
     exit 1
@@ -19,6 +19,7 @@ repo_root="$(cd -- "${script_dir}/.." && pwd)"
 engine_resource_dir="${repo_root}/apps/desktop/src-tauri/resources/engine"
 engine_dist_dir="${repo_root}/engine/dist/soatvan-engine"
 dmg_dir="${repo_root}/apps/desktop/src-tauri/target/release/bundle/dmg"
+app_bundle="${repo_root}/apps/desktop/src-tauri/target/release/bundle/macos/SoátVăn.app"
 
 cd "${repo_root}"
 
@@ -42,12 +43,23 @@ rsync -a --delete --exclude README.txt "${engine_dist_dir}/" "${engine_resource_
 npm --prefix apps/desktop ci
 
 echo "[4/4] Build Tauri DMG"
-npm --prefix apps/desktop run tauri -- build --bundles dmg
+npm --prefix apps/desktop run tauri -- build --bundles app,dmg
+
+if [[ ! -d "${app_bundle}" ]]; then
+  echo "Loi: khong tim thay app bundle ${app_bundle}." >&2
+  exit 1
+fi
+
+codesign --verify --deep --strict --verbose=2 "${app_bundle}"
 
 if ! find "${dmg_dir}" -maxdepth 1 -type f -name '*.dmg' -print -quit | grep -q .; then
   echo "Loi: khong tim thay DMG trong ${dmg_dir}." >&2
   exit 1
 fi
+
+while IFS= read -r dmg_path; do
+  hdiutil verify "${dmg_path}"
+done < <(find "${dmg_dir}" -maxdepth 1 -type f -name '*.dmg' -print)
 
 echo "Build thanh cong:"
 find "${dmg_dir}" -maxdepth 1 -type f -name '*.dmg' -print

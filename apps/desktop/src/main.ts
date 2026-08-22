@@ -3,6 +3,8 @@ import { api } from "./api";
 import type { DictionaryEntry, DocumentInfo, JobResult, ModelStatus, Preset, Step } from "./contracts";
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
+let renderedStep: Step | null = null;
+let renderedSettings = false;
 const state: { step: Step; document: DocumentInfo | null; preset: Preset; prompt: string; jobId: string; progress: number; result: JobResult | null; model: ModelStatus; settings: boolean; tab: string; dictionary: DictionaryEntry[]; error: string } = {
   step: "file", document: null, preset: "standard", prompt: "", jobId: "", progress: 0,
   result: null, model: { state: "not_installed" }, settings: false, tab: "dictionary", dictionary: [], error: "",
@@ -18,16 +20,21 @@ function escape(value: string): string { const node = document.createElement("di
 function formatBytes(value: number): string { return `${(value / 1024 / 1024).toLocaleString("vi-VN", { maximumFractionDigits: 2 })} MB`; }
 
 function render(): void {
+  const focusStep = renderedStep !== state.step;
+  const focusSettings = !renderedSettings && state.settings;
   const doc = state.document;
   app.innerHTML = `
     <header class="app-header"><div class="brand"><span class="brand__mark">SV</span><div><strong>SoátVăn</strong><span>Kiểm tra văn bản trên máy</span></div></div><button class="button button--quiet" id="settings">⚙ Cài đặt</button></header>
     <main class="workflow-shell"><ol class="stepper" aria-label="Tiến trình">${["Chọn file", "Quy tắc", "Xử lý", "Kết quả"].map((label, index) => `<li class="${stepIndex() === index ? "active" : ""} ${stepIndex() > index ? "done" : ""}"><span>${index + 1}</span><strong>${label}</strong></li>`).join("")}</ol>
     ${state.step === "file" ? `<section class="workflow-card"><div class="section-copy"><p class="step-label">Bước 1</p><h1>Chọn tệp Word cần kiểm tra</h1><p>Ứng dụng tạo file kết quả mới; file gốc luôn bất biến.</p></div><button class="drop-zone" id="choose"><span class="drop-icon">⇧</span><strong>Chọn hoặc kéo thả tệp .docx</strong><span>Ctrl+O để mở nhanh</span></button>${errorHtml()}</section>` : ""}
     ${state.step === "rules" && doc ? `<section class="workflow-card"><button class="back-button" id="back">← Chọn file khác</button><div class="file-chip"><strong>${escape(doc.name)}</strong><span>${formatBytes(doc.size)} · ${doc.paragraph_count} đoạn · ${doc.table_cell_count} ô bảng</span></div><div class="section-copy"><p class="step-label">Bước 2</p><h1>Chọn quy tắc kiểm tra</h1></div><div class="preset-grid">${(Object.keys(presets) as Preset[]).map(key => `<label class="preset ${state.preset === key ? "selected" : ""}"><input type="radio" name="preset" value="${key}" ${state.preset === key ? "checked" : ""}><strong>${presets[key].title}</strong><span>${presets[key].copy}</span></label>`).join("")}</div><label class="field"><span>Prompt quy tắc riêng <small>${state.model.state === "ready" ? "Model đã sẵn sàng" : "Cần cài model AI"}</small></span><textarea id="prompt" rows="4" maxlength="1000" ${state.model.state !== "ready" ? "disabled" : ""} placeholder="Ví dụ: ưu tiên thuật ngữ của đơn vị…">${escape(state.prompt)}</textarea></label><div class="workflow-actions"><button class="button button--primary" id="start">Bắt đầu xử lý →</button></div>${errorHtml()}</section>` : ""}
-    ${state.step === "processing" ? `<section class="workflow-card centered"><span class="spinner"></span><div class="section-copy center"><p class="step-label">Bước 3</p><h1>${progressTitle()}</h1><p>Mọi xử lý tài liệu diễn ra trên máy này.</p></div><div class="progress"><span style="width:${state.progress}%"></span></div><strong>${state.progress}%</strong><button class="button button--secondary" id="cancel">Dừng xử lý</button></section>` : ""}
+    ${state.step === "processing" ? `<section class="workflow-card centered" role="status" aria-live="polite"><span class="spinner"></span><div class="section-copy center"><p class="step-label">Bước 3</p><h1>${progressTitle()}</h1><p>Mọi xử lý tài liệu diễn ra trên máy này.</p></div><div class="progress"><span style="width:${state.progress}%"></span></div><strong>${state.progress}%</strong><button class="button button--secondary" id="cancel">Dừng xử lý</button></section>` : ""}
     ${(state.step === "result" || state.step === "no-findings") ? resultHtml() : ""}
     </main><footer class="status-bar"><span>● Xử lý cục bộ · không gửi nội dung tài liệu lên mạng</span><span>v0.1.0</span></footer>${state.settings ? settingsHtml() : ""}`;
   bind();
+  renderedStep = state.step;
+  renderedSettings = state.settings;
+  if (focusStep || focusSettings) queueMicrotask(() => { const target = document.querySelector<HTMLElement>(focusSettings ? "#settings-title" : ".workflow-card h1"); target?.setAttribute("tabindex", "-1"); target?.focus(); });
 }
 
 function stepIndex(): number { return state.step === "file" ? 0 : state.step === "rules" ? 1 : state.step === "processing" ? 2 : 3; }
@@ -76,13 +83,14 @@ async function choose(): Promise<void> { try { const selected = await api.choose
 function reset(): void { Object.assign(state, { step: "file", document: null, result: null, progress: 0, error: "", prompt: "", jobId: "" }); render(); }
 async function start(): Promise<void> {
   if (!state.document) return;
-  state.step = "processing"; state.progress = 0; state.jobId = crypto.randomUUID(); state.error = ""; render();
-  const unlisten = await api.onProgress(event => { state.progress = event.percent; render(); });
-  try { const result = await api.startJob(state.jobId, state.document.path, state.preset, state.prompt); state.result = result; state.step = result.status === "no_findings" ? "no-findings" : "result"; }
-  catch { state.step = "rules"; state.error = "Không thể xử lý tệp. File gốc không bị thay đổi."; }
+  const currentJobId = crypto.randomUUID();
+  state.step = "processing"; state.progress = 0; state.jobId = currentJobId; state.error = ""; render();
+  const unlisten = await api.onProgress(event => { if (state.jobId === currentJobId && event.job_id === currentJobId) { state.progress = event.percent; render(); } });
+  try { const result = await api.startJob(currentJobId, state.document.path, state.preset, state.prompt); if (state.jobId === currentJobId && state.step === "processing") { state.result = result; state.step = result.status === "no_findings" ? "no-findings" : "result"; } }
+  catch { if (state.jobId === currentJobId && state.step === "processing") { state.step = "rules"; state.error = "Không thể xử lý tệp. File gốc không bị thay đổi."; } }
   finally { unlisten(); render(); }
 }
-async function cancel(): Promise<void> { await api.cancelJob(state.jobId); state.step = "rules"; state.progress = 0; render(); }
+async function cancel(): Promise<void> { const cancelledJobId = state.jobId; await api.cancelJob(cancelledJobId); if (state.jobId === cancelledJobId) { state.jobId = ""; state.step = "rules"; state.progress = 0; render(); } }
 async function openSettings(): Promise<void> { state.settings = true; state.model = await api.modelStatus(); await loadDictionary(); }
 async function loadDictionary(query = ""): Promise<void> { try { state.dictionary = await api.dictionaryList(query); } catch { state.dictionary = []; } render(); }
 async function saveWord(event: SubmitEvent): Promise<void> { event.preventDefault(); const data = new FormData(event.currentTarget as HTMLFormElement); await api.dictionaryUpsert(String(data.get("word")), String(data.get("note"))); await loadDictionary(); }
@@ -91,7 +99,7 @@ async function importCsv(): Promise<void> { await api.dictionaryImport(); await 
 async function modelImport(): Promise<void> { const status = await api.modelImport(); if (status) state.model = status; render(); }
 async function modelAction(): Promise<void> { state.model = ["ready", "installed"].includes(state.model.state) ? await api.modelRemove() : await api.modelDownload(); render(); }
 
-window.addEventListener("keydown", event => { if (event.ctrlKey && event.key.toLowerCase() === "o") { event.preventDefault(); void choose(); } if (event.key === "Escape" && state.settings) { state.settings = false; render(); } });
+window.addEventListener("keydown", event => { const target = event.target; const editing = target instanceof HTMLElement && target.matches("input, textarea, select"); if (event.ctrlKey && event.key.toLowerCase() === "o") { event.preventDefault(); void choose(); } if (event.key === "Escape" && state.settings && !editing) { state.settings = false; render(); } });
 window.addEventListener("dragover", event => event.preventDefault());
 window.addEventListener("drop", event => { event.preventDefault(); const path = (event.dataTransfer?.files[0] as File & { path?: string })?.path; if (path) void api.inspectDropped(path).then(info => { state.document = info; state.step = "rules"; render(); }); });
 

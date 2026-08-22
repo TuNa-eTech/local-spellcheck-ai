@@ -12,6 +12,21 @@ class Preset(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class RuleConfig:
+    technical: bool
+    repeated_words: bool
+    confusions: bool
+    syllables: bool
+    administrative_capitalization: bool
+
+    @classmethod
+    def for_preset(cls, preset: Preset) -> RuleConfig:
+        if preset is Preset.SPELLING:
+            return cls(False, False, True, True, False)
+        return cls(True, True, True, True, preset is Preset.ADMINISTRATIVE)
+
+
+@dataclass(frozen=True, slots=True)
 class Block:
     id: str
     text: str

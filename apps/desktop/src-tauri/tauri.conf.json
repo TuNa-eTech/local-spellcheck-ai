@@ -20,6 +20,9 @@
     "icon": ["icons/icon.png"],
     "targets": ["nsis"],
     "resources": { "resources/engine/": "engine/" },
+    "macOS": {
+      "signingIdentity": "-"
+    },
     "windows": {
       "webviewInstallMode": { "type": "offlineInstaller" },
       "nsis": { "installMode": "currentUser" }

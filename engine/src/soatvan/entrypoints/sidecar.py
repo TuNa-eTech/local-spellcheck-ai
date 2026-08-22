@@ -18,6 +18,34 @@ from soatvan.workflow import ProcessDocument, ProcessRequest
 
 MAX_FRAME = 1024 * 1024
 EMIT_LOCK = threading.Lock()
+PUBLIC_METHODS = frozenset(
+    {
+        "engine.hello",
+        "document.inspect",
+        "job.start",
+        "job.cancel",
+        "dictionary.list",
+        "dictionary.upsert",
+        "dictionary.delete",
+        "dictionary.import",
+        "dictionary.export",
+        "model.status",
+        "model.download",
+        "model.import",
+        "model.cancel",
+        "model.remove",
+    }
+)
+PUBLIC_EVENTS = frozenset(
+    {
+        "job.progress",
+        "job.completed",
+        "job.no_findings",
+        "job.failed",
+        "model.progress",
+        "model.state_changed",
+    }
+)
 
 
 class CancelledError(RuntimeError):
@@ -177,6 +205,25 @@ class Sidecar:
         return self.models.status()
 
 
+def validate_request(frame: object) -> tuple[str, str, dict[str, Any]]:
+    if not isinstance(frame, dict) or set(frame) != {"v", "id", "method", "params"}:
+        raise ValueError("INVALID_FRAME")
+    request_id = frame["id"]
+    method = frame["method"]
+    params = frame["params"]
+    if (
+        not isinstance(request_id, str)
+        or not request_id
+        or not isinstance(method, str)
+        or not method
+        or not isinstance(params, dict)
+    ):
+        raise ValueError("INVALID_FRAME")
+    if frame["v"] != PROTOCOL_VERSION:
+        raise ValueError("PROTOCOL_MISMATCH")
+    return request_id, method, params
+
+
 def emit(frame: dict[str, Any]) -> None:
     with EMIT_LOCK:
         sys.stdout.write(json.dumps(frame, ensure_ascii=False, separators=(",", ":")) + "\n")
@@ -190,6 +237,8 @@ def error_code(error: Exception) -> str:
         return str(error)
     if isinstance(error, CancelledError):
         return "JOB_CANCELLED"
+    if isinstance(error, (json.JSONDecodeError, UnicodeDecodeError)):
+        return "INVALID_FRAME"
     if isinstance(error, ValueError) and str(error).isupper():
         return str(error)
     return "ENGINE_INTERNAL_ERROR"
@@ -203,10 +252,8 @@ def main() -> None:
             if len(raw) > MAX_FRAME:
                 raise ValueError("FRAME_TOO_LARGE")
             frame = json.loads(raw.decode("utf-8"))
-            request_id = str(frame.get("id", ""))
-            if frame.get("v") != PROTOCOL_VERSION:
-                raise ValueError("PROTOCOL_MISMATCH")
-            result = sidecar.dispatch(str(frame["method"]), dict(frame.get("params", {})))
+            request_id, method, params = validate_request(frame)
+            result = sidecar.dispatch(method, params)
             emit({"v": 1, "id": request_id, "ok": True, "result": result})
         except Exception as error:  # protocol boundary intentionally catches all failures
             code = error_code(error)
@@ -228,9 +275,11 @@ def safe_message(code: str) -> str:
         "DOCUMENT_INVALID_PACKAGE": "Không thể đọc cấu trúc tệp Word.",
         "DOCUMENT_UNSAFE_ZIP_ENTRY": "Tệp Word chứa đường dẫn không an toàn.",
         "DOCUMENT_ARCHIVE_LIMIT": "Tệp Word vượt giới hạn an toàn.",
+        "OUTPUT_SOURCE_CONFLICT": "Không thể ghi đè tệp nguồn.",
         "JOB_CANCELLED": "Đã dừng xử lý.",
         "PROTOCOL_MISMATCH": "Phiên bản engine không tương thích.",
         "FRAME_TOO_LARGE": "Yêu cầu vượt kích thước cho phép.",
+        "INVALID_FRAME": "Khung giao tiếp không hợp lệ.",
         "METHOD_NOT_FOUND": "Lệnh không được hỗ trợ.",
         "INVALID_PARAMS": "Tham số không hợp lệ.",
         "CSV_INVALID_HEADER": "CSV phải có hai cột word,note.",

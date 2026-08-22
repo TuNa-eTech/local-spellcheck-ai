@@ -143,8 +143,7 @@ async fn start_job(
             counts: json!({}),
         });
     }
-    let output = collision_safe_output(&source)?;
-    fs::rename(&temporary_path, &output).map_err(|_| AppError::OutputWrite)?;
+    let output = finalize_output(&source, &temporary_path)?;
     Ok(JobResult {
         job_id,
         status: "completed".into(),
@@ -365,21 +364,30 @@ fn validate_docx(path: &Path) -> AppResult<PathBuf> {
     Ok(canonical)
 }
 
-fn collision_safe_output(source: &Path) -> AppResult<PathBuf> {
+fn output_candidate(source: &Path, index: usize) -> AppResult<PathBuf> {
     let parent = source.parent().ok_or(AppError::InvalidPath)?;
     let stem = source
         .file_stem()
         .and_then(|value| value.to_str())
         .ok_or(AppError::InvalidPath)?;
+    let suffix = if index == 1 {
+        String::new()
+    } else {
+        format!("-{index}")
+    };
+    Ok(parent.join(format!("{stem}-soat{suffix}.docx")))
+}
+
+fn finalize_output(source: &Path, temporary: &Path) -> AppResult<PathBuf> {
     for index in 1..=10_000 {
-        let suffix = if index == 1 {
-            String::new()
-        } else {
-            format!("-{index}")
-        };
-        let candidate = parent.join(format!("{stem}-soat{suffix}.docx"));
-        if !candidate.exists() {
-            return Ok(candidate);
+        let candidate = output_candidate(source, index)?;
+        match fs::hard_link(temporary, &candidate) {
+            Ok(()) => {
+                let _ = fs::remove_file(temporary);
+                return Ok(candidate);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return Err(AppError::OutputWrite),
         }
     }
     Err(AppError::OutputWrite)
@@ -438,13 +446,17 @@ mod tests {
         let source = folder.path().join("văn bản.docx");
         fs::write(&source, b"source").unwrap();
         assert_eq!(
-            collision_safe_output(&source).unwrap().file_name().unwrap(),
+            output_candidate(&source, 1).unwrap().file_name().unwrap(),
             "văn bản-soat.docx"
         );
-        fs::write(folder.path().join("văn bản-soat.docx"), b"old").unwrap();
-        assert_eq!(
-            collision_safe_output(&source).unwrap().file_name().unwrap(),
-            "văn bản-soat-2.docx"
-        );
+        let existing = folder.path().join("văn bản-soat.docx");
+        fs::write(&existing, b"old").unwrap();
+        let temporary = folder.path().join(".temporary.docx");
+        fs::write(&temporary, b"new").unwrap();
+        let output = finalize_output(&source, &temporary).unwrap();
+        assert_eq!(output.file_name().unwrap(), "văn bản-soat-2.docx");
+        assert_eq!(fs::read(existing).unwrap(), b"old");
+        assert_eq!(fs::read(output).unwrap(), b"new");
+        assert!(!temporary.exists());
     }
 }

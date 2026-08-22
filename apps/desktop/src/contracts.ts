@@ -15,7 +15,7 @@ export interface JobResult {
   status: "completed" | "no_findings";
   output_path: string | null;
   finding_count: number;
-  counts: Record<string, number>;
+  counts: { category: Record<string, number>; origin: Record<string, number> } | Record<string, never>;
 }
 
 export interface ProgressEvent {

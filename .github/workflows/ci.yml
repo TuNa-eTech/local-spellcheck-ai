@@ -16,14 +16,35 @@ jobs:
       - run: uv sync --project engine --extra dev --locked
       - run: uv run --project engine ruff check engine
       - run: uv run --project engine mypy --config-file engine/pyproject.toml
-      - run: uv run --project engine pytest engine
+      - run: uv run --project engine pytest --cov=soatvan --cov-report=term-missing --cov-fail-under=85 engine
       - name: Build Python onedir
         working-directory: engine
         run: uv run pyinstaller --clean --noconfirm soatvan-engine.spec
+      - name: Run frozen sidecar acceptance without Python on PATH
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts/windows-acceptance | Out-Null
+          uv run --project engine python engine/tests/windows_frozen_acceptance.py `
+            --engine engine/dist/soatvan-engine/soatvan-engine.exe `
+            --artifacts artifacts/windows-acceptance
+      - name: Generate advanced golden DOCX output
+        shell: pwsh
+        env:
+          SOATVAN_ACCEPTANCE_OUTPUT: artifacts/windows-acceptance/golden-output.docx
+        run: uv run --project engine pytest engine/tests/test_docx.py::test_golden_package_preserves_unsupported_parts_and_existing_annotations
+      - name: Validate generated DOCX with Open XML SDK
+        shell: pwsh
+        run: |
+          $documents = Get-ChildItem artifacts/windows-acceptance/*.docx
+          dotnet run --project tools/OpenXmlValidator/OpenXmlValidator.csproj -- $documents.FullName
       - uses: actions/upload-artifact@v4
         with:
           name: engine-windows-x64
           path: engine/dist/soatvan-engine/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: m0-m1-windows-docx-evidence
+          path: artifacts/windows-acceptance/
 
   desktop:
     needs: engine
@@ -41,11 +62,15 @@ jobs:
         with: { node-version: "24", cache: npm, cache-dependency-path: apps/desktop/package-lock.json }
       - run: npm ci
         working-directory: apps/desktop
+      - run: npm test
+        working-directory: apps/desktop
       - run: npm run build
         working-directory: apps/desktop
       - run: cargo fmt --check
         working-directory: apps/desktop/src-tauri
       - run: cargo test
+        working-directory: apps/desktop/src-tauri
+      - run: cargo clippy --all-targets -- -D warnings
         working-directory: apps/desktop/src-tauri
       - name: Build offline NSIS installer
         run: npm run tauri build -- --bundles nsis
@@ -54,6 +79,12 @@ jobs:
           SOATVAN_MODEL_ENDPOINT: ${{ vars.SOATVAN_MODEL_ENDPOINT }}
           SOATVAN_MODEL_ALLOWLIST: ${{ vars.SOATVAN_MODEL_ALLOWLIST }}
           SOATVAN_MODEL_PUBLIC_KEY: ${{ vars.SOATVAN_MODEL_PUBLIC_KEY }}
+      - name: Install, launch and verify process lifecycle without egress
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem apps/desktop/src-tauri/target/release/bundle/nsis/*.exe | Select-Object -First 1
+          if (-not $installer) { throw "NSIS installer not found" }
+          ./scripts/test-windows-package.ps1 -InstallerPath $installer.FullName
       - name: Verify Authenticode when release certificate is configured
         if: ${{ vars.AUTHENTICODE_ENABLED == 'true' }}
         shell: pwsh
