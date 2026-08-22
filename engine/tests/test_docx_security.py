@@ -29,7 +29,17 @@ def _rewrite(source: Path, target: Path, replacements: dict[str, bytes]) -> Path
 def test_rejects_unsafe_zip_paths(make_docx, tmp_path: Path, unsafe_name: str) -> None:
     source = make_docx([["Nội dung"]])
     target = tmp_path / "unsafe.docx"
-    _rewrite(source, target, {unsafe_name: b"unsafe"})
+    archive_name = unsafe_name.replace("\\", "/")
+    _rewrite(source, target, {archive_name: b"unsafe"})
+    if "\\" in unsafe_name:
+        # zipfile normalizes backslashes while writing on Windows. Patch the
+        # equal-length local and central-directory names so the fixture remains
+        # a genuinely crafted archive on every host OS.
+        safe_bytes = archive_name.encode("ascii")
+        unsafe_bytes = unsafe_name.encode("ascii")
+        archive_bytes = target.read_bytes()
+        assert archive_bytes.count(safe_bytes) >= 2
+        target.write_bytes(archive_bytes.replace(safe_bytes, unsafe_bytes))
     with pytest.raises(InvalidDocument, match="DOCUMENT_UNSAFE_ZIP_ENTRY"):
         DocxPackage().inspect(target)
 
