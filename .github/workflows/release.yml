@@ -1,0 +1,192 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "24"
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  verify:
+    name: Verify release source
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: engine/uv.lock
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: clippy, rustfmt
+
+      - name: Verify tag matches application versions
+        run: uv run --project engine python scripts/check-release-version.py "${{ github.ref_name }}"
+
+      - name: Verify tagged commit belongs to main
+        shell: bash
+        run: git merge-base --is-ancestor "${GITHUB_SHA}" origin/main
+
+      - name: Verify Python engine
+        shell: pwsh
+        run: |
+          uv sync --project engine --extra dev --locked
+          uv run --project engine ruff check engine
+          uv run --project engine mypy --config-file engine/pyproject.toml
+          uv run --project engine pytest engine
+
+      - name: Verify frontend
+        working-directory: apps/desktop
+        run: |
+          npm ci
+          npm run build
+
+      - name: Verify Rust host
+        working-directory: apps/desktop/src-tauri
+        run: |
+          cargo fmt --check
+          cargo test --locked
+
+  build-windows:
+    name: Build Windows x64
+    needs: verify
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: engine/uv.lock
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@1.98.0
+
+      - name: Build NSIS installer
+        run: npm run build:windows
+        env:
+          SOATVAN_MODEL_ENDPOINT: ${{ vars.SOATVAN_MODEL_ENDPOINT }}
+          SOATVAN_MODEL_ALLOWLIST: ${{ vars.SOATVAN_MODEL_ALLOWLIST }}
+          SOATVAN_MODEL_PUBLIC_KEY: ${{ vars.SOATVAN_MODEL_PUBLIC_KEY }}
+
+      - name: Give release asset a stable name
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem "apps/desktop/src-tauri/target/release/bundle/nsis/*.exe" | Select-Object -First 1
+          if (-not $installer) { throw "NSIS installer not found" }
+          New-Item -ItemType Directory -Force release-assets | Out-Null
+          Copy-Item -LiteralPath $installer.FullName -Destination "release-assets/SoatVan-${{ github.ref_name }}-windows-x64-setup.exe"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows-x64
+          path: release-assets/*.exe
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  build-macos:
+    name: Build macOS ${{ matrix.arch }}
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: engine/uv.lock
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@1.98.0
+
+      - name: Build DMG
+        run: npm run build:macos
+        env:
+          SOATVAN_MODEL_ENDPOINT: ${{ vars.SOATVAN_MODEL_ENDPOINT }}
+          SOATVAN_MODEL_ALLOWLIST: ${{ vars.SOATVAN_MODEL_ALLOWLIST }}
+          SOATVAN_MODEL_PUBLIC_KEY: ${{ vars.SOATVAN_MODEL_PUBLIC_KEY }}
+
+      - name: Give release asset a stable name
+        shell: bash
+        run: |
+          dmg_path="$(find apps/desktop/src-tauri/target/release/bundle/dmg -maxdepth 1 -type f -name '*.dmg' -print -quit)"
+          test -n "${dmg_path}"
+          mkdir -p release-assets
+          cp "${dmg_path}" "release-assets/SoatVan-${{ github.ref_name }}-macos-${{ matrix.arch }}.dmg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-macos-${{ matrix.arch }}
+          path: release-assets/*.dmg
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create SHA-256 checksums
+        working-directory: release-assets
+        run: sha256sum SoatVan-* > SHA256SUMS.txt
+
+      - name: Publish release and assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" release-assets/* \
+            --repo "${{ github.repository }}" \
+            --verify-tag \
+            --generate-notes \
+            --title "SoátVăn ${{ github.ref_name }}"

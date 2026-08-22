@@ -2,6 +2,8 @@ name: verify
 
 on:
   push:
+    branches:
+      - "**"
   pull_request:
 
 jobs:
@@ -32,7 +34,9 @@ jobs:
         with:
           name: engine-windows-x64
           path: apps/desktop/src-tauri/resources/engine/
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: clippy, rustfmt
       - uses: actions/setup-node@v4
         with: { node-version: "24", cache: npm, cache-dependency-path: apps/desktop/package-lock.json }
       - run: npm ci

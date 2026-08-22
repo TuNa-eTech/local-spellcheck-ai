@@ -39,6 +39,24 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
 
 ## Build Windows
 
+Build bộ cài NSIS `.exe` trên Windows:
+
+```powershell
+npm run build:windows
+```
+
+Build file `.dmg` trên macOS:
+
+```sh
+npm run build:macos
+```
+
+Hai script tự đồng bộ dependency, build Python sidecar bằng PyInstaller `onedir`, copy sidecar vào Tauri resources và đóng gói ứng dụng. Không thể dùng sidecar build trên một hệ điều hành hoặc kiến trúc CPU cho hệ điều hành khác.
+
+Xem yêu cầu môi trường, vị trí artifact và hướng dẫn ký ứng dụng tại [docs/build.md](docs/build.md).
+
+Push tag `vMAJOR.MINOR.PATCH` sẽ chạy GitHub Actions để kiểm tra source, build Windows x64 cùng macOS arm64/Intel, tạo checksum và publish GitHub Release tự động.
+
 CI Windows build PyInstaller `onedir`, copy toàn bộ onedir vào Tauri resources, rồi build NSIS với WebView2 `offlineInstaller`. Model không nằm trong installer.
 
 Provisioning qua mạng chỉ được compile khi có đủ ba biến:

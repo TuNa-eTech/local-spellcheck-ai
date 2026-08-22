@@ -4,6 +4,8 @@
   "scripts": {
     "dev": "npm --prefix apps/desktop run dev",
     "build": "npm --prefix apps/desktop run build",
+    "build:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1",
+    "build:macos": "bash scripts/build-macos.sh",
     "tauri": "npm --prefix apps/desktop run tauri",
     "test:engine": "uv run --project engine pytest",
     "check:engine": "uv run --project engine ruff check engine && uv run --project engine mypy --config-file engine/pyproject.toml"
