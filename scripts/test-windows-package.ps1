@@ -18,6 +18,8 @@ $publicInstaller = Join-Path $env:PUBLIC "SoatVan-Acceptance-$PID.exe"
 $installDir = $null
 $hostProcess = $null
 $scanProcess = $null
+$appStdout = Join-Path $env:PUBLIC "SoatVan-Acceptance-$PID.stdout.log"
+$appStderr = Join-Path $env:PUBLIC "SoatVan-Acceptance-$PID.stderr.log"
 $ownedIds = [System.Collections.Generic.HashSet[int]]::new()
 
 try {
@@ -95,7 +97,8 @@ try {
 
     Write-Host "[acceptance] Launch packaged desktop and sidecar as standard user"
     $hostProcess = Start-Process -FilePath $application.FullName `
-        -Credential $credential -LoadUserProfile -WorkingDirectory $installDir -PassThru
+        -Credential $credential -LoadUserProfile -WorkingDirectory $installDir `
+        -RedirectStandardOutput $appStdout -RedirectStandardError $appStderr -PassThru
     Start-Sleep -Seconds 8
     if ($hostProcess.HasExited) {
         throw "Installed application exited during startup"
@@ -120,7 +123,8 @@ try {
         $globalEngines = @(Get-CimInstance Win32_Process -Filter "Name = 'soatvan-engine.exe'" |
             Select-Object Name, ProcessId, ParentProcessId, ExecutablePath |
             ConvertTo-Json -Compress)
-        throw "Packaged sidecar did not start. Tree=$treeDescription GlobalEngines=$globalEngines"
+        $stderr = Get-Content -LiteralPath $appStderr -Raw -ErrorAction SilentlyContinue
+        throw "Packaged sidecar did not start. Tree=$treeDescription GlobalEngines=$globalEngines Stderr=$stderr"
     }
     foreach ($process in $ownedProcesses) {
         $owner = Invoke-CimMethod -InputObject $process -MethodName GetOwner
@@ -189,6 +193,8 @@ finally {
             ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     }
     Remove-Item -LiteralPath $publicInstaller -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $appStdout -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $appStderr -Force -ErrorAction SilentlyContinue
     if ($installDir) {
         Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
     }

@@ -232,6 +232,10 @@ fn attach_kill_on_parent(child: &Child) -> AppResult<ParentJob> {
     unsafe {
         let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
         if job.is_null() {
+            eprintln!(
+                "soatvan: CreateJobObjectW failed: {}",
+                std::io::Error::last_os_error()
+            );
             return Err(AppError::EngineUnavailable);
         }
         let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
@@ -243,15 +247,23 @@ fn attach_kill_on_parent(child: &Child) -> AppResult<ParentJob> {
             size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
         ) == 0
         {
+            let error = std::io::Error::last_os_error();
             CloseHandle(job);
+            eprintln!("soatvan: SetInformationJobObject failed: {error}");
             return Err(AppError::EngineUnavailable);
         }
         let process = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, child.id());
-        if process.is_null() || AssignProcessToJobObject(job, process) == 0 {
-            if !process.is_null() {
-                CloseHandle(process);
-            }
+        if process.is_null() {
+            let error = std::io::Error::last_os_error();
             CloseHandle(job);
+            eprintln!("soatvan: OpenProcess for sidecar failed: {error}");
+            return Err(AppError::EngineUnavailable);
+        }
+        if AssignProcessToJobObject(job, process) == 0 {
+            let error = std::io::Error::last_os_error();
+            CloseHandle(process);
+            CloseHandle(job);
+            eprintln!("soatvan: AssignProcessToJobObject failed: {error}");
             return Err(AppError::EngineUnavailable);
         }
         CloseHandle(process);
