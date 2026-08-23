@@ -18,8 +18,12 @@ $publicInstaller = Join-Path $env:PUBLIC "SoatVan-Acceptance-$PID.exe"
 $installDir = $null
 $hostProcess = $null
 $scanProcess = $null
+$probeProcess = $null
 $appStdout = Join-Path $env:PUBLIC "SoatVan-Acceptance-$PID.stdout.log"
 $appStderr = Join-Path $env:PUBLIC "SoatVan-Acceptance-$PID.stderr.log"
+$probeInput = Join-Path $env:PUBLIC "SoatVan-Acceptance-$PID.engine.in"
+$probeOutput = Join-Path $env:PUBLIC "SoatVan-Acceptance-$PID.engine.out"
+$probeError = Join-Path $env:PUBLIC "SoatVan-Acceptance-$PID.engine.err"
 $ownedIds = [System.Collections.Generic.HashSet[int]]::new()
 
 try {
@@ -72,6 +76,27 @@ try {
         throw "Expected one packaged sidecar, found $($packagedEngines.Count)"
     }
     Write-Host "[acceptance] Packaged sidecar: $($packagedEngines[0].FullName)"
+    Write-Host "[acceptance] Probe packaged sidecar under standard-user credential"
+    '{"v":1,"id":"acceptance-hello","method":"engine.hello","params":{}}' |
+        Set-Content -LiteralPath $probeInput -Encoding utf8NoBOM
+    $probeProcess = Start-Process -FilePath $packagedEngines[0].FullName `
+        -Credential $credential -LoadUserProfile `
+        -WorkingDirectory $packagedEngines[0].Directory.FullName `
+        -RedirectStandardInput $probeInput -RedirectStandardOutput $probeOutput `
+        -RedirectStandardError $probeError -PassThru
+    $probeDeadline = (Get-Date).AddSeconds(15)
+    while (-not $probeProcess.HasExited -and (Get-Date) -lt $probeDeadline) {
+        Start-Sleep -Milliseconds 250
+    }
+    if (-not $probeProcess.HasExited) {
+        Stop-Process -Id $probeProcess.Id -Force -ErrorAction SilentlyContinue
+        throw "Packaged sidecar probe exceeded 15 seconds"
+    }
+    $probeStdout = Get-Content -LiteralPath $probeOutput -Raw -ErrorAction SilentlyContinue
+    $probeStderr = Get-Content -LiteralPath $probeError -Raw -ErrorAction SilentlyContinue
+    if ($probeProcess.ExitCode -ne 0 -or $probeStdout -notmatch '"protocol"\s*:\s*1') {
+        throw "Packaged sidecar probe failed: exit=$($probeProcess.ExitCode) stdout=$probeStdout stderr=$probeStderr"
+    }
 
     Write-Host "[acceptance] Verify installer and application manifests"
     $manifestPath = Join-Path $env:RUNNER_TEMP "soatvan-app.manifest"
@@ -181,6 +206,9 @@ try {
     Write-Host "[acceptance] Windows package acceptance passed"
 }
 finally {
+    if ($probeProcess -and -not $probeProcess.HasExited) {
+        Stop-Process -Id $probeProcess.Id -Force -ErrorAction SilentlyContinue
+    }
     if ($scanProcess -and -not $scanProcess.HasExited) {
         Stop-Process -Id $scanProcess.Id -Force -ErrorAction SilentlyContinue
     }
@@ -195,6 +223,9 @@ finally {
     Remove-Item -LiteralPath $publicInstaller -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $appStdout -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $appStderr -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $probeInput -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $probeOutput -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $probeError -Force -ErrorAction SilentlyContinue
     if ($installDir) {
         Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
     }
