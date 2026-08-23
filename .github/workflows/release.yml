@@ -124,6 +124,7 @@ jobs:
           SOATVAN_MODEL_PUBLIC_KEY: ${{ vars.SOATVAN_MODEL_PUBLIC_KEY }}
 
       - name: Run Windows M0/M1 acceptance
+        timeout-minutes: 20
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force artifacts/windows-acceptance | Out-Null
