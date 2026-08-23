@@ -65,6 +65,11 @@ try {
             Select-Object -ExpandProperty FullName)
         throw "Installed application not found. Executables: $($installedExecutables -join ', ')"
     }
+    $packagedEngines = @(Get-ChildItem $installDir -Recurse -Filter "soatvan-engine.exe")
+    if ($packagedEngines.Count -ne 1) {
+        throw "Expected one packaged sidecar, found $($packagedEngines.Count)"
+    }
+    Write-Host "[acceptance] Packaged sidecar: $($packagedEngines[0].FullName)"
 
     Write-Host "[acceptance] Verify installer and application manifests"
     $manifestPath = Join-Path $env:RUNNER_TEMP "soatvan-app.manifest"
@@ -110,7 +115,12 @@ try {
     })
     $engineProcesses = @($ownedProcesses | Where-Object { $_.Name -eq "soatvan-engine.exe" })
     if ($engineProcesses.Count -eq 0) {
-        throw "Packaged sidecar did not start"
+        $treeDescription = @($ownedProcesses | Select-Object Name, ProcessId, ParentProcessId |
+            ConvertTo-Json -Compress)
+        $globalEngines = @(Get-CimInstance Win32_Process -Filter "Name = 'soatvan-engine.exe'" |
+            Select-Object Name, ProcessId, ParentProcessId, ExecutablePath |
+            ConvertTo-Json -Compress)
+        throw "Packaged sidecar did not start. Tree=$treeDescription GlobalEngines=$globalEngines"
     }
     foreach ($process in $ownedProcesses) {
         $owner = Invoke-CimMethod -InputObject $process -MethodName GetOwner
