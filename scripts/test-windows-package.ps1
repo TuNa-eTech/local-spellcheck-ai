@@ -14,13 +14,14 @@ $credential = [System.Management.Automation.PSCredential]::new(
 )
 $testUser = $null
 $testUserSid = $null
-$profilePath = $null
 $publicInstaller = Join-Path $env:PUBLIC "SoatVan-Acceptance-$PID.exe"
 $installDir = $null
 $hostProcess = $null
+$scanProcess = $null
 $ownedIds = [System.Collections.Generic.HashSet[int]]::new()
 
 try {
+    Write-Host "[acceptance] Create ephemeral standard-user account"
     $testUser = New-LocalUser -Name $userName -Password $securePassword `
         -PasswordNeverExpires -UserMayNotChangePassword `
         -Description "Ephemeral SoatVan GitHub Actions acceptance user"
@@ -48,8 +49,8 @@ try {
     if (-not $profile -or -not $profile.LocalPath) {
         throw "Standard-user profile was not created"
     }
-    $profilePath = $profile.LocalPath
-    $installDir = Join-Path $profilePath "AppData\Local\Programs\SoatVan-Acceptance"
+    $installDir = Join-Path $profile.LocalPath "AppData\Local\Programs\SoatVan-Acceptance"
+    Write-Host "[acceptance] Install NSIS package as $userName"
     Copy-Item -LiteralPath $installer.FullName -Destination $publicInstaller
     $install = Start-Process -FilePath $publicInstaller `
         -ArgumentList @("/S", "/D=$installDir") -Credential $credential -LoadUserProfile `
@@ -65,6 +66,7 @@ try {
         throw "Installed application not found. Executables: $($installedExecutables -join ', ')"
     }
 
+    Write-Host "[acceptance] Verify installer and application manifests"
     $manifestPath = Join-Path $env:RUNNER_TEMP "soatvan-app.manifest"
     $manifestTool = Get-Command mt.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source
     if (-not $manifestTool) {
@@ -86,6 +88,7 @@ try {
         throw "Application manifest is not standard-user/asInvoker"
     }
 
+    Write-Host "[acceptance] Launch packaged desktop and sidecar as standard user"
     $hostProcess = Start-Process -FilePath $application.FullName `
         -Credential $credential -LoadUserProfile -WorkingDirectory $installDir -PassThru
     Start-Sleep -Seconds 8
@@ -123,6 +126,7 @@ try {
         throw "Unexpected application egress: $($connections | Out-String)"
     }
 
+    Write-Host "[acceptance] Verify packaged process tree terminates with host"
     Stop-Process -Id $hostProcess.Id -Force
     $hostProcess = $null
     $deadline = (Get-Date).AddSeconds(10)
@@ -146,12 +150,26 @@ try {
     if (-not $scanner -or -not (Test-Path $scanner)) {
         throw "Microsoft Defender CLI not found"
     }
-    & $scanner -Scan -ScanType 3 -File $installer.FullName -DisableRemediation
-    if ($LASTEXITCODE -ne 0) {
-        throw "Microsoft Defender scan failed: $LASTEXITCODE"
+    Write-Host "[acceptance] Scan installer with Microsoft Defender"
+    $scanArguments = "-Scan -ScanType 3 -File `"$($installer.FullName)`" -DisableRemediation"
+    $scanProcess = Start-Process -FilePath $scanner -ArgumentList $scanArguments -PassThru
+    $scanDeadline = (Get-Date).AddMinutes(5)
+    while (-not $scanProcess.HasExited -and (Get-Date) -lt $scanDeadline) {
+        Start-Sleep -Milliseconds 500
     }
+    if (-not $scanProcess.HasExited) {
+        Stop-Process -Id $scanProcess.Id -Force -ErrorAction SilentlyContinue
+        throw "Microsoft Defender scan exceeded 5 minutes"
+    }
+    if ($scanProcess.ExitCode -ne 0) {
+        throw "Microsoft Defender scan failed: $($scanProcess.ExitCode)"
+    }
+    Write-Host "[acceptance] Windows package acceptance passed"
 }
 finally {
+    if ($scanProcess -and -not $scanProcess.HasExited) {
+        Stop-Process -Id $scanProcess.Id -Force -ErrorAction SilentlyContinue
+    }
     if ($hostProcess -and -not $hostProcess.HasExited) {
         Stop-Process -Id $hostProcess.Id -Force -ErrorAction SilentlyContinue
     }
@@ -163,11 +181,6 @@ finally {
     Remove-Item -LiteralPath $publicInstaller -Force -ErrorAction SilentlyContinue
     if ($installDir) {
         Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
-    }
-    if ($testUserSid) {
-        Get-CimInstance Win32_UserProfile -ErrorAction SilentlyContinue |
-            Where-Object { $_.SID -eq $testUserSid } |
-            Remove-CimInstance -ErrorAction SilentlyContinue
     }
     if ($testUser) {
         Remove-LocalUser -Name $userName -ErrorAction SilentlyContinue
