@@ -143,7 +143,7 @@ async fn start_job(
             counts: json!({}),
         });
     }
-    let output = finalize_output(&source, &temporary_path)?;
+    let output = finalize_output_or_cleanup(&source, &temporary_path)?;
     Ok(JobResult {
         job_id,
         status: "completed".into(),
@@ -393,6 +393,16 @@ fn finalize_output(source: &Path, temporary: &Path) -> AppResult<PathBuf> {
     Err(AppError::OutputWrite)
 }
 
+fn finalize_output_or_cleanup(source: &Path, temporary: &Path) -> AppResult<PathBuf> {
+    match finalize_output(source, temporary) {
+        Ok(output) => Ok(output),
+        Err(error) => {
+            let _ = fs::remove_file(temporary);
+            Err(error)
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
@@ -457,6 +467,20 @@ mod tests {
         assert_eq!(output.file_name().unwrap(), "văn bản-soat-2.docx");
         assert_eq!(fs::read(existing).unwrap(), b"old");
         assert_eq!(fs::read(output).unwrap(), b"new");
+        assert!(!temporary.exists());
+    }
+
+    #[test]
+    fn output_failure_removes_temporary_file() {
+        let folder = tempfile::tempdir().unwrap();
+        let source = folder.path().join(format!("{}.docx", "a".repeat(250)));
+        let temporary = folder.path().join(".temporary.docx");
+        fs::write(&temporary, b"temporary output").unwrap();
+
+        assert!(matches!(
+            finalize_output_or_cleanup(&source, &temporary),
+            Err(AppError::OutputWrite)
+        ));
         assert!(!temporary.exists());
     }
 }
