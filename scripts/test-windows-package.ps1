@@ -25,6 +25,15 @@ $probeInput = Join-Path $env:PUBLIC "SoatVan-Acceptance-$PID.engine.in"
 $probeOutput = Join-Path $env:PUBLIC "SoatVan-Acceptance-$PID.engine.out"
 $probeError = Join-Path $env:PUBLIC "SoatVan-Acceptance-$PID.engine.err"
 $ownedIds = [System.Collections.Generic.HashSet[int]]::new()
+$userEnvironmentNames = @(
+    "USERPROFILE", "LOCALAPPDATA", "APPDATA", "TEMP", "TMP",
+    "HOMEDRIVE", "HOMEPATH", "USERNAME", "USERDOMAIN"
+)
+$originalProcessEnvironment = @{}
+foreach ($environmentName in $userEnvironmentNames) {
+    $originalProcessEnvironment[$environmentName] =
+        [Environment]::GetEnvironmentVariable($environmentName, "Process")
+}
 
 try {
     Write-Host "[acceptance] Create ephemeral standard-user account"
@@ -54,6 +63,31 @@ try {
     } while (-not $profile -and (Get-Date) -lt $profileDeadline)
     if (-not $profile -or -not $profile.LocalPath) {
         throw "Standard-user profile was not created"
+    }
+    $localAppData = Join-Path $profile.LocalPath "AppData\Local"
+    $roamingAppData = Join-Path $profile.LocalPath "AppData\Roaming"
+    $userTemp = Join-Path $localAppData "Temp"
+    New-Item -ItemType Directory -Force -Path $localAppData, $roamingAppData, $userTemp |
+        Out-Null
+    $homeDrive = [System.IO.Path]::GetPathRoot($profile.LocalPath).TrimEnd("\")
+    $homePath = $profile.LocalPath.Substring($homeDrive.Length)
+    $standardUserEnvironment = @{
+        USERPROFILE = $profile.LocalPath
+        LOCALAPPDATA = $localAppData
+        APPDATA = $roamingAppData
+        TEMP = $userTemp
+        TMP = $userTemp
+        HOMEDRIVE = $homeDrive
+        HOMEPATH = $homePath
+        USERNAME = $userName
+        USERDOMAIN = $env:COMPUTERNAME
+    }
+    foreach ($environmentName in $standardUserEnvironment.Keys) {
+        [Environment]::SetEnvironmentVariable(
+            $environmentName,
+            $standardUserEnvironment[$environmentName],
+            "Process"
+        )
     }
     $installDir = Join-Path $profile.LocalPath "AppData\Local\Programs\SoatVan-Acceptance"
     Write-Host "[acceptance] Install NSIS package as $userName"
@@ -231,6 +265,13 @@ finally {
     }
     if ($testUser) {
         Remove-LocalUser -Name $userName -ErrorAction SilentlyContinue
+    }
+    foreach ($environmentName in $userEnvironmentNames) {
+        [Environment]::SetEnvironmentVariable(
+            $environmentName,
+            $originalProcessEnvironment[$environmentName],
+            "Process"
+        )
     }
     $plainPassword = $null
 }
