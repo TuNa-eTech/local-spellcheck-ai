@@ -57,11 +57,12 @@ try {
     if ($install.ExitCode -ne 0) {
         throw "NSIS install failed: $($install.ExitCode)"
     }
-    $application = Get-ChildItem $installDir -Recurse -Filter "*.exe" |
-        Where-Object { $_.Name -notmatch "uninstall|soatvan-engine" } |
+    $application = Get-ChildItem $installDir -Recurse -Filter "soatvan-desktop.exe" |
         Select-Object -First 1
     if (-not $application) {
-        throw "Installed application not found"
+        $installedExecutables = @(Get-ChildItem $installDir -Recurse -Filter "*.exe" |
+            Select-Object -ExpandProperty FullName)
+        throw "Installed application not found. Executables: $($installedExecutables -join ', ')"
     }
 
     $manifestPath = Join-Path $env:RUNNER_TEMP "soatvan-app.manifest"
