@@ -16,13 +16,18 @@ jobs:
           python-version: "3.12"
           enable-cache: true
           cache-dependency-glob: engine/uv.lock
+      - name: Restore PyInstaller analysis cache
+        uses: actions/cache@v4
+        with:
+          path: engine/build/soatvan-engine
+          key: ${{ runner.os }}-${{ runner.arch }}-pyinstaller-${{ hashFiles('engine/uv.lock', 'engine/pyproject.toml', 'engine/soatvan-engine.spec', 'engine/src/**') }}
       - run: uv sync --project engine --extra dev --locked
       - run: uv run --project engine ruff check engine
       - run: uv run --project engine mypy --config-file engine/pyproject.toml
       - run: uv run --project engine pytest --cov=soatvan --cov-report=term-missing --cov-fail-under=85 engine
       - name: Build Python onedir
         working-directory: engine
-        run: uv run pyinstaller --clean --noconfirm soatvan-engine.spec
+        run: uv run pyinstaller --noconfirm soatvan-engine.spec
       - name: Run frozen sidecar acceptance without Python on PATH
         shell: pwsh
         run: |
@@ -65,6 +70,13 @@ jobs:
         with:
           shared-key: desktop
           workspaces: apps/desktop/src-tauri -> target
+      - name: Cache Tauri Windows bundler tools
+        uses: actions/cache@v4
+        with:
+          path: ~/AppData/Local/tauri
+          key: ${{ runner.os }}-tauri-bundler-${{ hashFiles('apps/desktop/src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-tauri-bundler-
       - uses: actions/setup-node@v4
         with: { node-version: "24", cache: npm, cache-dependency-path: apps/desktop/package-lock.json }
       - run: npm ci

@@ -87,6 +87,12 @@ jobs:
           enable-cache: true
           cache-dependency-glob: engine/uv.lock
 
+      - name: Restore PyInstaller analysis cache
+        uses: actions/cache@v4
+        with:
+          path: engine/build/soatvan-engine
+          key: ${{ runner.os }}-${{ runner.arch }}-pyinstaller-${{ hashFiles('engine/uv.lock', 'engine/pyproject.toml', 'engine/soatvan-engine.spec', 'engine/src/**') }}
+
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -99,6 +105,14 @@ jobs:
         with:
           shared-key: desktop
           workspaces: apps/desktop/src-tauri -> target
+
+      - name: Cache Tauri Windows bundler tools
+        uses: actions/cache@v4
+        with:
+          path: ~/AppData/Local/tauri
+          key: ${{ runner.os }}-tauri-bundler-${{ hashFiles('apps/desktop/src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-tauri-bundler-
 
       - name: Build NSIS installer
         run: npm run build:windows
@@ -160,6 +174,12 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           enable-cache: true
           cache-dependency-glob: engine/uv.lock
+
+      - name: Restore PyInstaller analysis cache
+        uses: actions/cache@v4
+        with:
+          path: engine/build/soatvan-engine
+          key: ${{ runner.os }}-${{ runner.arch }}-pyinstaller-${{ hashFiles('engine/uv.lock', 'engine/pyproject.toml', 'engine/soatvan-engine.spec', 'engine/src/**') }}
 
       - uses: actions/setup-node@v4
         with:

@@ -29,7 +29,7 @@ uv sync --project engine --extra dev --locked
 echo "[2/4] Build Python sidecar onedir"
 (
   cd engine
-  uv run pyinstaller --clean --noconfirm soatvan-engine.spec
+  uv run pyinstaller --noconfirm soatvan-engine.spec
 )
 
 if [[ ! -x "${engine_dist_dir}/soatvan-engine" ]]; then

@@ -43,7 +43,7 @@ try {
     Write-Host "[2/5] Build Python sidecar onedir"
     Push-Location $engineDir
     try {
-        Invoke-Checked "uv" @("run", "pyinstaller", "--clean", "--noconfirm", "soatvan-engine.spec")
+        Invoke-Checked "uv" @("run", "pyinstaller", "--noconfirm", "soatvan-engine.spec")
     }
     finally {
         Pop-Location
