@@ -26,6 +26,10 @@ cd "${repo_root}"
 echo "[1/4] Dong bo dependency Python"
 uv sync --project engine --extra dev --locked
 
+if [[ "${SOATVAN_PYINSTALLER_CACHE_HIT:-false}" == "true" && -d "engine/build/soatvan-engine" ]]; then
+  find engine/build/soatvan-engine -exec touch {} +
+fi
+
 echo "[2/4] Build Python sidecar onedir"
 (
   cd engine

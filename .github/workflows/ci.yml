@@ -17,11 +17,19 @@ jobs:
           enable-cache: true
           cache-dependency-glob: engine/uv.lock
       - name: Restore PyInstaller analysis cache
+        id: pyinstaller-cache
         uses: actions/cache@v4
         with:
           path: engine/build/soatvan-engine
           key: ${{ runner.os }}-${{ runner.arch }}-pyinstaller-${{ hashFiles('engine/uv.lock', 'engine/pyproject.toml', 'engine/soatvan-engine.spec', 'engine/src/**') }}
       - run: uv sync --project engine --extra dev --locked
+      - name: Refresh exact PyInstaller cache timestamps
+        if: steps.pyinstaller-cache.outputs.cache-hit == 'true'
+        shell: pwsh
+        run: |
+          Get-ChildItem engine/build/soatvan-engine -Recurse -Force | ForEach-Object {
+            $_.LastWriteTimeUtc = [DateTime]::UtcNow
+          }
       - run: uv run --project engine ruff check engine
       - run: uv run --project engine mypy --config-file engine/pyproject.toml
       - run: uv run --project engine pytest --cov=soatvan --cov-report=term-missing --cov-fail-under=85 engine

@@ -40,6 +40,15 @@ try {
     Write-Host "[1/5] Dong bo dependency Python"
     Invoke-Checked "uv" @("sync", "--project", "engine", "--extra", "dev", "--locked")
 
+    if ($env:SOATVAN_PYINSTALLER_CACHE_HIT -eq "true") {
+        $engineBuildDir = Join-Path $engineDir "build\soatvan-engine"
+        if (Test-Path -LiteralPath $engineBuildDir -PathType Container) {
+            Get-ChildItem -LiteralPath $engineBuildDir -Recurse -Force | ForEach-Object {
+                $_.LastWriteTimeUtc = [DateTime]::UtcNow
+            }
+        }
+    }
+
     Write-Host "[2/5] Build Python sidecar onedir"
     Push-Location $engineDir
     try {

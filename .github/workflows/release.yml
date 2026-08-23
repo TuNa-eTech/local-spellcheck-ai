@@ -88,6 +88,7 @@ jobs:
           cache-dependency-glob: engine/uv.lock
 
       - name: Restore PyInstaller analysis cache
+        id: pyinstaller-cache
         uses: actions/cache@v4
         with:
           path: engine/build/soatvan-engine
@@ -117,6 +118,7 @@ jobs:
       - name: Build NSIS installer
         run: npm run build:windows
         env:
+          SOATVAN_PYINSTALLER_CACHE_HIT: ${{ steps.pyinstaller-cache.outputs.cache-hit }}
           SOATVAN_MODEL_ENDPOINT: ${{ vars.SOATVAN_MODEL_ENDPOINT }}
           SOATVAN_MODEL_ALLOWLIST: ${{ vars.SOATVAN_MODEL_ALLOWLIST }}
           SOATVAN_MODEL_PUBLIC_KEY: ${{ vars.SOATVAN_MODEL_PUBLIC_KEY }}
@@ -176,6 +178,7 @@ jobs:
           cache-dependency-glob: engine/uv.lock
 
       - name: Restore PyInstaller analysis cache
+        id: pyinstaller-cache
         uses: actions/cache@v4
         with:
           path: engine/build/soatvan-engine
@@ -197,6 +200,7 @@ jobs:
       - name: Build DMG
         run: npm run build:macos
         env:
+          SOATVAN_PYINSTALLER_CACHE_HIT: ${{ steps.pyinstaller-cache.outputs.cache-hit }}
           SOATVAN_MODEL_ENDPOINT: ${{ vars.SOATVAN_MODEL_ENDPOINT }}
           SOATVAN_MODEL_ALLOWLIST: ${{ vars.SOATVAN_MODEL_ALLOWLIST }}
           SOATVAN_MODEL_PUBLIC_KEY: ${{ vars.SOATVAN_MODEL_PUBLIC_KEY }}
