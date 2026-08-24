@@ -55,6 +55,8 @@ const state: {
   progress: number;
   progressStage: string;
   modelProgress: number;
+  modelReceived: number;
+  modelTotal: number;
   result: JobResult | null;
   model: ModelStatus;
   settings: boolean;
@@ -75,6 +77,8 @@ const state: {
   useModel: false,
   ruleOptions: loadRuleOptions(),
   modelProgress: 0,
+  modelReceived: 0,
+  modelTotal: 0,
   result: null,
   model: { state: "not_installed" },
   settings: false,
@@ -155,7 +159,12 @@ function settingsBody(): string {
   const installed = state.model.state === "ready" || state.model.state === "installed";
   const busy = ["downloading", "importing", "verifying"].includes(state.model.state);
   const activeModelId = state.model.model_id;
-  const title = state.model.state === "ready" ? "Model đã sẵn sàng" : state.model.state === "installed" ? (state.model.code ? "Model đã cài · runtime chưa sẵn sàng" : "Model đã cài · AI đang tắt") : state.model.state === "downloading" ? `Đang tải model… ${state.modelProgress}%` : state.model.state === "importing" ? "Đang nhập gói model…" : state.model.state === "verifying" ? "Đang xác minh và khởi động model…" : state.model.state === "invalid" || state.model.state === "incompatible" ? "Model không hợp lệ hoặc không tương thích" : state.model.state === "error" ? "Không thể cài model" : "Chưa cài model AI";
+  const downloadInfo = state.model.state === "downloading" && state.modelTotal > 0
+    ? `Đang tải model… ${formatBytes(state.modelReceived)} / ${formatBytes(state.modelTotal)} (${state.modelProgress}%)`
+    : state.model.state === "downloading"
+    ? `Đang tải model… ${state.modelProgress}%`
+    : "";
+  const title = state.model.state === "ready" ? "Model đã sẵn sàng" : state.model.state === "installed" ? (state.model.code ? "Model đã cài · runtime chưa sẵn sàng" : "Model đã cài · AI đang tắt") : state.model.state === "downloading" ? downloadInfo : state.model.state === "importing" ? "Đang nhập gói model…" : state.model.state === "verifying" ? "Đang xác minh và khởi động model…" : state.model.state === "invalid" || state.model.state === "incompatible" ? "Model không hợp lệ hoặc không tương thích" : state.model.state === "error" ? "Không thể cài model" : "Chưa cài model AI";
   return `
     <div class="model-card">
       <div style="display:flex; justify-content:space-between; align-items:center; gap:0.5rem; flex-wrap:wrap;">
@@ -196,7 +205,7 @@ function settingsBody(): string {
             <p>${escape(item.description)}</p>
             <div class="model-option-actions">
               ${isDownloading
-                ? `<button class="button button--secondary button--small" data-model-cancel="${item.id}">Huỷ (${state.modelProgress}%)</button>`
+                ? `<button class="button button--secondary button--small" data-model-cancel="${item.id}">Huỷ · ${state.modelTotal > 0 ? `${formatBytes(state.modelReceived)} / ${formatBytes(state.modelTotal)}` : `${state.modelProgress}%`}</button>`
                 : isActive
                 ? `<span style="font-size:0.75rem; color:var(--color-success); font-weight:700;">✓ Đang kích hoạt</span>`
                 : `<button class="button button--primary button--small" data-model-download="${item.id}" ${busy ? "disabled" : ""}>Tải & Kích hoạt</button>`
@@ -297,6 +306,8 @@ async function downloadGemmaModel(modelId: string): Promise<void> {
   state.downloadingModelId = modelId;
   state.model = { state: "downloading" };
   state.modelProgress = 0;
+  state.modelReceived = 0;
+  state.modelTotal = 0;
   render();
   try {
     const status = await api.modelDownload(modelId);
@@ -373,7 +384,11 @@ try {
 
 try {
   void api.onModelProgress(event => {
-    state.modelProgress = event.percent;
+    state.modelReceived = event.received;
+    state.modelTotal = event.total;
+    state.modelProgress = event.total > 0
+      ? Math.min(100, Math.round((event.received / event.total) * 1000) / 10)
+      : event.percent;
     if (state.model.state === "downloading") render();
   }).catch(() => {});
 } catch { /* noop */ }
