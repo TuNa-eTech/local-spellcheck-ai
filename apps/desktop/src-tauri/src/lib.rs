@@ -391,6 +391,7 @@ async fn model_download(
     }
     state.model_cancel.store(false, Ordering::Release);
     let client = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) SoatVan/0.1.1")
         .redirect(reqwest::redirect::Policy::limited(10))
         .connect_timeout(Duration::from_secs(30))
         .build()
@@ -444,17 +445,28 @@ async fn model_download(
         package.seek(SeekFrom::End(0))?;
     }
     let mut received = resumed_at;
+    let mut last_emitted_percent = 0;
+    let mut last_emitted_time = std::time::Instant::now();
     while let Some(chunk) = await_download(response.chunk(), &state.model_cancel).await? {
         received = received.saturating_add(chunk.len() as u64);
         if received > total || received > MAX_MODEL_PACKAGE {
             return Err(AppError::ModelPackageInvalid);
         }
         package.write_all(&chunk)?;
-        let _ = app.emit(
-            "model.progress",
-            json!({"received":received,"total":total,"percent":received.saturating_mul(100)/total}),
-        );
+        let percent = received.saturating_mul(100) / total;
+        if percent != last_emitted_percent || last_emitted_time.elapsed().as_millis() >= 100 {
+            last_emitted_percent = percent;
+            last_emitted_time = std::time::Instant::now();
+            let _ = app.emit(
+                "model.progress",
+                json!({"received": received, "total": total, "percent": percent}),
+            );
+        }
     }
+    let _ = app.emit(
+        "model.progress",
+        json!({"received": total, "total": total, "percent": 100}),
+    );
     package.flush()?;
     package.sync_all()?;
     if received != total {
