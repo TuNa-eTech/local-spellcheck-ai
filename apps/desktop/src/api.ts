@@ -29,11 +29,15 @@ export const api = {
   },
   onFileDrop(handler: (path: string) => void): Promise<UnlistenFn> {
     if (!isTauri()) return Promise.resolve(() => undefined);
-    return getCurrentWebview().onDragDropEvent(event => {
-      if (event.payload.type !== "drop") return;
-      const path = event.payload.paths[0];
-      if (path) handler(path);
-    });
+    try {
+      return getCurrentWebview().onDragDropEvent(event => {
+        if (event.payload.type !== "drop") return;
+        const path = event.payload.paths[0];
+        if (path) handler(path);
+      });
+    } catch {
+      return Promise.resolve(() => undefined);
+    }
   },
   openOutput(path: string, reveal = false) { return invoke("open_output", { path, reveal }); },
   dictionaryList(query = ""): Promise<DictionaryEntry[]> { return invoke("dictionary_list", { query }); },

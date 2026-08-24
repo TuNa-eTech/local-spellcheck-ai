@@ -159,23 +159,39 @@ async function setModelEnabled(enabled: boolean): Promise<void> {
 async function modelImport(): Promise<void> { state.model = { state: "importing" }; state.modelProgress = 0; render(); try { const status = await api.modelImport(); if (state.model.state !== "cancelled") { state.model = status ?? { state: "not_installed" }; state.useModel = state.model.state === "ready"; if (state.useModel) saveModelPreference(true); } } catch { if (state.model.state !== "cancelled") state.model = { state: "error", code: "MODEL_IMPORT_FAILED" }; } render(); }
 async function modelAction(): Promise<void> { if (["downloading", "importing", "verifying"].includes(state.model.state)) { await api.modelCancel(); state.model = { state: "cancelled" }; render(); return; } try { if (["ready", "installed"].includes(state.model.state)) state.model = await api.modelRemove(); else { state.model = { state: "downloading" }; state.modelProgress = 0; render(); const status = await api.modelDownload(); if (state.model.state !== "cancelled") state.model = status; } } catch { if (state.model.state !== "cancelled") state.model = { state: "error", code: "MODEL_OPERATION_FAILED" }; } state.useModel = state.model.state === "ready"; if (state.useModel) saveModelPreference(true); else state.prompt = ""; render(); }
 
+// Initial render immediately paints the UI
+render();
+
 window.addEventListener("keydown", event => { const target = event.target; const editing = target instanceof HTMLElement && target.matches("input, textarea, select"); if (event.ctrlKey && event.key.toLowerCase() === "o") { event.preventDefault(); void choose(); } if (event.key === "Escape" && state.settings && !editing) { state.settings = false; render(); } });
 window.addEventListener("dragover", event => event.preventDefault());
 window.addEventListener("drop", event => { event.preventDefault(); const path = (event.dataTransfer?.files[0] as File & { path?: string })?.path; if (path) void api.inspectDropped(path).then(info => { state.document = info; state.step = "rules"; render(); }); });
 
-void api.onFileDrop(path => {
-  void api.inspectDropped(path).then(info => {
-    state.document = info;
-    state.step = "rules";
-    state.error = "";
-    render();
-  }).catch(() => {
-    state.error = "SoátVăn chỉ nhận tệp .docx hợp lệ.";
-    render();
+try {
+  void api.onFileDrop(path => {
+    void api.inspectDropped(path).then(info => {
+      state.document = info;
+      state.step = "rules";
+      state.error = "";
+      render();
+    }).catch(() => {
+      state.error = "SoátVăn chỉ nhận tệp .docx hợp lệ.";
+      render();
+    });
   });
-});
+} catch { /* noop */ }
 
-const initialModelPreference = loadModelPreference();
-void api.modelStatus(initialModelPreference).then(model => { state.model = model; state.useModel = initialModelPreference && model.state === "ready"; render(); });
-void api.onModelProgress(event => { state.modelProgress = event.percent; if (state.model.state === "downloading") render(); });
-render();
+try {
+  const initialModelPreference = loadModelPreference();
+  void api.modelStatus(initialModelPreference).then(model => {
+    state.model = model;
+    state.useModel = initialModelPreference && model.state === "ready";
+    render();
+  }).catch(() => {});
+} catch { /* noop */ }
+
+try {
+  void api.onModelProgress(event => {
+    state.modelProgress = event.percent;
+    if (state.model.state === "downloading") render();
+  }).catch(() => {});
+} catch { /* noop */ }

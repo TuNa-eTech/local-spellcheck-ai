@@ -300,7 +300,10 @@ def error_code(error: Exception) -> str:
 
 def main() -> None:
     sidecar = Sidecar()
-    for raw in sys.stdin.buffer:
+    while True:
+        raw = sys.stdin.buffer.readline()
+        if not raw:
+            break
         request_id = ""
         try:
             if len(raw) > MAX_FRAME:

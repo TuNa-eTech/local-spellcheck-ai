@@ -1,7 +1,7 @@
 @import "../../../tokens.css";
 
 * { box-sizing: border-box; }
-body { margin: 0; min-width: 320px; min-height: 100vh; background: var(--color-paper); color: var(--color-ink); font-family: var(--font-body); }
+body { margin: 0; min-width: 320px; min-height: 100vh; background-color: #f6f8fb; background: var(--color-paper, #f6f8fb); color: #1e293b; color: var(--color-ink, #1e293b); font-family: var(--font-body, "Segoe UI", sans-serif); }
 button, input, textarea { font: inherit; }
 button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
 #app { min-height: 100vh; display: grid; grid-template-rows: auto 1fr auto; }

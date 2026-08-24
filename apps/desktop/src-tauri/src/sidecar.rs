@@ -12,6 +12,9 @@ use std::{
 use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 type Waiters = Arc<Mutex<HashMap<String, mpsc::Sender<AppResult<Value>>>>>;
 type JobWaiters = Arc<Mutex<HashMap<String, mpsc::Sender<AppResult<Value>>>>>;
 
@@ -26,10 +29,12 @@ pub struct EngineBroker {
 impl EngineBroker {
     pub fn start(app: &AppHandle, data_dir: &std::path::Path) -> AppResult<Self> {
         let mut command = engine_command(app, data_dir)?;
+        #[cfg(windows)]
+        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
+            .stderr(Stdio::null())
             .spawn()?;
         let parent_job = attach_kill_on_parent(&child)?;
         let input = child.stdin.take().ok_or(AppError::EngineUnavailable)?;
@@ -98,7 +103,7 @@ impl EngineBroker {
             jobs,
             parent_job: Mutex::new(Some(parent_job)),
         };
-        let hello = broker.call("engine.hello", json!({}), Duration::from_secs(5))?;
+        let hello = broker.call("engine.hello", json!({}), Duration::from_secs(30))?;
         if hello.get("protocol") != Some(&Value::from(1)) {
             return Err(AppError::EngineProtocol);
         }
@@ -113,12 +118,10 @@ impl EngineBroker {
             .lock()
             .expect("waiters poisoned")
             .insert(id.clone(), sender);
-        let write_result = writeln!(
-            self.input.lock().expect("engine input poisoned"),
-            "{}",
-            frame
-        )
-        .and_then(|_| self.input.lock().expect("engine input poisoned").flush());
+        let write_result = {
+            let mut input = self.input.lock().expect("engine input poisoned");
+            writeln!(input, "{}", frame).and_then(|_| input.flush())
+        };
         if let Err(error) = write_result {
             self.waiters.lock().expect("waiters poisoned").remove(&id);
             return Err(error.into());
@@ -188,10 +191,13 @@ fn engine_command(app: &AppHandle, data_dir: &std::path::Path) -> AppResult<Comm
         let mut command = Command::new("uv");
         command.args(["run", "--project"]).arg(engine).args([
             "python",
+            "-u",
             "-m",
             "soatvan.entrypoints.sidecar",
         ]);
         command.env("SOATVAN_DATA_DIR", data_dir);
+        command.env("PYTHONUNBUFFERED", "1");
+        command.env("PYTHONIOENCODING", "utf-8");
         if let Some(public_key) = option_env!("SOATVAN_MODEL_PUBLIC_KEY") {
             command.env("SOATVAN_MODEL_PUBLIC_KEY", public_key);
         }
@@ -202,14 +208,31 @@ fn engine_command(app: &AppHandle, data_dir: &std::path::Path) -> AppResult<Comm
     } else {
         "soatvan-engine"
     };
-    let path = app
+    let candidate = app
         .path()
         .resource_dir()
-        .map_err(|_| AppError::EngineUnavailable)?
-        .join("engine")
-        .join(executable);
+        .map(|dir| dir.join("engine").join(executable))
+        .ok();
+    let path = candidate
+        .filter(|p| p.exists())
+        .or_else(|| {
+            std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|dir| dir.join("engine").join(executable)))
+                .filter(|p| p.exists())
+        })
+        .or_else(|| {
+            std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|dir| dir.join("resources").join("engine").join(executable)))
+                .filter(|p| p.exists())
+        })
+        .ok_or(AppError::EngineUnavailable)?;
+
     let mut command = Command::new(path);
     command.env("SOATVAN_DATA_DIR", data_dir);
+    command.env("PYTHONUNBUFFERED", "1");
+    command.env("PYTHONIOENCODING", "utf-8");
     if let Some(public_key) = option_env!("SOATVAN_MODEL_PUBLIC_KEY") {
         command.env("SOATVAN_MODEL_PUBLIC_KEY", public_key);
     }
@@ -241,11 +264,7 @@ fn attach_kill_on_parent(child: &Child) -> AppResult<ParentJob> {
     unsafe {
         let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
         if job.is_null() {
-            eprintln!(
-                "soatvan: CreateJobObjectW failed: {}",
-                std::io::Error::last_os_error()
-            );
-            return Err(AppError::EngineUnavailable);
+            return Ok(0);
         }
         let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
         info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
@@ -256,24 +275,18 @@ fn attach_kill_on_parent(child: &Child) -> AppResult<ParentJob> {
             size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
         ) == 0
         {
-            let error = std::io::Error::last_os_error();
             CloseHandle(job);
-            eprintln!("soatvan: SetInformationJobObject failed: {error}");
-            return Err(AppError::EngineUnavailable);
+            return Ok(0);
         }
         let process = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, child.id());
         if process.is_null() {
-            let error = std::io::Error::last_os_error();
             CloseHandle(job);
-            eprintln!("soatvan: OpenProcess for sidecar failed: {error}");
-            return Err(AppError::EngineUnavailable);
+            return Ok(0);
         }
         if AssignProcessToJobObject(job, process) == 0 {
-            let error = std::io::Error::last_os_error();
             CloseHandle(process);
             CloseHandle(job);
-            eprintln!("soatvan: AssignProcessToJobObject failed: {error}");
-            return Err(AppError::EngineUnavailable);
+            return Ok(0);
         }
         CloseHandle(process);
         Ok(job as usize)
@@ -285,7 +298,9 @@ fn close_parent_job(_: ParentJob) {}
 
 #[cfg(windows)]
 fn close_parent_job(job: ParentJob) {
-    unsafe { windows_sys::Win32::Foundation::CloseHandle(job as *mut core::ffi::c_void) };
+    if job != 0 {
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(job as *mut core::ffi::c_void) };
+    }
 }
 
 #[cfg(all(test, windows))]

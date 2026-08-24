@@ -90,6 +90,7 @@ async function chooseDocument(): Promise<void> {
 
 beforeEach(() => {
   vi.resetModules();
+  localStorage.clear();
   document.body.innerHTML = '<div id="app"></div>';
 });
 
