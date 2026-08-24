@@ -64,11 +64,13 @@ try {
     }
 
     Write-Host "[3/5] Tao hoac tai certificate ca nhan"
-    $certificate = Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert |
+    $codeSigningOid = "1.3.6.1.5.5.7.3.3"
+    $certificate = Get-ChildItem -Path Cert:\CurrentUser\My |
         Where-Object {
             $_.Subject -eq $personalCertificateSubject -and
             $_.HasPrivateKey -and
-            $_.NotAfter -gt (Get-Date).AddDays(30)
+            $_.NotAfter -gt (Get-Date).AddDays(30) -and
+            @($_.EnhancedKeyUsageList | ForEach-Object { $_.ObjectId.Value }) -contains $codeSigningOid
         } |
         Sort-Object NotAfter -Descending |
         Select-Object -First 1

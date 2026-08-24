@@ -1,6 +1,6 @@
 [package]
 name = "soatvan-desktop"
-version = "0.1.0"
+version = "0.1.1"
 description = "Offline Vietnamese document checker"
 authors = ["SoatVan"]
 edition = "2021"
