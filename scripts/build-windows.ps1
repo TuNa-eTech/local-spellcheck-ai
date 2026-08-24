@@ -52,7 +52,7 @@ try {
     Write-Host "[2/5] Build Python sidecar onedir"
     Push-Location $engineDir
     try {
-        Invoke-Checked "uv" @("run", "pyinstaller", "--noconfirm", "soatvan-engine.spec")
+        Invoke-Checked "uv" @("run", "pyinstaller", "--noconfirm", "--clean", "soatvan-engine.spec")
     }
     finally {
         Pop-Location
@@ -119,11 +119,13 @@ try {
         Where-Object { $_.Name -ne "README.txt" } |
         Remove-Item -Recurse -Force
     Copy-Item -Path (Join-Path $engineDistDir "*") -Destination $engineResourceDir -Recurse -Force
-    Invoke-Checked "npm" @("--prefix", "apps/desktop", "ci")
+    if (-not (Test-Path (Join-Path $repoRoot "apps\desktop\node_modules"))) {
+        Invoke-Checked "npm" @("--prefix", "apps/desktop", "ci")
+    }
 
     Write-Host "[5/5] Build va ky Tauri NSIS installer"
-    Invoke-Checked "npm" @(
-        "--prefix", "apps/desktop", "run", "tauri", "--",
+    Invoke-Checked "npx" @(
+        "--prefix", "apps/desktop", "tauri",
         "build", "--bundles", "nsis", "--config", $personalSigningConfigPath
     )
 
@@ -142,9 +144,28 @@ try {
     $publicCertificatePath = Join-Path $installerDir "SoatVan-Personal-CodeSigning.cer"
     Export-Certificate -Cert $certificate -FilePath $publicCertificatePath -Type CERT | Out-Null
 
+    Write-Host "[6/6] Dong goi ban Portable va cap nhat dist"
+    $portableDir = Join-Path $repoRoot "dist\SoatVan-Portable"
+    if (Test-Path -LiteralPath $portableDir) { Remove-Item -LiteralPath $portableDir -Recurse -Force }
+    New-Item -ItemType Directory -Force -Path $portableDir | Out-Null
+
+    $desktopExe = Join-Path $repoRoot "apps\desktop\src-tauri\target\release\soatvan-desktop.exe"
+    $portableExe = Join-Path $portableDir "SoatVan.exe"
+    Copy-Item -LiteralPath $desktopExe -Destination $portableExe -Force
+    Set-AuthenticodeSignature -LiteralPath $portableExe -Certificate $certificate -HashAlgorithm SHA256 | Out-Null
+
+    $portableEngineDir = Join-Path $portableDir "engine"
+    New-Item -ItemType Directory -Force -Path $portableEngineDir | Out-Null
+    Copy-Item -Path (Join-Path $engineDistDir "*") -Destination $portableEngineDir -Recurse -Force
+
+    $portableZip = Join-Path $repoRoot "dist\SoatVan-v0.1.1-Windows-x64-Portable.zip"
+    if (Test-Path -LiteralPath $portableZip) { Remove-Item -LiteralPath $portableZip -Force }
+    Compress-Archive -Path (Join-Path $portableDir "*") -DestinationPath $portableZip -CompressionLevel Optimal
+
     Write-Host "Build thanh cong:"
     $installers.FullName | ForEach-Object { Write-Host $_ }
     Write-Host $publicCertificatePath
+    Write-Host $portableZip
 }
 finally {
     Pop-Location

@@ -229,7 +229,7 @@ fn open_output(app: AppHandle, path: String, reveal: bool) -> AppResult<()> {
 }
 
 #[tauri::command]
-fn dictionary_list(query: String, state: State<'_, AppState>) -> AppResult<Vec<DictionaryEntry>> {
+async fn dictionary_list(query: String, state: State<'_, AppState>) -> AppResult<Vec<DictionaryEntry>> {
     let value = state.engine.call(
         "dictionary.list",
         json!({"query": query}),
@@ -238,7 +238,7 @@ fn dictionary_list(query: String, state: State<'_, AppState>) -> AppResult<Vec<D
     Ok(serde_json::from_value(value["entries"].clone())?)
 }
 #[tauri::command]
-fn dictionary_upsert(
+async fn dictionary_upsert(
     word: String,
     note: String,
     state: State<'_, AppState>,
@@ -250,7 +250,7 @@ fn dictionary_upsert(
     )?)?)
 }
 #[tauri::command]
-fn dictionary_delete(word: String, state: State<'_, AppState>) -> AppResult<bool> {
+async fn dictionary_delete(word: String, state: State<'_, AppState>) -> AppResult<bool> {
     Ok(state.engine.call(
         "dictionary.delete",
         json!({"word":word}),
@@ -260,7 +260,7 @@ fn dictionary_delete(word: String, state: State<'_, AppState>) -> AppResult<bool
         .unwrap_or(false))
 }
 #[tauri::command]
-fn dictionary_import(app: AppHandle, state: State<'_, AppState>) -> AppResult<Option<u64>> {
+async fn dictionary_import(app: AppHandle, state: State<'_, AppState>) -> AppResult<Option<u64>> {
     let selected = app
         .dialog()
         .file()
@@ -277,7 +277,7 @@ fn dictionary_import(app: AppHandle, state: State<'_, AppState>) -> AppResult<Op
         .as_u64())
 }
 #[tauri::command]
-fn dictionary_export(app: AppHandle, state: State<'_, AppState>) -> AppResult<Option<u64>> {
+async fn dictionary_export(app: AppHandle, state: State<'_, AppState>) -> AppResult<Option<u64>> {
     let selected = app
         .dialog()
         .file()
@@ -296,7 +296,7 @@ fn dictionary_export(app: AppHandle, state: State<'_, AppState>) -> AppResult<Op
 }
 
 #[tauri::command]
-fn model_status(activate: bool, state: State<'_, AppState>) -> AppResult<ModelStatus> {
+async fn model_status(activate: bool, state: State<'_, AppState>) -> AppResult<ModelStatus> {
     let (host, pending) = {
         let provisioner = state.model.lock().expect("model poisoned");
         (provisioner.status(), provisioner.has_pending_activation())
@@ -340,12 +340,12 @@ fn model_status(activate: bool, state: State<'_, AppState>) -> AppResult<ModelSt
 }
 
 #[tauri::command]
-fn model_deactivate(state: State<'_, AppState>) -> AppResult<ModelStatus> {
+async fn model_deactivate(state: State<'_, AppState>) -> AppResult<ModelStatus> {
     deactivate_model(&state.engine)?;
     Ok(state.model.lock().expect("model poisoned").status())
 }
 #[tauri::command]
-fn model_import(app: AppHandle, state: State<'_, AppState>) -> AppResult<Option<ModelStatus>> {
+async fn model_import(app: AppHandle, state: State<'_, AppState>) -> AppResult<Option<ModelStatus>> {
     let selected = app
         .dialog()
         .file()
@@ -359,7 +359,7 @@ fn model_import(app: AppHandle, state: State<'_, AppState>) -> AppResult<Option<
     Ok(Some(status))
 }
 #[tauri::command]
-fn model_remove(state: State<'_, AppState>, model_id: Option<String>) -> AppResult<ModelStatus> {
+async fn model_remove(state: State<'_, AppState>, model_id: Option<String>) -> AppResult<ModelStatus> {
     let _ = model_id;
     deactivate_model(&state.engine)?;
     state.model.lock().expect("model poisoned").remove()?;
