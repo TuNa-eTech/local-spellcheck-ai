@@ -83,3 +83,22 @@ def test_rule_limit_is_global_and_deterministic() -> None:
     second = RuleEngine().check(blocks, Preset.STANDARD, limit=5)
     assert first == second
     assert len(first) == 5
+
+
+def test_explicit_rule_configuration_overrides_preset() -> None:
+    config = RuleConfig(False, False, True, False, False)
+    findings = RuleEngine().check(
+        [Block("document:p0", "Nội  dung sát nhập gế")],
+        Preset.STANDARD,
+        config=config,
+    )
+    assert [item.detector_id for item in findings] == ["confusion.sát_nhập.v1"]
+
+
+def test_administrative_capitalization_reason_cites_the_required_authority() -> None:
+    finding = RuleEngine().check(
+        [Block("document:p0", "ủy ban nhân dân ban hành")],
+        Preset.ADMINISTRATIVE,
+    )[0]
+    assert "Nghị định 30/2020/NĐ-CP" in finding.reason
+    assert "Phụ lục II" in finding.reason

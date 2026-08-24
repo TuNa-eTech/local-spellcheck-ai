@@ -78,9 +78,10 @@ class RuleEngine:
         ignored_words: frozenset[str] = frozenset(),
         limit: int = 200,
         cancellation: Callable[[], None] | None = None,
+        config: RuleConfig | None = None,
     ) -> list[Finding]:
         candidates: list[Finding] = []
-        config = RuleConfig.for_preset(preset)
+        config = config or RuleConfig.for_preset(preset)
         ignored = {unicodedata.normalize("NFC", word).casefold() for word in ignored_words}
         for block in blocks:
             if cancellation:
@@ -277,7 +278,7 @@ class RuleEngine:
                         "capitalization",
                         "capitalization.agency.v1",
                         "Ủy ban nhân dân",
-                        "Tên cơ quan nên được viết hoa.",
+                        "Theo Nghị định 30/2020/NĐ-CP, Phụ lục II, tên cơ quan nên được viết hoa.",
                     )
                 )
                 if len(found) >= limit:

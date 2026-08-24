@@ -128,7 +128,7 @@ try {
     }
     $probeStdout = Get-Content -LiteralPath $probeOutput -Raw -ErrorAction SilentlyContinue
     $probeStderr = Get-Content -LiteralPath $probeError -Raw -ErrorAction SilentlyContinue
-    if ($probeProcess.ExitCode -ne 0 -or $probeStdout -notmatch '"protocol"\s*:\s*1') {
+    if ($probeProcess.ExitCode -ne 0 -or $probeStdout -notmatch '"protocol"\s*:\s*1' -or $probeStdout -notmatch '"model_classifier"') {
         throw "Packaged sidecar probe failed: exit=$($probeProcess.ExitCode) stdout=$probeStdout stderr=$probeStderr"
     }
 

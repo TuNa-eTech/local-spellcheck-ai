@@ -1,6 +1,14 @@
 export type Preset = "standard" | "administrative" | "spelling";
 export type Step = "file" | "rules" | "processing" | "result" | "no-findings";
 
+export interface RuleOptions {
+  technical: boolean;
+  repeated_words: boolean;
+  confusions: boolean;
+  syllables: boolean;
+  administrative_capitalization: boolean;
+}
+
 export interface DocumentInfo {
   path: string;
   name: string;
@@ -8,6 +16,8 @@ export interface DocumentInfo {
   paragraph_count: number;
   table_cell_count: number;
   character_count: number;
+  word_count: number;
+  page_count?: number;
 }
 
 export interface JobResult {
@@ -26,4 +36,4 @@ export interface ProgressEvent {
 }
 
 export interface DictionaryEntry { word: string; note: string }
-export interface ModelStatus { state: "not_installed" | "installed" | "ready" | "invalid"; model_id?: string; version?: string; code?: string }
+export interface ModelStatus { state: "not_installed" | "downloading" | "importing" | "verifying" | "installed" | "ready" | "invalid" | "cancelled" | "error" | "incompatible"; model_id?: string; version?: string; code?: string }

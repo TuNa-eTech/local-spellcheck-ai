@@ -24,8 +24,8 @@ pub struct EngineBroker {
 }
 
 impl EngineBroker {
-    pub fn start(app: &AppHandle) -> AppResult<Self> {
-        let mut command = engine_command(app)?;
+    pub fn start(app: &AppHandle, data_dir: &std::path::Path) -> AppResult<Self> {
+        let mut command = engine_command(app, data_dir)?;
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -182,7 +182,7 @@ fn fail_pending(waiters: &Waiters, jobs: &JobWaiters) {
     }
 }
 
-fn engine_command(app: &AppHandle) -> AppResult<Command> {
+fn engine_command(app: &AppHandle, data_dir: &std::path::Path) -> AppResult<Command> {
     if cfg!(debug_assertions) {
         let engine = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../engine");
         let mut command = Command::new("uv");
@@ -191,6 +191,10 @@ fn engine_command(app: &AppHandle) -> AppResult<Command> {
             "-m",
             "soatvan.entrypoints.sidecar",
         ]);
+        command.env("SOATVAN_DATA_DIR", data_dir);
+        if let Some(public_key) = option_env!("SOATVAN_MODEL_PUBLIC_KEY") {
+            command.env("SOATVAN_MODEL_PUBLIC_KEY", public_key);
+        }
         return Ok(command);
     }
     let executable = if cfg!(windows) {
@@ -204,7 +208,12 @@ fn engine_command(app: &AppHandle) -> AppResult<Command> {
         .map_err(|_| AppError::EngineUnavailable)?
         .join("engine")
         .join(executable);
-    Ok(Command::new(path))
+    let mut command = Command::new(path);
+    command.env("SOATVAN_DATA_DIR", data_dir);
+    if let Some(public_key) = option_env!("SOATVAN_MODEL_PUBLIC_KEY") {
+        command.env("SOATVAN_MODEL_PUBLIC_KEY", public_key);
+    }
+    Ok(command)
 }
 
 #[cfg(not(windows))]

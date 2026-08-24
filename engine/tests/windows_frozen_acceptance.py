@@ -104,6 +104,7 @@ def main() -> int:
         send(process, {"v": 1, "id": "hello", "method": "engine.hello", "params": {}})
         hello = frames.until(lambda frame: frame.get("id") == "hello")
         assert hello.get("ok") is True
+        assert "model_classifier" in hello["result"]["capabilities"]
         send(
             process,
             {

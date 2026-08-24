@@ -15,6 +15,30 @@ W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 NS = {"w": W}
 
 
+def test_inspect_reports_word_count_and_best_effort_saved_page_count(make_docx) -> None:
+    source = make_docx([["Một văn bản 2026."], ["Nghiên cứu tốt."]])
+    app_properties = b"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties">
+  <Pages>7</Pages>
+</Properties>"""
+    with zipfile.ZipFile(source, "a", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("docProps/app.xml", app_properties)
+    metadata = DocxPackage().inspect(source)
+    assert metadata["word_count"] == 7
+    assert metadata["page_count"] == 7
+
+
+def test_inspect_omits_unavailable_or_invalid_saved_page_count(make_docx) -> None:
+    source = make_docx([["Văn bản hợp lệ."]])
+    assert DocxPackage().inspect(source)["page_count"] is None
+    with zipfile.ZipFile(source, "a", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "docProps/app.xml",
+            b'<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"><Pages>stale</Pages></Properties>',
+        )
+    assert DocxPackage().inspect(source)["page_count"] is None
+
+
 def test_split_run_annotation_preserves_source_and_unrelated_parts(
     make_docx, tmp_path: Path
 ) -> None:

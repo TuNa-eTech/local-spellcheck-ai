@@ -9,9 +9,12 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::Digest;
 use std::{
     fs,
-    io::Write,
+    fs::OpenOptions,
+    future::Future,
+    io::{Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -37,6 +40,8 @@ struct DocumentInfo {
     paragraph_count: u64,
     table_cell_count: u64,
     character_count: u64,
+    word_count: u64,
+    page_count: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -46,6 +51,27 @@ struct JobResult {
     output_path: Option<String>,
     finding_count: u64,
     counts: Value,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct RuleOptions {
+    technical: bool,
+    repeated_words: bool,
+    confusions: bool,
+    syllables: bool,
+    administrative_capitalization: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StartJobRequest {
+    job_id: String,
+    source_path: String,
+    preset: String,
+    custom_prompt: String,
+    use_model: bool,
+    rule_options: RuleOptions,
+    ignored_words: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -89,23 +115,45 @@ fn inspect_impl(path: &Path, engine: &EngineBroker) -> AppResult<DocumentInfo> {
         paragraph_count: result["paragraph_count"].as_u64().unwrap_or(0),
         table_cell_count: result["table_cell_count"].as_u64().unwrap_or(0),
         character_count: result["character_count"].as_u64().unwrap_or(0),
+        word_count: result["word_count"].as_u64().unwrap_or(0),
+        page_count: result["page_count"].as_u64(),
     })
 }
 
 #[tauri::command]
-async fn start_job(
-    job_id: String,
-    source_path: String,
-    preset: String,
-    custom_prompt: String,
-    state: State<'_, AppState>,
-) -> AppResult<JobResult> {
+async fn start_job(request: StartJobRequest, state: State<'_, AppState>) -> AppResult<JobResult> {
+    let StartJobRequest {
+        job_id,
+        source_path,
+        preset,
+        custom_prompt,
+        use_model,
+        rule_options,
+        ignored_words,
+    } = request;
     let source = validate_docx(Path::new(&source_path))?;
     if !matches!(preset.as_str(), "standard" | "administrative" | "spelling") {
         return Err(AppError::Engine("PRESET_INVALID".into()));
     }
-    if !custom_prompt.trim().is_empty() {
+    if custom_prompt.chars().count() > 1000 {
+        return Err(AppError::Engine("CUSTOM_PROMPT_TOO_LONG".into()));
+    }
+    if !custom_prompt.trim().is_empty() && !use_model {
+        return Err(AppError::Engine("CUSTOM_PROMPT_REQUIRES_MODEL".into()));
+    }
+    if use_model && engine_model_status(&state.engine, true)?.state != "ready" {
         return Err(AppError::Engine("MODEL_CLASSIFIER_NOT_READY".into()));
+    }
+    if ignored_words.len() > 500
+        || ignored_words.iter().any(|word| {
+            word.trim().is_empty()
+                || word.chars().count() > 120
+                || word
+                    .chars()
+                    .any(|character| matches!(character, '\r' | '\n' | '\0'))
+        })
+    {
+        return Err(AppError::Engine("SESSION_DICTIONARY_INVALID".into()));
     }
     let workspace = tempfile::tempdir()?;
     let controlled_source = workspace.path().join("source.docx");
@@ -121,7 +169,9 @@ async fn start_job(
     let response = state.engine.run_job(
         json!({
             "job_id": job_id, "source_path": controlled_source,
-            "temporary_output_path": temporary_path, "preset": preset
+            "temporary_output_path": temporary_path, "preset": preset,
+            "custom_prompt": custom_prompt, "use_model": use_model,
+            "rule_config": rule_options, "ignored_words": ignored_words
         }),
         Duration::from_secs(10 * 60),
     );
@@ -246,8 +296,53 @@ fn dictionary_export(app: AppHandle, state: State<'_, AppState>) -> AppResult<Op
 }
 
 #[tauri::command]
-fn model_status(state: State<'_, AppState>) -> ModelStatus {
-    state.model.lock().expect("model poisoned").status()
+fn model_status(activate: bool, state: State<'_, AppState>) -> AppResult<ModelStatus> {
+    let (host, pending) = {
+        let provisioner = state.model.lock().expect("model poisoned");
+        (provisioner.status(), provisioner.has_pending_activation())
+    };
+    if host.state == "not_installed" {
+        if pending {
+            deactivate_model(&state.engine)?;
+            state
+                .model
+                .lock()
+                .expect("model poisoned")
+                .rollback_activation()?;
+            return engine_model_status(&state.engine, activate);
+        }
+        return Ok(host);
+    }
+    let status = engine_model_status(&state.engine, activate || pending)?;
+    if !pending {
+        return Ok(status);
+    }
+    if status.state == "ready" {
+        state
+            .model
+            .lock()
+            .expect("model poisoned")
+            .commit_activation()?;
+        return if activate {
+            Ok(status)
+        } else {
+            deactivate_model(&state.engine)?;
+            engine_model_status(&state.engine, false)
+        };
+    }
+    deactivate_model(&state.engine)?;
+    state
+        .model
+        .lock()
+        .expect("model poisoned")
+        .rollback_activation()?;
+    engine_model_status(&state.engine, activate)
+}
+
+#[tauri::command]
+fn model_deactivate(state: State<'_, AppState>) -> AppResult<ModelStatus> {
+    deactivate_model(&state.engine)?;
+    Ok(state.model.lock().expect("model poisoned").status())
 }
 #[tauri::command]
 fn model_import(app: AppHandle, state: State<'_, AppState>) -> AppResult<Option<ModelStatus>> {
@@ -259,16 +354,15 @@ fn model_import(app: AppHandle, state: State<'_, AppState>) -> AppResult<Option<
     let Some(path) = selected.and_then(|value| value.into_path().ok()) else {
         return Ok(None);
     };
-    state
-        .model
-        .lock()
-        .expect("model poisoned")
-        .import(&path)
-        .map(Some)
+    state.model_cancel.store(false, Ordering::Release);
+    let status = install_model_package(&state, &path)?;
+    Ok(Some(status))
 }
 #[tauri::command]
 fn model_remove(state: State<'_, AppState>) -> AppResult<ModelStatus> {
-    state.model.lock().expect("model poisoned").remove()
+    deactivate_model(&state.engine)?;
+    state.model.lock().expect("model poisoned").remove()?;
+    engine_model_status(&state.engine, false)
 }
 #[tauri::command]
 async fn model_download(app: AppHandle, state: State<'_, AppState>) -> AppResult<ModelStatus> {
@@ -286,38 +380,59 @@ async fn model_download(app: AppHandle, state: State<'_, AppState>) -> AppResult
     state.model_cancel.store(false, Ordering::Release);
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(30))
         .build()
         .map_err(|_| AppError::ModelNotConfigured)?;
-    let mut response = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|_| AppError::ModelPackageInvalid)?
-        .error_for_status()
-        .map_err(|_| AppError::ModelPackageInvalid)?;
-    let total = response
-        .content_length()
-        .ok_or(AppError::ModelPackageInvalid)?;
-    if total == 0 || total > MAX_MODEL_PACKAGE {
-        return Err(AppError::ModelPackageInvalid);
-    }
     let cache = app
         .path()
         .app_cache_dir()
         .map_err(|_| AppError::InvalidPath)?;
     fs::create_dir_all(&cache)?;
-    let mut package = tempfile::Builder::new()
-        .suffix(".svmodel")
-        .tempfile_in(cache)?;
-    let mut received = 0_u64;
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|_| AppError::ModelPackageInvalid)?
-    {
-        if state.model_cancel.load(Ordering::Acquire) {
-            return Err(AppError::Engine("MODEL_DOWNLOAD_CANCELLED".into()));
-        }
+    let cache_key = format!("{:x}", sha2::Sha256::digest(url.as_str().as_bytes()));
+    let partial_path = cache.join(format!("model-{}.svmodel.partial", &cache_key[..16]));
+    let mut resumed_at = fs::metadata(&partial_path)
+        .map(|item| item.len())
+        .unwrap_or(0);
+    if resumed_at > MAX_MODEL_PACKAGE {
+        fs::remove_file(&partial_path)?;
+        resumed_at = 0;
+    }
+    let mut request = client.get(url);
+    if resumed_at > 0 {
+        request = request.header(reqwest::header::RANGE, format!("bytes={resumed_at}-"));
+    }
+    let mut response = await_download(request.send(), &state.model_cancel)
+        .await?
+        .error_for_status()
+        .map_err(|_| AppError::ModelPackageInvalid)?;
+    let is_partial = response.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+    let remaining = response
+        .content_length()
+        .ok_or(AppError::ModelPackageInvalid)?;
+    let total = if is_partial {
+        response
+            .headers()
+            .get(reqwest::header::CONTENT_RANGE)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| parse_content_range(value, resumed_at, remaining))
+            .ok_or(AppError::ModelPackageInvalid)?
+    } else {
+        resumed_at = 0;
+        remaining
+    };
+    if total == 0 || total > MAX_MODEL_PACKAGE {
+        return Err(AppError::ModelPackageInvalid);
+    }
+    let mut package = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(!is_partial)
+        .open(&partial_path)?;
+    if is_partial {
+        package.seek(SeekFrom::End(0))?;
+    }
+    let mut received = resumed_at;
+    while let Some(chunk) = await_download(response.chunk(), &state.model_cancel).await? {
         received = received.saturating_add(chunk.len() as u64);
         if received > total || received > MAX_MODEL_PACKAGE {
             return Err(AppError::ModelPackageInvalid);
@@ -329,22 +444,120 @@ async fn model_download(app: AppHandle, state: State<'_, AppState>) -> AppResult
         );
     }
     package.flush()?;
+    package.sync_all()?;
     if received != total {
         return Err(AppError::ModelPackageInvalid);
     }
-    let status = state
-        .model
-        .lock()
-        .expect("model poisoned")
-        .import(package.path())?;
+    drop(package);
+    let status = match install_model_package(&state, &partial_path) {
+        Ok(status) => status,
+        Err(error) => {
+            let _ = fs::remove_file(&partial_path);
+            return Err(error);
+        }
+    };
+    fs::remove_file(partial_path)?;
     let _ = app.emit("model.state_changed", &status);
     Ok(status)
+}
+
+fn parse_content_range(value: &str, resumed_at: u64, content_length: u64) -> Option<u64> {
+    let value = value.strip_prefix("bytes ")?;
+    let (range, total) = value.split_once('/')?;
+    let (start, end) = range.split_once('-')?;
+    let start = start.parse::<u64>().ok()?;
+    let end = end.parse::<u64>().ok()?;
+    let total = total.parse::<u64>().ok()?;
+    let expected_length = end.checked_sub(start)?.checked_add(1)?;
+    (start == resumed_at
+        && end < total
+        && end.checked_add(1) == Some(total)
+        && expected_length == content_length)
+        .then_some(total)
+}
+
+async fn await_download<F, T>(future: F, cancelled: &AtomicBool) -> AppResult<T>
+where
+    F: Future<Output = Result<T, reqwest::Error>>,
+{
+    if cancelled.load(Ordering::Acquire) {
+        return Err(AppError::ModelCancelled);
+    }
+    tokio::pin!(future);
+    loop {
+        tokio::select! {
+            result = &mut future => return result.map_err(|_| AppError::ModelPackageInvalid),
+            _ = tokio::time::sleep(Duration::from_millis(50)) => {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(AppError::ModelCancelled);
+                }
+            }
+        }
+    }
 }
 
 #[tauri::command]
 fn model_cancel(state: State<'_, AppState>) -> bool {
     state.model_cancel.store(true, Ordering::Release);
     true
+}
+
+fn engine_model_status(engine: &EngineBroker, activate: bool) -> AppResult<ModelStatus> {
+    Ok(serde_json::from_value(engine.call(
+        "model.status",
+        json!({"activate": activate}),
+        Duration::from_secs(120),
+    )?)?)
+}
+
+fn deactivate_model(engine: &EngineBroker) -> AppResult<()> {
+    engine.call("model.remove", json!({}), Duration::from_secs(30))?;
+    Ok(())
+}
+
+fn install_model_package(state: &AppState, package: &Path) -> AppResult<ModelStatus> {
+    deactivate_model(&state.engine)?;
+    let installed = state
+        .model
+        .lock()
+        .expect("model poisoned")
+        .import_with_cancel(package, || state.model_cancel.load(Ordering::Acquire));
+    match installed {
+        Ok(status) => activate_model(state, status),
+        Err(error) => {
+            let _ = engine_model_status(&state.engine, true);
+            Err(error)
+        }
+    }
+}
+
+fn activate_model(state: &AppState, installed: ModelStatus) -> AppResult<ModelStatus> {
+    if installed.state != "installed" {
+        return Ok(installed);
+    }
+    let status = match engine_model_status(&state.engine, true) {
+        Ok(status) => status,
+        Err(error) => {
+            state
+                .model
+                .lock()
+                .expect("model poisoned")
+                .rollback_activation()?;
+            let _ = engine_model_status(&state.engine, true);
+            return Err(error);
+        }
+    };
+    let provisioner = state.model.lock().expect("model poisoned");
+    if status.state == "ready" {
+        provisioner.commit_activation()?;
+        return Ok(status);
+    }
+    provisioner.rollback_activation()?;
+    drop(provisioner);
+    let _ = engine_model_status(&state.engine, true);
+    Err(AppError::Engine(
+        status.code.unwrap_or_else(|| "MODEL_LOAD_FAILED".into()),
+    ))
 }
 
 fn validate_docx(path: &Path) -> AppResult<PathBuf> {
@@ -409,12 +622,14 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            let model_root = app.path().app_local_data_dir()?.join("models");
-            fs::create_dir_all(&model_root)?;
-            let engine = EngineBroker::start(app.handle())?;
+            let data_root = app.path().app_local_data_dir()?;
+            let model_root = data_root.join("models");
+            let model = ModelProvisioner::new(model_root);
+            model.recover_interrupted_activation()?;
+            let engine = EngineBroker::start(app.handle(), &data_root)?;
             app.manage(AppState {
                 engine,
-                model: Mutex::new(ModelProvisioner::new(model_root)),
+                model: Mutex::new(model),
                 model_cancel: AtomicBool::new(false),
             });
             Ok(())
@@ -431,6 +646,7 @@ pub fn run() {
             dictionary_import,
             dictionary_export,
             model_status,
+            model_deactivate,
             model_import,
             model_download,
             model_cancel,
@@ -482,5 +698,33 @@ mod tests {
             Err(AppError::OutputWrite)
         ));
         assert!(!temporary.exists());
+    }
+
+    #[tokio::test]
+    async fn model_download_wait_can_be_cancelled_before_network_returns() {
+        let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+        let signal = std::sync::Arc::clone(&cancelled);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            signal.store(true, Ordering::Release);
+        });
+        let result = await_download(
+            std::future::pending::<Result<(), reqwest::Error>>(),
+            &cancelled,
+        )
+        .await;
+        assert!(matches!(result, Err(AppError::ModelCancelled)));
+    }
+
+    #[test]
+    fn resumed_download_requires_an_exact_complete_content_range() {
+        assert_eq!(
+            parse_content_range("bytes 100-199/200", 100, 100),
+            Some(200)
+        );
+        assert_eq!(parse_content_range("bytes 100-evil/200", 100, 100), None);
+        assert_eq!(parse_content_range("bytes 10-199/200", 100, 190), None);
+        assert_eq!(parse_content_range("bytes 100-149/200", 100, 50), None);
+        assert_eq!(parse_content_range("items 100-199/200", 100, 100), None);
     }
 }

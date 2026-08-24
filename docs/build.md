@@ -98,6 +98,44 @@ Model không được đóng trong installer. Tải model chỉ được compile
 
 Nếu không có đủ cấu hình, ứng dụng vẫn build và chạy rule-only; chức năng tải model fail-closed. Import gói model offline vẫn yêu cầu manifest, checksum và chữ ký hợp lệ.
 
+### Benchmark và đóng gói model M2
+
+Runtime model được cài cùng extra `model`:
+
+```sh
+uv sync --project engine --extra dev --extra model --locked
+```
+
+Quy trình phê duyệt là: tạo manifest nháp chứa identity/runtime limits → chạy cùng một corpus đã duyệt trên máy 8 GB và 16 GB → ký gói bằng hai report. Lệnh benchmark ghi SHA-256 của cả GGUF và corpus vào report:
+
+```sh
+uv run --project engine python tools/benchmark_model.py \
+  --model approved-model.gguf \
+  --manifest benchmark-manifest.json \
+  --corpus approved-corpus.json \
+  --output benchmark-8gb.json \
+  --max-p95-seconds 120 \
+  --max-rss-mb 7000
+```
+
+Chạy lại trên profile 16 GB để tạo `benchmark-16gb.json`. Hai report phải cùng model SHA-256, model ID/version và corpus SHA-256; precision phải ≥90%, recall ≥85%. Tạo Ed25519 key ngoài repository rồi đóng gói:
+
+```sh
+openssl genpkey -algorithm Ed25519 -out model-signing-key.pem
+uv run --project engine python tools/package_model.py \
+  --model approved-model.gguf \
+  --license LICENSE.txt \
+  --private-key model-signing-key.pem \
+  --benchmark-report benchmark-8gb.json \
+  --benchmark-report benchmark-16gb.json \
+  --output approved-model.svmodel \
+  --model-id approved-model \
+  --version 1.0.0 \
+  --memory-mb 3000
+```
+
+Tool in public key base64 cần đưa vào `SOATVAN_MODEL_PUBLIC_KEY`. Không commit private key, GGUF, corpus khách hàng hoặc report chứa metadata máy. Cấu trúc corpus và manifest nháp xem tại [`model-benchmark.md`](model-benchmark.md).
+
 ## Chữ ký cho nhu cầu cá nhân
 
 Dự án mặc định dùng chữ ký nội bộ, không cần certificate thương mại và không lưu private key trong repository.

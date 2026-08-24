@@ -10,10 +10,10 @@ from pathlib import Path
 from typing import Any
 
 from soatvan import PROTOCOL_VERSION, __version__
-from soatvan.checking import Preset, RuleEngine
+from soatvan.checking import Preset, RuleConfig, RuleEngine
 from soatvan.dictionary import SqliteDictionaryRepository
 from soatvan.document import DocxPackage, InvalidDocument
-from soatvan.models import ModelRegistry
+from soatvan.models import ModelRegistry, runtime_available
 from soatvan.workflow import ProcessDocument, ProcessRequest
 
 MAX_FRAME = 1024 * 1024
@@ -66,13 +66,17 @@ class Token:
 
 class Sidecar:
     def __init__(self) -> None:
+        configured_data = os.environ.get("SOATVAN_DATA_DIR")
         local_data = (
-            Path(os.environ.get("LOCALAPPDATA", Path.home() / ".local" / "share")) / "SoatVan"
+            Path(configured_data)
+            if configured_data
+            else Path(os.environ.get("LOCALAPPDATA", Path.home() / ".local" / "share"))
+            / "SoatVan"
         )
         self.documents = DocxPackage()
         self.dictionary = SqliteDictionaryRepository(local_data / "dictionary.db")
         self.models = ModelRegistry(local_data / "models")
-        self.processor = ProcessDocument(self.documents, self.dictionary, RuleEngine())
+        self.processor = ProcessDocument(self.documents, self.dictionary, RuleEngine(), self.models)
         self.jobs: dict[str, Token] = {}
 
     def dispatch(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -87,18 +91,22 @@ class Sidecar:
             "dictionary.import": self.dictionary_import,
             "dictionary.export": self.dictionary_export,
             "model.status": self.model_status,
+            "model.remove": self.model_remove,
         }
-        if method in {"model.download", "model.import", "model.cancel", "model.remove"}:
+        if method in {"model.download", "model.import", "model.cancel"}:
             raise ValueError("MODEL_PROVISIONING_OWNED_BY_HOST")
         if method not in handlers:
             raise ValueError("METHOD_NOT_FOUND")
         return handlers[method](params)
 
     def hello(self, _: dict[str, Any]) -> dict[str, Any]:
+        capabilities = ["rules", "dictionary", "docx_annotations"]
+        if runtime_available():
+            capabilities.append("model_classifier")
         return {
             "protocol": PROTOCOL_VERSION,
             "engine_version": __version__,
-            "capabilities": ["rules", "dictionary", "docx_annotations"],
+            "capabilities": capabilities,
         }
 
     def inspect(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -125,6 +133,10 @@ class Sidecar:
                 Path(params["source_path"]),
                 temporary_output,
                 Preset(params.get("preset", "standard")),
+                _rule_config(params.get("rule_config")),
+                bool(params.get("use_model", False)),
+                _custom_prompt(params.get("custom_prompt", "")),
+                _ignored_words(params.get("ignored_words", [])),
             )
 
             def progress(stage: str, percent: int, message_code: str) -> None:
@@ -201,8 +213,47 @@ class Sidecar:
     def dictionary_export(self, params: dict[str, Any]) -> dict[str, Any]:
         return {"count": self.dictionary.export_csv(Path(params["path"]))}
 
-    def model_status(self, _: dict[str, Any]) -> dict[str, Any]:
-        return self.models.status()
+    def model_status(self, params: dict[str, Any]) -> dict[str, Any]:
+        activate = params.get("activate", True)
+        if not isinstance(activate, bool):
+            raise ValueError("INVALID_PARAMS")
+        return self.models.status(activate=activate)
+
+    def model_remove(self, _: dict[str, Any]) -> dict[str, Any]:
+        self.models.deactivate()
+        return {"deactivated": True}
+
+
+def _rule_config(value: object) -> RuleConfig | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("RULE_CONFIG_INVALID")
+    return RuleConfig.from_dict(value)
+
+
+def _custom_prompt(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("INVALID_PARAMS")
+    if len(value) > 1000:
+        raise ValueError("CUSTOM_PROMPT_TOO_LONG")
+    return value
+
+
+def _ignored_words(value: object) -> frozenset[str]:
+    if not isinstance(value, list) or len(value) > 500:
+        raise ValueError("SESSION_DICTIONARY_INVALID")
+    words: set[str] = set()
+    for item in value:
+        if (
+            not isinstance(item, str)
+            or not item.strip()
+            or len(item) > 120
+            or any(character in item for character in "\r\n\x00")
+        ):
+            raise ValueError("SESSION_DICTIONARY_INVALID")
+        words.add(item.strip())
+    return frozenset(words)
 
 
 def validate_request(frame: object) -> tuple[str, str, dict[str, Any]]:
@@ -287,6 +338,12 @@ def safe_message(code: str) -> str:
         "INVALID_PARAMS": "Tham số không hợp lệ.",
         "CSV_INVALID_HEADER": "CSV phải có hai cột word,note.",
         "MODEL_PROVISIONING_OWNED_BY_HOST": "Model được quản lý bởi ứng dụng desktop.",
+        "MODEL_CLASSIFIER_NOT_READY": "Model AI chưa sẵn sàng.",
+        "CUSTOM_PROMPT_REQUIRES_MODEL": "Prompt riêng yêu cầu bật model AI.",
+        "CUSTOM_PROMPT_TOO_LONG": "Prompt riêng vượt quá 1.000 ký tự.",
+        "RULE_CONFIG_INVALID": "Cấu hình quy tắc không hợp lệ.",
+        "SESSION_DICTIONARY_INVALID": "Danh sách từ bỏ qua không hợp lệ.",
+        "MODEL_INFERENCE_TIMEOUT": "Model AI vượt quá thời gian xử lý cho phép.",
     }
     return messages.get(code, "Không thể hoàn tất yêu cầu.")
 

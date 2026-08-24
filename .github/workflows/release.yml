@@ -56,7 +56,7 @@ jobs:
       - name: Verify Python engine
         shell: pwsh
         run: |
-          uv sync --project engine --extra dev --locked
+          uv sync --project engine --extra dev --extra model --locked
           uv run --project engine ruff check engine
           uv run --project engine mypy --config-file engine/pyproject.toml
           uv run --project engine pytest --cov=soatvan --cov-report=term-missing --cov-fail-under=85 engine
@@ -123,7 +123,7 @@ jobs:
           SOATVAN_MODEL_ALLOWLIST: ${{ vars.SOATVAN_MODEL_ALLOWLIST }}
           SOATVAN_MODEL_PUBLIC_KEY: ${{ vars.SOATVAN_MODEL_PUBLIC_KEY }}
 
-      - name: Run Windows M0/M1 acceptance
+      - name: Run Windows M0/M1 acceptance and M2 capability probe
         timeout-minutes: 20
         shell: pwsh
         run: |

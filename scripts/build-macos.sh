@@ -24,7 +24,7 @@ app_bundle="${repo_root}/apps/desktop/src-tauri/target/release/bundle/macos/Soá
 cd "${repo_root}"
 
 echo "[1/4] Dong bo dependency Python"
-uv sync --project engine --extra dev --locked
+uv sync --project engine --extra dev --extra model --locked
 
 if [[ "${SOATVAN_PYINSTALLER_CACHE_HIT:-false}" == "true" && -d "engine/build/soatvan-engine" ]]; then
   find engine/build/soatvan-engine -exec touch {} +

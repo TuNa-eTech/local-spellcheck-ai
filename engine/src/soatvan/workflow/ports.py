@@ -37,3 +37,40 @@ class DocumentPackage(Protocol):
 
 class DictionaryRepository(Protocol):
     def ignored_words(self) -> frozenset[str]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class ClassificationCandidate:
+    candidate_id: str
+    paragraph_id: str
+    source_text: str
+    suggestion: str
+    reason_code: str
+    occurrence_index: int
+    context: str
+
+
+@dataclass(frozen=True, slots=True)
+class ClassifierVerdict:
+    candidate_id: str
+    verdict: str
+    confidence: float
+
+
+class ContextClassifier(Protocol):
+    @property
+    def version(self) -> str: ...
+
+    @property
+    def minimum_confidence(self) -> float: ...
+
+    def classify(
+        self,
+        candidates: tuple[ClassificationCandidate, ...],
+        custom_prompt: str,
+        cancellation: CancellationToken,
+    ) -> tuple[ClassifierVerdict, ...]: ...
+
+
+class ClassifierProvider(Protocol):
+    def classifier(self) -> ContextClassifier | None: ...

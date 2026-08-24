@@ -1,6 +1,6 @@
 # M0/M1 acceptance — SoátVăn Desktop
 
-Ngày cập nhật: 23/8/2026
+Ngày cập nhật: 24/8/2026
 
 Tài liệu này phân biệt rõ **implementation**, **test tự động**, **evidence Windows GitHub Actions** và **evidence đầu vào chưa có**. Không dùng kết quả macOS để tuyên bố một gate Windows đã đạt.
 
@@ -22,9 +22,10 @@ Evidence Windows hiện tại: commit `ad8ae1a`, [verify #32618189142](https://g
 
 | Requirement | Evidence tự động | Trạng thái |
 |---|---|---|
-| Workflow `Chọn file → Quy tắc → Xử lý → Kết quả`, không preview | 7 Vitest/jsdom tests | Đã triển khai |
+| Workflow `Chọn file → Quy tắc → Xử lý → Kết quả`, không preview | 12 Vitest/jsdom tests | Đã triển khai |
 | File dialog, Tauri drop, `Ctrl+O`, progress, cancel, output/open-folder | DOM tests; late-result-after-cancel regression | Đã triển khai |
 | Ba preset đúng scope | Rule tests chứng minh preset spelling không chạy technical rules | Đã triển khai |
+| Bật/tắt từng nhóm rule và từ bỏ qua chỉ trong phiên hiện tại | DOM/API/Rust/Python boundary tests và workflow tests | Đã triển khai |
 | Prompt tự do khóa khi model chưa `ready` | DOM test và Rust fail-closed command | Đã triển khai |
 | NFC, khoảng trắng/dấu câu/từ lặp, confusion, viết hoa hành chính, âm tiết | Unit + Hypothesis property tests; detector âm tiết M1 chỉ sửa vi phạm phụ âm đầu có độ tin cậy cao | Đã triển khai theo scope bảo thủ |
 | Main body/table; giữ nguyên vùng chưa hỗ trợ | Advanced golden inventory và semantic assertions | Đã triển khai |

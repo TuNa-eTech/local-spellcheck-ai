@@ -1,13 +1,13 @@
 import "./styles.css";
 import { api } from "./api";
-import type { DictionaryEntry, DocumentInfo, JobResult, ModelStatus, Preset, Step } from "./contracts";
+import type { DictionaryEntry, DocumentInfo, JobResult, ModelStatus, Preset, RuleOptions, Step } from "./contracts";
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
 let renderedStep: Step | null = null;
 let renderedSettings = false;
-const state: { step: Step; document: DocumentInfo | null; preset: Preset; prompt: string; jobId: string; progress: number; result: JobResult | null; model: ModelStatus; settings: boolean; tab: string; dictionary: DictionaryEntry[]; error: string } = {
-  step: "file", document: null, preset: "standard", prompt: "", jobId: "", progress: 0,
-  result: null, model: { state: "not_installed" }, settings: false, tab: "dictionary", dictionary: [], error: "",
+const state: { step: Step; document: DocumentInfo | null; preset: Preset; prompt: string; ignoredWords: string; useModel: boolean; ruleOptions: RuleOptions; jobId: string; progress: number; progressStage: string; modelProgress: number; result: JobResult | null; model: ModelStatus; settings: boolean; tab: string; dictionary: DictionaryEntry[]; error: string } = {
+  step: "file", document: null, preset: "standard", prompt: "", ignoredWords: "", jobId: "", progress: 0, progressStage: "",
+  useModel: false, ruleOptions: loadRuleOptions(), modelProgress: 0, result: null, model: { state: "not_installed" }, settings: false, tab: "dictionary", dictionary: [], error: "",
 };
 
 const presets: Record<Preset, { title: string; copy: string }> = {
@@ -16,18 +16,43 @@ const presets: Record<Preset, { title: string; copy: string }> = {
   spelling: { title: "Chỉ kiểm tra chính tả", copy: "Không đề xuất thay đổi văn phong hoặc cách diễn đạt." },
 };
 
+function optionsForPreset(preset: Preset): RuleOptions {
+  return {
+    technical: preset !== "spelling",
+    repeated_words: preset !== "spelling",
+    confusions: true,
+    syllables: true,
+    administrative_capitalization: preset === "administrative",
+  };
+}
+
+function loadRuleOptions(): RuleOptions {
+  try {
+    const value = JSON.parse(localStorage.getItem("soatvan.rule-options.v1") ?? "null") as Partial<RuleOptions> | null;
+    const defaults = optionsForPreset("standard");
+    return value && (Object.keys(defaults) as (keyof RuleOptions)[]).every(key => typeof value[key] === "boolean") ? value as RuleOptions : defaults;
+  } catch { return optionsForPreset("standard"); }
+}
+function saveRuleOptions(): void { try { localStorage.setItem("soatvan.rule-options.v1", JSON.stringify(state.ruleOptions)); } catch { /* Storage can be unavailable in hardened WebViews. */ } }
+function loadModelPreference(): boolean { try { return localStorage.getItem("soatvan.use-model.v1") !== "false"; } catch { return true; } }
+function saveModelPreference(enabled: boolean): void { try { localStorage.setItem("soatvan.use-model.v1", String(enabled)); } catch { /* Storage can be unavailable in hardened WebViews. */ } }
+
 function escape(value: string): string { const node = document.createElement("div"); node.textContent = value; return node.innerHTML; }
 function formatBytes(value: number): string { return `${(value / 1024 / 1024).toLocaleString("vi-VN", { maximumFractionDigits: 2 })} MB`; }
+function documentMetadata(doc: DocumentInfo): string {
+  const pages = doc.page_count ? `${doc.page_count.toLocaleString("vi-VN")} trang · ` : "";
+  return `${formatBytes(doc.size)} · ${pages}${doc.word_count.toLocaleString("vi-VN")} từ · ${doc.paragraph_count.toLocaleString("vi-VN")} đoạn · ${doc.table_cell_count.toLocaleString("vi-VN")} ô bảng`;
+}
 
 function render(): void {
   const focusStep = renderedStep !== state.step;
   const focusSettings = !renderedSettings && state.settings;
   const doc = state.document;
   app.innerHTML = `
-    <header class="app-header"><div class="brand"><span class="brand__mark">SV</span><div><strong>SoátVăn</strong><span>Kiểm tra văn bản trên máy</span></div></div><button class="button button--quiet" id="settings">⚙ Cài đặt</button></header>
+    <header class="app-header"><div class="brand"><span class="brand__mark">SV</span><div><strong>SoátVăn</strong><span>Kiểm tra văn bản trên máy</span></div></div><button class="button button--quiet" id="settings" ${state.step === "processing" ? "disabled" : ""}>⚙ Cài đặt</button></header>
     <main class="workflow-shell"><ol class="stepper" aria-label="Tiến trình">${["Chọn file", "Quy tắc", "Xử lý", "Kết quả"].map((label, index) => `<li class="${stepIndex() === index ? "active" : ""} ${stepIndex() > index ? "done" : ""}"><span>${index + 1}</span><strong>${label}</strong></li>`).join("")}</ol>
     ${state.step === "file" ? `<section class="workflow-card"><div class="section-copy"><p class="step-label">Bước 1</p><h1>Chọn tệp Word cần kiểm tra</h1><p>Ứng dụng tạo file kết quả mới; file gốc luôn bất biến.</p></div><button class="drop-zone" id="choose"><span class="drop-icon">⇧</span><strong>Chọn hoặc kéo thả tệp .docx</strong><span>Ctrl+O để mở nhanh</span></button>${errorHtml()}</section>` : ""}
-    ${state.step === "rules" && doc ? `<section class="workflow-card"><button class="back-button" id="back">← Chọn file khác</button><div class="file-chip"><strong>${escape(doc.name)}</strong><span>${formatBytes(doc.size)} · ${doc.paragraph_count} đoạn · ${doc.table_cell_count} ô bảng</span></div><div class="section-copy"><p class="step-label">Bước 2</p><h1>Chọn quy tắc kiểm tra</h1></div><div class="preset-grid">${(Object.keys(presets) as Preset[]).map(key => `<label class="preset ${state.preset === key ? "selected" : ""}"><input type="radio" name="preset" value="${key}" ${state.preset === key ? "checked" : ""}><strong>${presets[key].title}</strong><span>${presets[key].copy}</span></label>`).join("")}</div><label class="field"><span>Prompt quy tắc riêng <small>${state.model.state === "ready" ? "Model đã sẵn sàng" : "Cần cài model AI"}</small></span><textarea id="prompt" rows="4" maxlength="1000" ${state.model.state !== "ready" ? "disabled" : ""} placeholder="Ví dụ: ưu tiên thuật ngữ của đơn vị…">${escape(state.prompt)}</textarea></label><div class="workflow-actions"><button class="button button--primary" id="start">Bắt đầu xử lý →</button></div>${errorHtml()}</section>` : ""}
+    ${state.step === "rules" && doc ? `<section class="workflow-card"><button class="back-button" id="back">← Chọn file khác</button><div class="file-chip"><strong>${escape(doc.name)}</strong><span>${documentMetadata(doc)}</span></div><div class="section-copy"><p class="step-label">Bước 2</p><h1>Chọn quy tắc kiểm tra</h1></div><div class="preset-grid">${(Object.keys(presets) as Preset[]).map(key => `<label class="preset ${state.preset === key ? "selected" : ""}"><input type="radio" name="preset" value="${key}" ${state.preset === key ? "checked" : ""}><strong>${presets[key].title}</strong><span>${presets[key].copy}</span></label>`).join("")}</div><label class="field"><span>Từ bỏ qua trong lần này <small>Ngăn cách bằng dấu phẩy hoặc xuống dòng</small></span><textarea id="ignored-words" rows="2" maxlength="60000" placeholder="Ví dụ: SoátVăn, tên đơn vị…">${escape(state.ignoredWords)}</textarea></label><label class="field"><span>Prompt quy tắc riêng <small>${state.model.state === "ready" && state.useModel ? "Model đã bật" : "Cần model AI ở trạng thái sẵn sàng"}</small></span><textarea id="prompt" rows="4" maxlength="1000" aria-describedby="prompt-count" ${state.model.state !== "ready" || !state.useModel ? "disabled" : ""} placeholder="Chỉ áp dụng cho các trường hợp nghi ngờ đã được hệ thống tìm thấy…">${escape(state.prompt)}</textarea><small id="prompt-count">${state.prompt.length.toLocaleString("vi-VN")}/1.000 ký tự</small></label><div class="workflow-actions"><button class="button button--primary" id="start">Bắt đầu xử lý →</button></div>${errorHtml()}</section>` : ""}
     ${state.step === "processing" ? `<section class="workflow-card centered" role="status" aria-live="polite"><span class="spinner"></span><div class="section-copy center"><p class="step-label">Bước 3</p><h1>${progressTitle()}</h1><p>Mọi xử lý tài liệu diễn ra trên máy này.</p></div><div class="progress"><span style="width:${state.progress}%"></span></div><strong>${state.progress}%</strong><button class="button button--secondary" id="cancel">Dừng xử lý</button></section>` : ""}
     ${(state.step === "result" || state.step === "no-findings") ? resultHtml() : ""}
     </main><footer class="status-bar"><span>● Xử lý cục bộ · không gửi nội dung tài liệu lên mạng</span><span>v0.1.0</span></footer>${state.settings ? settingsHtml() : ""}`;
@@ -39,7 +64,7 @@ function render(): void {
 
 function stepIndex(): number { return state.step === "file" ? 0 : state.step === "rules" ? 1 : state.step === "processing" ? 2 : 3; }
 function errorHtml(): string { return state.error ? `<p class="error" role="alert">${escape(state.error)}</p>` : ""; }
-function progressTitle(): string { return state.progress < 25 ? "Đang đọc cấu trúc tệp Word…" : state.progress < 75 ? "Đang áp dụng quy tắc…" : state.progress < 90 ? "Đang kiểm tra vị trí cảnh báo…" : "Đang tạo file kết quả…"; }
+function progressTitle(): string { return state.progressStage === "model" ? "Đang phân loại các trường hợp nghi ngờ bằng model cục bộ…" : state.progress < 25 ? "Đang đọc cấu trúc tệp Word…" : state.progress < 75 ? "Đang áp dụng quy tắc…" : state.progress < 90 ? "Đang kiểm tra vị trí cảnh báo…" : "Đang tạo file kết quả…"; }
 function resultHtml(): string {
   if (state.step === "no-findings") return `<section class="workflow-card centered"><div class="success">✓</div><div class="section-copy center"><p class="step-label">Bước 4</p><h1>Không phát hiện cảnh báo</h1><p>Không tạo file bản sao. File gốc vẫn giữ nguyên.</p></div><button class="button button--primary" id="restart">Kiểm tra file khác</button></section>`;
   const path = state.result?.output_path ?? "";
@@ -51,10 +76,11 @@ function settingsHtml(): string {
 }
 function settingsBody(): string {
   if (state.tab === "dictionary") return `<div class="toolbar"><input id="dictionary-search" placeholder="Tìm từ…"><button class="button button--secondary" id="import-csv">Nhập CSV</button><button class="button button--secondary" id="export-csv">Xuất CSV</button></div><form class="dictionary-form" id="dictionary-form"><input name="word" required maxlength="120" placeholder="Từ được chấp nhận"><input name="note" maxlength="500" placeholder="Ghi chú"><button class="button button--primary">Thêm / cập nhật</button></form><div class="dictionary-list">${state.dictionary.length ? state.dictionary.map(entry => `<div><span><strong>${escape(entry.word)}</strong><small>${escape(entry.note || "Không có ghi chú")}</small></span><button data-delete="${escape(entry.word)}" aria-label="Xoá ${escape(entry.word)}">Xoá</button></div>`).join("") : "<p>Chưa có mục từ nào.</p>"}</div>`;
-  if (state.tab === "rules") return `<div class="section-copy"><h3>Preset tích hợp</h3><p>Ba preset được version cùng rule engine. Chỉnh sửa preset tổ chức sẽ được mở sau khi có schema migration.</p></div>${Object.values(presets).map(item => `<div class="setting-row"><strong>${item.title}</strong><span>${item.copy}</span></div>`).join("")}`;
+  if (state.tab === "rules") return `<div class="section-copy"><h3>Nhóm quy tắc đang dùng</h3><p>Các lựa chọn này áp dụng cho lần xử lý tiếp theo.</p></div>${([['technical','Khoảng trắng và dấu câu'],['repeated_words','Từ lặp'],['confusions','Từ dễ nhầm'],['syllables','Âm tiết tiếng Việt'],['administrative_capitalization','Viết hoa hành chính']] as const).map(([key,label]) => `<label class="setting-row"><span><strong>${label}</strong></span><input type="checkbox" data-rule="${key}" ${state.ruleOptions[key] ? "checked" : ""}></label>`).join("")}`;
   const installed = state.model.state === "ready" || state.model.state === "installed";
-  const title = state.model.state === "ready" ? "Model đã sẵn sàng" : state.model.state === "installed" ? "Model đã xác minh · chờ benchmark" : state.model.state === "invalid" ? "Model không hợp lệ" : "Chưa cài model AI";
-  return `<div class="model-card"><strong>${title}</strong><p>${installed ? `${escape(state.model.model_id ?? "model")} · ${escape(state.model.version ?? "")}` : "Ứng dụng vẫn chạy đầy đủ bằng tầng luật."}</p></div><p class="notice">Chỉ kết nối mạng sau khi bạn chủ động bấm tải. Nội dung tài liệu không bao giờ được gửi đi.</p><div class="button-row"><button class="button button--secondary" id="model-import">Nhập gói từ máy</button><button class="button button--primary" id="model-action">${installed ? "Xoá model" : "Tải model"}</button></div>`;
+  const busy = ["downloading", "importing", "verifying"].includes(state.model.state);
+  const title = state.model.state === "ready" ? "Model đã sẵn sàng" : state.model.state === "installed" ? (state.model.code ? "Model đã cài · runtime chưa sẵn sàng" : "Model đã cài · AI đang tắt") : state.model.state === "downloading" ? `Đang tải model… ${state.modelProgress}%` : state.model.state === "importing" ? "Đang nhập gói model…" : state.model.state === "verifying" ? "Đang xác minh và khởi động model…" : state.model.state === "invalid" || state.model.state === "incompatible" ? "Model không hợp lệ hoặc không tương thích" : state.model.state === "error" ? "Không thể cài model" : "Chưa cài model AI";
+  return `<div class="model-card"><strong>${title}</strong><p>${installed ? `${escape(state.model.model_id ?? "model")} · ${escape(state.model.version ?? "")}` : "Ứng dụng vẫn chạy đầy đủ bằng tầng luật."}</p>${busy ? `<div class="progress"><span style="width:${state.modelProgress}%"></span></div>` : ""}</div>${installed ? `<label class="setting-row"><span><strong>Dùng AI để lọc candidate</strong><small>Tắt sẽ giải phóng runtime và chạy hoàn toàn bằng tầng luật.</small></span><input type="checkbox" id="use-model" ${state.useModel ? "checked" : ""} ${busy ? "disabled" : ""}></label>` : ""}<p class="notice">Chỉ kết nối mạng sau khi bạn chủ động bấm tải. Nội dung tài liệu không bao giờ được gửi đi.</p><div class="button-row"><button class="button button--secondary" id="model-import" ${busy ? "disabled" : ""}>Nhập gói từ máy</button><button class="button button--primary" id="model-action">${busy ? "Huỷ" : installed ? "Xoá model" : "Tải model"}</button></div>`;
 }
 
 function bind(): void {
@@ -67,9 +93,16 @@ function bind(): void {
   document.querySelector("#cancel")?.addEventListener("click", () => void cancel());
   document.querySelector("#open")?.addEventListener("click", () => void api.openOutput(state.result!.output_path!));
   document.querySelector("#reveal")?.addEventListener("click", () => void api.openOutput(state.result!.output_path!, true));
-  document.querySelectorAll<HTMLInputElement>('input[name="preset"]').forEach(input => input.addEventListener("change", () => { state.preset = input.value as Preset; render(); }));
-  document.querySelector<HTMLTextAreaElement>("#prompt")?.addEventListener("input", event => { state.prompt = (event.target as HTMLTextAreaElement).value; });
+  document.querySelectorAll<HTMLInputElement>('input[name="preset"]').forEach(input => input.addEventListener("change", () => { state.preset = input.value as Preset; state.ruleOptions = optionsForPreset(state.preset); saveRuleOptions(); render(); }));
+  document.querySelector<HTMLTextAreaElement>("#prompt")?.addEventListener("input", event => {
+    state.prompt = (event.target as HTMLTextAreaElement).value;
+    const counter = document.querySelector<HTMLElement>("#prompt-count");
+    if (counter) counter.textContent = `${state.prompt.length.toLocaleString("vi-VN")}/1.000 ký tự`;
+  });
+  document.querySelector<HTMLTextAreaElement>("#ignored-words")?.addEventListener("input", event => { state.ignoredWords = (event.target as HTMLTextAreaElement).value; });
   document.querySelectorAll<HTMLButtonElement>("[data-tab]").forEach(button => button.addEventListener("click", () => { state.tab = button.dataset.tab!; render(); }));
+  document.querySelectorAll<HTMLInputElement>("[data-rule]").forEach(input => input.addEventListener("change", () => { const key = input.dataset.rule as keyof RuleOptions; state.ruleOptions = { ...state.ruleOptions, [key]: input.checked }; saveRuleOptions(); }));
+  document.querySelector<HTMLInputElement>("#use-model")?.addEventListener("change", event => { void setModelEnabled((event.target as HTMLInputElement).checked); });
   document.querySelector<HTMLFormElement>("#dictionary-form")?.addEventListener("submit", event => void saveWord(event));
   document.querySelector<HTMLInputElement>("#dictionary-search")?.addEventListener("input", event => void loadDictionary((event.target as HTMLInputElement).value));
   document.querySelectorAll<HTMLButtonElement>("[data-delete]").forEach(button => button.addEventListener("click", () => void deleteWord(button.dataset.delete!)));
@@ -80,24 +113,51 @@ function bind(): void {
 }
 
 async function choose(): Promise<void> { try { const selected = await api.chooseDocument(); if (selected) { state.document = selected; state.step = "rules"; state.error = ""; render(); } } catch { state.error = "Không thể mở tệp DOCX này."; render(); } }
-function reset(): void { Object.assign(state, { step: "file", document: null, result: null, progress: 0, error: "", prompt: "", jobId: "" }); render(); }
+function reset(): void { Object.assign(state, { step: "file", document: null, result: null, progress: 0, progressStage: "", error: "", prompt: "", ignoredWords: "", jobId: "" }); render(); }
 async function start(): Promise<void> {
   if (!state.document) return;
   const currentJobId = crypto.randomUUID();
-  state.step = "processing"; state.progress = 0; state.jobId = currentJobId; state.error = ""; render();
-  const unlisten = await api.onProgress(event => { if (state.jobId === currentJobId && event.job_id === currentJobId) { state.progress = event.percent; render(); } });
-  try { const result = await api.startJob(currentJobId, state.document.path, state.preset, state.prompt); if (state.jobId === currentJobId && state.step === "processing") { state.result = result; state.step = result.status === "no_findings" ? "no-findings" : "result"; } }
+  state.step = "processing"; state.progress = 0; state.progressStage = ""; state.jobId = currentJobId; state.error = ""; render();
+  const unlisten = await api.onProgress(event => { if (state.jobId === currentJobId && event.job_id === currentJobId) { state.progress = event.percent; state.progressStage = event.stage; render(); } });
+  const ignoredWords = [...new Set(state.ignoredWords.split(/[\n,]/).map(word => word.trim()).filter(Boolean))];
+  try { const result = await api.startJob(currentJobId, state.document.path, state.preset, state.prompt, state.useModel, state.ruleOptions, ignoredWords); if (state.jobId === currentJobId && state.step === "processing") { state.result = result; state.step = result.status === "no_findings" ? "no-findings" : "result"; } }
   catch { if (state.jobId === currentJobId && state.step === "processing") { state.step = "rules"; state.error = "Không thể xử lý tệp. File gốc không bị thay đổi."; } }
   finally { unlisten(); render(); }
 }
-async function cancel(): Promise<void> { const cancelledJobId = state.jobId; await api.cancelJob(cancelledJobId); if (state.jobId === cancelledJobId) { state.jobId = ""; state.step = "rules"; state.progress = 0; render(); } }
-async function openSettings(): Promise<void> { state.settings = true; state.model = await api.modelStatus(); await loadDictionary(); }
+async function cancel(): Promise<void> { const cancelledJobId = state.jobId; await api.cancelJob(cancelledJobId); if (state.jobId === cancelledJobId) { state.jobId = ""; state.step = "rules"; state.progress = 0; state.progressStage = ""; render(); } }
+async function openSettings(): Promise<void> {
+  state.settings = true;
+  render();
+  try { state.model = await api.modelStatus(state.useModel); }
+  catch { state.model = { state: "error", code: "MODEL_STATUS_FAILED" }; }
+  await loadDictionary();
+}
 async function loadDictionary(query = ""): Promise<void> { try { state.dictionary = await api.dictionaryList(query); } catch { state.dictionary = []; } render(); }
 async function saveWord(event: SubmitEvent): Promise<void> { event.preventDefault(); const data = new FormData(event.currentTarget as HTMLFormElement); await api.dictionaryUpsert(String(data.get("word")), String(data.get("note"))); await loadDictionary(); }
 async function deleteWord(word: string): Promise<void> { await api.dictionaryDelete(word); await loadDictionary(); }
 async function importCsv(): Promise<void> { await api.dictionaryImport(); await loadDictionary(); }
-async function modelImport(): Promise<void> { const status = await api.modelImport(); if (status) state.model = status; render(); }
-async function modelAction(): Promise<void> { state.model = ["ready", "installed"].includes(state.model.state) ? await api.modelRemove() : await api.modelDownload(); render(); }
+async function setModelEnabled(enabled: boolean): Promise<void> {
+  try {
+    if (enabled) {
+      state.model = { ...state.model, state: "verifying" };
+      render();
+      state.model = await api.modelStatus(true);
+      state.useModel = state.model.state === "ready";
+    } else {
+      state.model = await api.modelDeactivate();
+      state.useModel = false;
+      state.prompt = "";
+    }
+    saveModelPreference(state.useModel);
+  } catch {
+    state.useModel = false;
+    saveModelPreference(false);
+    state.model = { state: "error", code: "MODEL_TOGGLE_FAILED" };
+  }
+  render();
+}
+async function modelImport(): Promise<void> { state.model = { state: "importing" }; state.modelProgress = 0; render(); try { const status = await api.modelImport(); if (state.model.state !== "cancelled") { state.model = status ?? { state: "not_installed" }; state.useModel = state.model.state === "ready"; if (state.useModel) saveModelPreference(true); } } catch { if (state.model.state !== "cancelled") state.model = { state: "error", code: "MODEL_IMPORT_FAILED" }; } render(); }
+async function modelAction(): Promise<void> { if (["downloading", "importing", "verifying"].includes(state.model.state)) { await api.modelCancel(); state.model = { state: "cancelled" }; render(); return; } try { if (["ready", "installed"].includes(state.model.state)) state.model = await api.modelRemove(); else { state.model = { state: "downloading" }; state.modelProgress = 0; render(); const status = await api.modelDownload(); if (state.model.state !== "cancelled") state.model = status; } } catch { if (state.model.state !== "cancelled") state.model = { state: "error", code: "MODEL_OPERATION_FAILED" }; } state.useModel = state.model.state === "ready"; if (state.useModel) saveModelPreference(true); else state.prompt = ""; render(); }
 
 window.addEventListener("keydown", event => { const target = event.target; const editing = target instanceof HTMLElement && target.matches("input, textarea, select"); if (event.ctrlKey && event.key.toLowerCase() === "o") { event.preventDefault(); void choose(); } if (event.key === "Escape" && state.settings && !editing) { state.settings = false; render(); } });
 window.addEventListener("dragover", event => event.preventDefault());
@@ -115,5 +175,7 @@ void api.onFileDrop(path => {
   });
 });
 
-void api.modelStatus().then(model => { state.model = model; render(); });
+const initialModelPreference = loadModelPreference();
+void api.modelStatus(initialModelPreference).then(model => { state.model = model; state.useModel = initialModelPreference && model.state === "ready"; render(); });
+void api.onModelProgress(event => { state.modelProgress = event.percent; if (state.model.state === "downloading") render(); });
 render();

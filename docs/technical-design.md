@@ -3,10 +3,10 @@
 | | |
 |---|---|
 | **Phiên bản** | 0.2 — workflow output-only |
-| **Ngày** | 22/8/2026 |
+| **Ngày** | 24/8/2026 |
 | **Nguồn yêu cầu** | [`docs/prd.md`](./prd.md) phiên bản 0.1 |
 | **Nền tảng** | Windows 10/11 x64 |
-| **Trạng thái** | M0/M1 đã có implementation; M2/M3 còn các gate môi trường ở `implementation-status.md` |
+| **Trạng thái** | M0/M1 và M2 runtime/provisioning đã có implementation; model/corpus thật và các gate môi trường ở `implementation-status.md` |
 
 ## 1. Kết luận kỹ thuật
 
@@ -381,6 +381,7 @@ Không gọi `from_pretrained` hoặc API tự tải trong Python engine. Python
 - Output bị constrain theo JSON schema/grammar.
 - Model trả `candidate_id`, `verdict`, `confidence`; lý do người dùng ưu tiên template theo reason code, không dùng văn xuôi tự do không kiểm soát.
 - Timeout, batch size và token budget cố định theo manifest.
+- Deadline tối đa 180 giây bao phủ toàn bộ các batch của một tài liệu; tắt AI đóng runtime để giải phóng RAM nhưng giữ package đã cài.
 - Malformed output, candidate lạ hoặc mismatch source đều bị drop.
 
 ### 11.3. Model package
@@ -405,6 +406,19 @@ Manifest tối thiểu:
   "engine_protocol": 1,
   "license_file": "LICENSE.txt",
   "memory_mb": 3000,
+  "context_size": 2048,
+  "batch_size": 8,
+  "max_tokens": 512,
+  "timeout_seconds": 120,
+  "seed": 42,
+  "minimum_confidence": 0.8,
+  "quality_gate": {
+    "corpus_sha256": "…",
+    "profiles": [
+      {"machine_memory_mb": 8192, "documents": 20, "precision": 0.91, "recall": 0.86, "p95_seconds": 2.0, "peak_rss_mb": 2048, "report_sha256": "…"},
+      {"machine_memory_mb": 16384, "documents": 20, "precision": 0.92, "recall": 0.87, "p95_seconds": 1.7, "peak_rss_mb": 2048, "report_sha256": "…"}
+    ]
+  },
   "signature": "base64-ed25519-signature"
 }
 ```
@@ -414,12 +428,12 @@ Manifest tối thiểu:
 1. Kiểm tra dung lượng trống trước khi bắt đầu.
 2. Ghi vào `models/.staging/<job-id>/`; file chưa xong có suffix `.partial`.
 3. Hỗ trợ resume cho connected profile, chỉ từ build-time allowlist.
-4. Xác minh byte size, SHA-256, chữ ký Ed25519, license và protocol range.
-5. Smoke-load model bằng engine.
+4. Xác minh byte size, SHA-256, chữ ký Ed25519, license, protocol và quality reports đã ký; report phải khớp SHA-256 model/corpus và có profile 8/16 GB đạt precision ≥90%, recall ≥85%.
+5. Smoke-load model bằng engine; runtime thiếu hoặc load lỗi không được chuyển sang `ready`.
 6. Rename atomically vào thư mục versioned và cập nhật registry.
 7. Không xoá version đang hoạt động cho tới khi version mới load thành công.
 
-Trạng thái UI: `not_installed → downloading/importing → verifying → installed → ready`, với nhánh `cancelled/error/incompatible`. `installed` nghĩa là gói đã qua integrity/signature nhưng classifier/benchmark chưa được activate; prompt riêng vẫn khóa. Chưa có model không phải lỗi của luồng rule-only.
+Trạng thái UI: `not_installed → downloading/importing → verifying → installed → ready`, với nhánh `cancelled/error/incompatible`. Gói thiếu quality gate bị từ chối ngay; `installed` nghĩa là gói đã qua integrity/signature/quality nhưng runtime chưa khả dụng, còn `ready` yêu cầu smoke-load thành công. Prompt riêng vẫn khóa ngoài trạng thái `ready`. Chưa có model không phải lỗi của luồng rule-only.
 
 ## 12. Local storage và data retention
 

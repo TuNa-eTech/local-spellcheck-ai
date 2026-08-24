@@ -20,7 +20,7 @@ Dependency đi vào trong: `checking` và `workflow` không import Tauri, SQLite
 Yêu cầu: Node 24+, Rust stable hiện hành, `uv`, Python 3.12 do `uv` quản lý.
 
 ```sh
-uv sync --project engine --extra dev
+uv sync --project engine --extra dev --extra model
 npm install --prefix apps/desktop
 npm run tauri -- dev
 ```
@@ -76,8 +76,8 @@ Không có cấu hình trên, lệnh tải fail-closed với `MODEL_NOT_CONFIGUR
 ## Trạng thái milestone
 
 - M0: source layout, protocol, persistent sidecar, crash/error boundary, safe DOCX ZIP validation, PyInstaller `onedir`, advanced golden DOCX và Windows Job Object đã được tự động hoá trong workflow `verify`.
-- M1: workflow, 3 preset, technical/confusion/capitalization/conservative-syllable rules, NFC source mapping, annotation-only DOCX, atomic no-clobber output, no-finding, Settings và SQLite/CSV đã có unit/property/security/contract/UI/performance tests.
-- M2: signed provisioning/import/download source đã có; model được giữ ở trạng thái `installed` cho đến khi `llama.cpp` classifier và benchmark 8/16 GB vượt gate. Prompt vì thế vẫn bị khóa fail-closed.
+- M1: workflow, metadata từ/trang best-effort, bộ đếm prompt, 3 preset, từng nhóm rule bật/tắt độc lập, từ bỏ qua theo phiên, technical/confusion/capitalization/conservative-syllable rules, NFC source mapping, annotation-only DOCX, atomic no-clobber output, no-finding, Settings và SQLite/CSV đã có unit/property/security/contract/UI/performance tests.
+- M2: `llama-cpp-python` classifier, schema-constrained verdict, timeout/cancel, signed quality gate, import/download resume, crash recovery, smoke-load/rollback và toggle giải phóng runtime đã có trong source. Model chỉ `ready` khi gói ký số gắn đúng SHA-256 model và corpus tối thiểu 20 tài liệu, kèm báo cáo đạt gate trên profile 8/16 GB; chưa có model/corpus thật thì ứng dụng tiếp tục rule-only.
 - M3: Windows CI/NSIS/WebView2 offline config, personal signing và Defender gate đã có. Developer ID/notarization và certificate công khai không nằm trong M0/M1.
 
 Corpus regression tổng hợp có 20 trường hợp và gate precision/recall tự động. Quality gate trên 20 DOCX thật vẫn cần bộ tài liệu ẩn danh và ground truth do người dùng duyệt; đây là evidence đầu vào, không được thay thế bằng dữ liệu giả.

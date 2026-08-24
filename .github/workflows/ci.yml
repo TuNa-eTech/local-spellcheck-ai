@@ -22,7 +22,7 @@ jobs:
         with:
           path: engine/build/soatvan-engine
           key: ${{ runner.os }}-${{ runner.arch }}-pyinstaller-${{ hashFiles('engine/uv.lock', 'engine/pyproject.toml', 'engine/soatvan-engine.spec', 'engine/src/**') }}
-      - run: uv sync --project engine --extra dev --locked
+      - run: uv sync --project engine --extra dev --extra model --locked
       - name: Refresh exact PyInstaller cache timestamps
         if: steps.pyinstaller-cache.outputs.cache-hit == 'true'
         shell: pwsh

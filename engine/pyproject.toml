@@ -7,7 +7,7 @@ name = "soatvan-engine"
 version = "0.1.0"
 description = "Offline Vietnamese DOCX checking engine"
 requires-python = ">=3.12"
-dependencies = ["lxml>=5.3,<7"]
+dependencies = ["cryptography>=44,<47", "lxml>=5.3,<7"]
 
 [project.optional-dependencies]
 dev = [
@@ -15,11 +15,13 @@ dev = [
     "jsonschema>=4.23,<5",
     "mypy>=1.15,<2",
     "pyinstaller>=6.12,<7",
+    "psutil>=7,<8",
     "pytest>=8.3,<10",
     "pytest-cov>=6,<8",
     "ruff>=0.11,<1",
+    "types-psutil>=7,<8",
 ]
-model = ["cryptography>=44,<47", "llama-cpp-python>=0.3.8,<1"]
+model = ["llama-cpp-python>=0.3.8,<1"]
 
 [project.scripts]
 soatvan-engine = "soatvan.entrypoints.sidecar:main"

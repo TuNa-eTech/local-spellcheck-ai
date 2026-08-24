@@ -20,6 +20,10 @@ pub enum AppError {
     ModelPackageInvalid,
     #[error("MODEL_SIGNATURE_INVALID")]
     ModelSignatureInvalid,
+    #[error("MODEL_DISK_SPACE_INSUFFICIENT")]
+    ModelDiskSpace,
+    #[error("MODEL_OPERATION_CANCELLED")]
+    ModelCancelled,
     #[error("{0}")]
     Engine(String),
     #[error("{0}")]

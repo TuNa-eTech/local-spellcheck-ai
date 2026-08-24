@@ -9,6 +9,8 @@ const documentInfo: DocumentInfo = {
   paragraph_count: 4,
   table_cell_count: 1,
   character_count: 120,
+  word_count: 24,
+  page_count: 2,
 };
 
 function deferred<T>() {
@@ -22,6 +24,7 @@ function deferred<T>() {
 async function loadApp(options?: {
   choose?: () => Promise<DocumentInfo | null>;
   start?: () => Promise<JobResult>;
+  modelStatus?: () => Promise<{ state: "not_installed" | "ready"; model_id?: string; version?: string }>;
 }) {
   let progressHandler: ((event: ProgressEvent) => void) | undefined;
   let fileDropHandler: ((path: string) => void) | undefined;
@@ -54,11 +57,13 @@ async function loadApp(options?: {
     dictionaryDelete: vi.fn(),
     dictionaryImport: vi.fn(),
     dictionaryExport: vi.fn(),
-    modelStatus: vi.fn(() => Promise.resolve({ state: "not_installed" as const })),
+    modelStatus: vi.fn(options?.modelStatus ?? (() => Promise.resolve({ state: "not_installed" as const }))),
+    modelDeactivate: vi.fn(() => Promise.resolve({ state: "installed" as const, model_id: "approved", version: "1" })),
     modelImport: vi.fn(),
     modelDownload: vi.fn(),
     modelCancel: vi.fn(),
     modelRemove: vi.fn(),
+    onModelProgress: vi.fn(async () => () => undefined),
   };
   vi.doMock("../src/api", () => ({ api }));
   await import("../src/main");
@@ -98,6 +103,9 @@ describe("four-step desktop workflow", () => {
     expect(prompt.disabled).toBe(true);
     expect(prompt.maxLength).toBe(1000);
     expect(document.body.textContent).toContain("nguồn.docx");
+    expect(document.body.textContent).toContain("2 trang");
+    expect(document.body.textContent).toContain("24 từ");
+    expect(document.querySelector("#prompt-count")?.textContent).toContain("0/1.000");
   });
 
   it("shows progress then only an output path, without document preview", async () => {
@@ -107,9 +115,18 @@ describe("four-step desktop workflow", () => {
     document.querySelector<HTMLInputElement>('input[value="spelling"]')!.click();
     document.querySelector<HTMLButtonElement>("#start")!.click();
     await vi.waitFor(() => expect(document.querySelector("#cancel")).not.toBeNull());
+    expect(document.querySelector<HTMLButtonElement>("#settings")!.disabled).toBe(true);
     api.emitProgress(api.startJob.mock.calls[0][0]);
     expect(document.body.textContent).toContain("35%");
     expect(api.startJob.mock.calls[0][2]).toBe("spelling");
+    expect(api.startJob.mock.calls[0][4]).toBe(false);
+    expect(api.startJob.mock.calls[0][5]).toEqual({
+      technical: false,
+      repeated_words: false,
+      confusions: true,
+      syllables: true,
+      administrative_capitalization: false,
+    });
     job.resolve({
       job_id: "job",
       status: "completed",
@@ -213,5 +230,78 @@ describe("four-step desktop workflow", () => {
     await vi.waitFor(() => expect(api.dictionaryImport).toHaveBeenCalledOnce());
     document.querySelector<HTMLButtonElement>("#export-csv")!.click();
     await vi.waitFor(() => expect(api.dictionaryExport).toHaveBeenCalledOnce());
+  });
+
+  it("enables explicit AI filtering and custom prompt only for a ready model", async () => {
+    const api = await loadApp({
+      modelStatus: () => Promise.resolve({ state: "ready", model_id: "approved", version: "1" }),
+    });
+    await vi.waitFor(() => expect(api.modelStatus).toHaveBeenCalled());
+    await chooseDocument();
+    const prompt = document.querySelector<HTMLTextAreaElement>("#prompt")!;
+    expect(prompt.disabled).toBe(false);
+    prompt.value = "Ưu tiên thuật ngữ của đơn vị";
+    prompt.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    expect(document.querySelector("#prompt-count")?.textContent).toContain("28/1.000");
+    document.querySelector<HTMLButtonElement>("#start")!.click();
+    await vi.waitFor(() => expect(api.startJob).toHaveBeenCalled());
+    expect(api.startJob.mock.calls[0][3]).toBe("Ưu tiên thuật ngữ của đơn vị");
+    expect(api.startJob.mock.calls[0][4]).toBe(true);
+  });
+
+  it("deactivates the model runtime when AI is switched off", async () => {
+    const api = await loadApp({
+      modelStatus: () => Promise.resolve({ state: "ready", model_id: "approved", version: "1" }),
+    });
+    document.querySelector<HTMLButtonElement>("#settings")!.click();
+    await vi.waitFor(() => expect(document.querySelector('[data-tab="model"]')).not.toBeNull());
+    document.querySelector<HTMLButtonElement>('[data-tab="model"]')!.click();
+    document.querySelector<HTMLInputElement>("#use-model")!.click();
+    await vi.waitFor(() => expect(api.modelDeactivate).toHaveBeenCalledOnce());
+    expect(document.querySelector<HTMLInputElement>("#use-model")!.checked).toBe(false);
+    document.querySelector<HTMLButtonElement>("#close-settings")!.click();
+    await chooseDocument();
+    expect(document.querySelector<HTMLTextAreaElement>("#prompt")!.disabled).toBe(true);
+  });
+
+  it("allows individual rule groups to be disabled in Settings", async () => {
+    const api = await loadApp();
+    await chooseDocument();
+    document.querySelector<HTMLButtonElement>("#settings")!.click();
+    await vi.waitFor(() => expect(document.querySelector('[data-tab="rules"]')).not.toBeNull());
+    document.querySelector<HTMLButtonElement>('[data-tab="rules"]')!.click();
+    const technical = document.querySelector<HTMLInputElement>('[data-rule="technical"]')!;
+    technical.click();
+    document.querySelector<HTMLButtonElement>("#close-settings")!.click();
+    document.querySelector<HTMLButtonElement>("#start")!.click();
+    await vi.waitFor(() => expect(api.startJob).toHaveBeenCalled());
+    expect(api.startJob.mock.calls[0][5].technical).toBe(false);
+  });
+
+  it("passes a deduplicated session-only ignore list to the engine", async () => {
+    const api = await loadApp();
+    await chooseDocument();
+    const ignored = document.querySelector<HTMLTextAreaElement>("#ignored-words")!;
+    ignored.value = "SoátVăn, tên đơn vị\nSoátVăn";
+    ignored.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    document.querySelector<HTMLButtonElement>("#start")!.click();
+    await vi.waitFor(() => expect(api.startJob).toHaveBeenCalled());
+    expect(api.startJob.mock.calls[0][6]).toEqual(["SoátVăn", "tên đơn vị"]);
+  });
+
+  it("shows model download progress and can cancel the active operation", async () => {
+    const api = await loadApp();
+    const download = deferred<{ state: "ready" }>();
+    api.modelDownload.mockReturnValue(download.promise);
+    document.querySelector<HTMLButtonElement>("#settings")!.click();
+    await vi.waitFor(() => expect(document.querySelector('[data-tab="model"]')).not.toBeNull());
+    document.querySelector<HTMLButtonElement>('[data-tab="model"]')!.click();
+    document.querySelector<HTMLButtonElement>("#model-action")!.click();
+    await vi.waitFor(() => expect(api.modelDownload).toHaveBeenCalled());
+    expect(document.body.textContent).toContain("Đang tải model");
+    document.querySelector<HTMLButtonElement>("#model-action")!.click();
+    await vi.waitFor(() => expect(api.modelCancel).toHaveBeenCalled());
+    expect(document.body.textContent).toContain("Chưa cài model AI");
+    download.resolve({ state: "ready" });
   });
 });

@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from soatvan.entrypoints import sidecar as sidecar_module
-from soatvan.entrypoints.sidecar import Sidecar, validate_request
+from soatvan.entrypoints.sidecar import Sidecar, _ignored_words, validate_request
 
 
 def test_handshake_and_protocol_mismatch(tmp_path: Path) -> None:
@@ -128,6 +128,28 @@ def test_frame_limit_is_stable_and_engine_recovers(tmp_path: Path) -> None:
     assert json.loads(process.stdout.readline())["result"]["protocol"] == 1
     process.stdin.close()
     process.wait(timeout=5)
+
+
+def test_session_ignore_words_boundary_is_strict() -> None:
+    assert _ignored_words([" SoátVăn ", "SoátVăn"]) == frozenset({"SoátVăn"})
+    with pytest.raises(ValueError, match="SESSION_DICTIONARY_INVALID"):
+        _ignored_words(["bad\nword"])
+
+
+def test_model_remove_deactivates_runtime_without_owning_filesystem(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    engine = Sidecar()
+    deactivated = False
+
+    def deactivate() -> None:
+        nonlocal deactivated
+        deactivated = True
+
+    monkeypatch.setattr(engine.models, "deactivate", deactivate)
+    assert engine.dispatch("model.remove", {}) == {"deactivated": True}
+    assert deactivated is True
 
 
 def test_cancel_emits_one_terminal_failure_and_cleans_job(

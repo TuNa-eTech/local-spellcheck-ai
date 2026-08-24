@@ -35,13 +35,31 @@ class DocxPackage:
     def inspect(self, source: Path) -> dict[str, object]:
         self._validate_archive(source)
         blocks = self.read_blocks(source)
+        text = "\n".join(block.text for block in blocks)
         return {
             "name": source.name,
             "size": source.stat().st_size,
             "paragraph_count": sum(block.kind == "paragraph" for block in blocks),
             "table_cell_count": sum(block.kind == "table_cell" for block in blocks),
             "character_count": sum(len(block.text) for block in blocks),
+            "word_count": len(re.findall(r"[^\W_]+", text, flags=re.UNICODE)),
+            "page_count": self._page_count(source),
         }
+
+    def _page_count(self, source: Path) -> int | None:
+        """Return Word's last-saved page count when present; it is best-effort metadata."""
+        try:
+            with zipfile.ZipFile(source) as archive:
+                if "docProps/app.xml" not in archive.namelist():
+                    return None
+                root = self._parse_xml(archive.read("docProps/app.xml"))
+            value = root.findtext(
+                "{http://schemas.openxmlformats.org/officeDocument/2006/extended-properties}Pages"
+            )
+            pages = int(value) if value is not None else 0
+            return pages if pages > 0 else None
+        except (InvalidDocument, KeyError, ValueError, zipfile.BadZipFile, etree.XMLSyntaxError):
+            return None
 
     def read_blocks(self, source: Path) -> list[Block]:
         self._validate_archive(source)
