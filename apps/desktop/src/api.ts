@@ -48,9 +48,10 @@ export const api = {
   modelStatus(activate = true): Promise<ModelStatus> { return isTauri() ? invoke("model_status", { activate }) : Promise.resolve({ state: "not_installed" }); },
   modelDeactivate(): Promise<ModelStatus> { return isTauri() ? invoke("model_deactivate") : Promise.resolve({ state: "not_installed" }); },
   modelImport(): Promise<ModelStatus | null> { return invoke("model_import"); },
-  modelDownload(): Promise<ModelStatus> { return invoke("model_download"); },
+  modelDownload(modelId?: string): Promise<ModelStatus> { return invoke("model_download", { modelId }); },
+  modelActivate(modelId: string): Promise<ModelStatus> { return invoke("model_status", { activate: true, modelId }); },
   modelCancel(): Promise<boolean> { return invoke("model_cancel"); },
-  modelRemove(): Promise<ModelStatus> { return invoke("model_remove"); },
+  modelRemove(modelId?: string): Promise<ModelStatus> { return invoke("model_remove", { modelId }); },
   onModelProgress(handler: (event: { received: number; total: number; percent: number }) => void): Promise<UnlistenFn> {
     if (!isTauri()) return Promise.resolve(() => undefined);
     return listen("model.progress", event => handler(event.payload as { received: number; total: number; percent: number }));

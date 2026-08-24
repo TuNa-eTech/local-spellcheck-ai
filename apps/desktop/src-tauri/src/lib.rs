@@ -349,7 +349,7 @@ fn model_import(app: AppHandle, state: State<'_, AppState>) -> AppResult<Option<
     let selected = app
         .dialog()
         .file()
-        .add_filter("Gói model SoátVăn", &["svmodel"])
+        .add_filter("Gói model SoátVăn", &["svmodel", "zip", "gguf"])
         .blocking_pick_file();
     let Some(path) = selected.and_then(|value| value.into_path().ok()) else {
         return Ok(None);
@@ -359,16 +359,28 @@ fn model_import(app: AppHandle, state: State<'_, AppState>) -> AppResult<Option<
     Ok(Some(status))
 }
 #[tauri::command]
-fn model_remove(state: State<'_, AppState>) -> AppResult<ModelStatus> {
+fn model_remove(state: State<'_, AppState>, model_id: Option<String>) -> AppResult<ModelStatus> {
+    let _ = model_id;
     deactivate_model(&state.engine)?;
     state.model.lock().expect("model poisoned").remove()?;
     engine_model_status(&state.engine, false)
 }
 #[tauri::command]
-async fn model_download(app: AppHandle, state: State<'_, AppState>) -> AppResult<ModelStatus> {
+async fn model_download(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    model_id: Option<String>,
+) -> AppResult<ModelStatus> {
     const MAX_MODEL_PACKAGE: u64 = 8 * 1024 * 1024 * 1024;
-    let endpoint = option_env!("SOATVAN_MODEL_ENDPOINT").ok_or(AppError::ModelNotConfigured)?;
-    let allowlist = option_env!("SOATVAN_MODEL_ALLOWLIST").ok_or(AppError::ModelNotConfigured)?;
+    let chosen_id = model_id.unwrap_or_else(|| "gemma-4-e4b".into());
+    let default_endpoint = match chosen_id.as_str() {
+        "gemma-4-e2b" => "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf",
+        "gemma-4-12b" => "https://huggingface.co/unsloth/gemma-4-12B-it-GGUF/resolve/main/gemma-4-12B-it-Q4_K_M.gguf",
+        _ => "https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf",
+    };
+    let endpoint = option_env!("SOATVAN_MODEL_ENDPOINT").unwrap_or(default_endpoint);
+    let default_allowlist = "huggingface.co,cdn-lfs.huggingface.co,github.com,objects.githubusercontent.com";
+    let allowlist = option_env!("SOATVAN_MODEL_ALLOWLIST").unwrap_or(default_allowlist);
     let url = url::Url::parse(endpoint).map_err(|_| AppError::ModelNotConfigured)?;
     let allowed = url.scheme() == "https"
         && url
@@ -379,7 +391,7 @@ async fn model_download(app: AppHandle, state: State<'_, AppState>) -> AppResult
     }
     state.model_cancel.store(false, Ordering::Release);
     let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
+        .redirect(reqwest::redirect::Policy::limited(10))
         .connect_timeout(Duration::from_secs(30))
         .build()
         .map_err(|_| AppError::ModelNotConfigured)?;

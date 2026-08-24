@@ -2,12 +2,87 @@ import "./styles.css";
 import { api } from "./api";
 import type { DictionaryEntry, DocumentInfo, JobResult, ModelStatus, Preset, RuleOptions, Step } from "./contracts";
 
+export interface Gemma4Model {
+  id: string;
+  name: string;
+  badge: string;
+  badgeClass?: string;
+  ram: string;
+  size: string;
+  description: string;
+}
+
+const gemma4Catalog: Gemma4Model[] = [
+  {
+    id: "gemma-4-e2b",
+    name: "Gemma 4 E2B Instruct",
+    badge: "Siêu nhẹ",
+    ram: "RAM 8GB / CPU",
+    size: "~1.5 GB",
+    description: "Tối ưu cho máy phổ thông, khởi động nhanh, phản hồi tức thì và tốn ít RAM.",
+  },
+  {
+    id: "gemma-4-e4b",
+    name: "Gemma 4 E4B Instruct",
+    badge: "Khuyên dùng",
+    badgeClass: "model-badge--recommended",
+    ram: "RAM 8GB – 16GB",
+    size: "~2.8 GB",
+    description: "Cân bằng tối ưu giữa khả năng ngữ cảnh tiếng Việt và tốc độ xử lý trên máy cá nhân.",
+  },
+  {
+    id: "gemma-4-12b",
+    name: "Gemma 4 12B Instruct",
+    badge: "Nâng cao",
+    ram: "RAM ≥ 16GB / GPU",
+    size: "~7.5 GB",
+    description: "Độ thông minh và chính xác cao nhất cho văn bản phức tạp, thích hợp cho máy trạm.",
+  },
+];
+
 const app = document.querySelector<HTMLDivElement>("#app")!;
 let renderedStep: Step | null = null;
 let renderedSettings = false;
-const state: { step: Step; document: DocumentInfo | null; preset: Preset; prompt: string; ignoredWords: string; useModel: boolean; ruleOptions: RuleOptions; jobId: string; progress: number; progressStage: string; modelProgress: number; result: JobResult | null; model: ModelStatus; settings: boolean; tab: string; dictionary: DictionaryEntry[]; error: string } = {
-  step: "file", document: null, preset: "standard", prompt: "", ignoredWords: "", jobId: "", progress: 0, progressStage: "",
-  useModel: false, ruleOptions: loadRuleOptions(), modelProgress: 0, result: null, model: { state: "not_installed" }, settings: false, tab: "dictionary", dictionary: [], error: "",
+const state: {
+  step: Step;
+  document: DocumentInfo | null;
+  preset: Preset;
+  prompt: string;
+  ignoredWords: string;
+  useModel: boolean;
+  ruleOptions: RuleOptions;
+  jobId: string;
+  progress: number;
+  progressStage: string;
+  modelProgress: number;
+  result: JobResult | null;
+  model: ModelStatus;
+  settings: boolean;
+  tab: string;
+  dictionary: DictionaryEntry[];
+  error: string;
+  selectedModelId: string;
+  downloadingModelId: string | null;
+} = {
+  step: "file",
+  document: null,
+  preset: "standard",
+  prompt: "",
+  ignoredWords: "",
+  jobId: "",
+  progress: 0,
+  progressStage: "",
+  useModel: false,
+  ruleOptions: loadRuleOptions(),
+  modelProgress: 0,
+  result: null,
+  model: { state: "not_installed" },
+  settings: false,
+  tab: "dictionary",
+  dictionary: [],
+  error: "",
+  selectedModelId: "gemma-4-e4b",
+  downloadingModelId: null,
 };
 
 const presets: Record<Preset, { title: string; copy: string }> = {
@@ -79,8 +154,63 @@ function settingsBody(): string {
   if (state.tab === "rules") return `<div class="section-copy"><h3>Nhóm quy tắc đang dùng</h3><p>Các lựa chọn này áp dụng cho lần xử lý tiếp theo.</p></div>${([['technical','Khoảng trắng và dấu câu'],['repeated_words','Từ lặp'],['confusions','Từ dễ nhầm'],['syllables','Âm tiết tiếng Việt'],['administrative_capitalization','Viết hoa hành chính']] as const).map(([key,label]) => `<label class="setting-row"><span><strong>${label}</strong></span><input type="checkbox" data-rule="${key}" ${state.ruleOptions[key] ? "checked" : ""}></label>`).join("")}`;
   const installed = state.model.state === "ready" || state.model.state === "installed";
   const busy = ["downloading", "importing", "verifying"].includes(state.model.state);
+  const activeModelId = state.model.model_id;
   const title = state.model.state === "ready" ? "Model đã sẵn sàng" : state.model.state === "installed" ? (state.model.code ? "Model đã cài · runtime chưa sẵn sàng" : "Model đã cài · AI đang tắt") : state.model.state === "downloading" ? `Đang tải model… ${state.modelProgress}%` : state.model.state === "importing" ? "Đang nhập gói model…" : state.model.state === "verifying" ? "Đang xác minh và khởi động model…" : state.model.state === "invalid" || state.model.state === "incompatible" ? "Model không hợp lệ hoặc không tương thích" : state.model.state === "error" ? "Không thể cài model" : "Chưa cài model AI";
-  return `<div class="model-card"><strong>${title}</strong><p>${installed ? `${escape(state.model.model_id ?? "model")} · ${escape(state.model.version ?? "")}` : "Ứng dụng vẫn chạy đầy đủ bằng tầng luật."}</p>${busy ? `<div class="progress"><span style="width:${state.modelProgress}%"></span></div>` : ""}</div>${installed ? `<label class="setting-row"><span><strong>Dùng AI để lọc candidate</strong><small>Tắt sẽ giải phóng runtime và chạy hoàn toàn bằng tầng luật.</small></span><input type="checkbox" id="use-model" ${state.useModel ? "checked" : ""} ${busy ? "disabled" : ""}></label>` : ""}<p class="notice">Chỉ kết nối mạng sau khi bạn chủ động bấm tải. Nội dung tài liệu không bao giờ được gửi đi.</p><div class="button-row"><button class="button button--secondary" id="model-import" ${busy ? "disabled" : ""}>Nhập gói từ máy</button><button class="button button--primary" id="model-action">${busy ? "Huỷ" : installed ? "Xoá model" : "Tải model"}</button></div>`;
+  return `
+    <div class="model-card">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:0.5rem; flex-wrap:wrap;">
+        <div>
+          <strong>${title}</strong>
+          <p style="margin:0.25rem 0 0 0;">${installed ? `${escape(activeModelId ?? "model")} · ${escape(state.model.version ?? "1.0.0")}` : "Ứng dụng vẫn chạy đầy đủ bằng tầng luật."}</p>
+        </div>
+        ${installed ? `<button class="button button--secondary button--small" id="model-remove" ${busy ? "disabled" : ""}>Xoá model</button>` : ""}
+      </div>
+      ${busy ? `<div class="progress" style="margin-top:0.75rem;"><span style="width:${state.modelProgress}%"></span></div>` : ""}
+    </div>
+    ${installed ? `<label class="setting-row"><span><strong>Dùng AI để lọc candidate</strong><small>Tắt sẽ giải phóng runtime và chạy hoàn toàn bằng tầng luật.</small></span><input type="checkbox" id="use-model" ${state.useModel ? "checked" : ""} ${busy ? "disabled" : ""}></label>` : ""}
+    <div class="section-copy" style="margin-top:0.5rem;">
+      <h3>Chọn phiên bản Gemma 4</h3>
+      <p>Chọn phiên bản phù hợp với cấu hình máy để tải về và kích hoạt:</p>
+    </div>
+    <div class="model-catalog">
+      ${gemma4Catalog.map(item => {
+        const isActive = installed && activeModelId === item.id;
+        const isDownloading = state.model.state === "downloading" && state.downloadingModelId === item.id;
+        const isSelected = state.selectedModelId === item.id;
+        return `
+          <div class="model-option ${isActive ? "active" : ""}" data-model-id="${item.id}">
+            <div class="model-option-header">
+              <div class="model-option-title">
+                <input type="radio" name="gemma-select" value="${item.id}" ${isSelected ? "checked" : ""} ${busy ? "disabled" : ""}>
+                <span>${escape(item.name)}</span>
+              </div>
+              <div style="display:flex; gap:0.35rem; align-items:center;">
+                <span class="model-badge ${item.badgeClass ?? ""}">${escape(item.badge)}</span>
+                ${isActive ? `<span class="model-badge model-badge--active">✓ Đang dùng</span>` : ""}
+              </div>
+            </div>
+            <div class="model-meta">
+              <span>💾 ${escape(item.size)}</span>
+              <span>⚡ ${escape(item.ram)}</span>
+            </div>
+            <p>${escape(item.description)}</p>
+            <div class="model-option-actions">
+              ${isDownloading
+                ? `<button class="button button--secondary button--small" data-model-cancel="${item.id}">Huỷ (${state.modelProgress}%)</button>`
+                : isActive
+                ? `<span style="font-size:0.75rem; color:var(--color-success); font-weight:700;">✓ Đang kích hoạt</span>`
+                : `<button class="button button--primary button--small" data-model-download="${item.id}" ${busy ? "disabled" : ""}>Tải & Kích hoạt</button>`
+              }
+            </div>
+          </div>
+        `;
+      }).join("")}
+    </div>
+    <p class="notice">Chỉ kết nối mạng sau khi bạn chủ động bấm tải. Nội dung tài liệu không bao giờ được gửi đi.</p>
+    <div class="button-row">
+      <button class="button button--secondary" id="model-import" ${busy ? "disabled" : ""}>Nhập gói từ máy (.svmodel / .zip)</button>
+      <button class="button button--primary" id="model-action">${busy ? "Huỷ" : installed ? "Xoá model" : "Tải model"}</button>
+    </div>`;
 }
 
 function bind(): void {
@@ -110,6 +240,11 @@ function bind(): void {
   document.querySelector("#export-csv")?.addEventListener("click", () => void api.dictionaryExport());
   document.querySelector("#model-import")?.addEventListener("click", () => void modelImport());
   document.querySelector("#model-action")?.addEventListener("click", () => void modelAction());
+  document.querySelector("#model-remove")?.addEventListener("click", () => void removeModel());
+  document.querySelectorAll<HTMLInputElement>('input[name="gemma-select"]').forEach(input => input.addEventListener("change", () => { state.selectedModelId = input.value; render(); }));
+  document.querySelectorAll<HTMLElement>(".model-option").forEach(el => el.addEventListener("click", event => { if ((event.target as HTMLElement).tagName !== "BUTTON" && (event.target as HTMLElement).tagName !== "INPUT") { state.selectedModelId = el.dataset.modelId!; render(); } }));
+  document.querySelectorAll<HTMLButtonElement>("[data-model-download]").forEach(btn => btn.addEventListener("click", event => { event.stopPropagation(); void downloadGemmaModel(btn.dataset.modelDownload!); }));
+  document.querySelectorAll<HTMLButtonElement>("[data-model-cancel]").forEach(btn => btn.addEventListener("click", event => { event.stopPropagation(); void cancelModelDownload(); }));
 }
 
 async function choose(): Promise<void> { try { const selected = await api.chooseDocument(); if (selected) { state.document = selected; state.step = "rules"; state.error = ""; render(); } } catch { state.error = "Không thể mở tệp DOCX này."; render(); } }
@@ -157,7 +292,54 @@ async function setModelEnabled(enabled: boolean): Promise<void> {
   render();
 }
 async function modelImport(): Promise<void> { state.model = { state: "importing" }; state.modelProgress = 0; render(); try { const status = await api.modelImport(); if (state.model.state !== "cancelled") { state.model = status ?? { state: "not_installed" }; state.useModel = state.model.state === "ready"; if (state.useModel) saveModelPreference(true); } } catch { if (state.model.state !== "cancelled") state.model = { state: "error", code: "MODEL_IMPORT_FAILED" }; } render(); }
-async function modelAction(): Promise<void> { if (["downloading", "importing", "verifying"].includes(state.model.state)) { await api.modelCancel(); state.model = { state: "cancelled" }; render(); return; } try { if (["ready", "installed"].includes(state.model.state)) state.model = await api.modelRemove(); else { state.model = { state: "downloading" }; state.modelProgress = 0; render(); const status = await api.modelDownload(); if (state.model.state !== "cancelled") state.model = status; } } catch { if (state.model.state !== "cancelled") state.model = { state: "error", code: "MODEL_OPERATION_FAILED" }; } state.useModel = state.model.state === "ready"; if (state.useModel) saveModelPreference(true); else state.prompt = ""; render(); }
+async function downloadGemmaModel(modelId: string): Promise<void> {
+  state.selectedModelId = modelId;
+  state.downloadingModelId = modelId;
+  state.model = { state: "downloading" };
+  state.modelProgress = 0;
+  render();
+  try {
+    const status = await api.modelDownload(modelId);
+    if (state.model.state !== "cancelled") {
+      state.model = status;
+      state.useModel = state.model.state === "ready";
+      if (state.useModel) saveModelPreference(true);
+    }
+  } catch {
+    if (state.model.state !== "cancelled") state.model = { state: "error", code: "MODEL_OPERATION_FAILED" };
+  } finally {
+    state.downloadingModelId = null;
+    render();
+  }
+}
+async function cancelModelDownload(): Promise<void> {
+  await api.modelCancel();
+  state.model = { state: "cancelled" };
+  state.downloadingModelId = null;
+  render();
+}
+async function removeModel(): Promise<void> {
+  try {
+    state.model = await api.modelRemove();
+    state.useModel = false;
+    saveModelPreference(false);
+    state.prompt = "";
+  } catch {
+    state.model = { state: "error", code: "MODEL_OPERATION_FAILED" };
+  }
+  render();
+}
+async function modelAction(): Promise<void> {
+  if (["downloading", "importing", "verifying"].includes(state.model.state)) {
+    await cancelModelDownload();
+    return;
+  }
+  if (["ready", "installed"].includes(state.model.state)) {
+    await removeModel();
+  } else {
+    await downloadGemmaModel(state.selectedModelId);
+  }
+}
 
 // Initial render immediately paints the UI
 render();
