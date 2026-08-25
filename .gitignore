@@ -20,3 +20,4 @@ apps/desktop/src-tauri/resources/engine/*
 *.db-shm
 *.db-wal
 *.gguf
+data-test/
