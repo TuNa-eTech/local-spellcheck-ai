@@ -57,6 +57,43 @@ class ClassifierVerdict:
     confidence: float
 
 
+@dataclass(frozen=True, slots=True)
+class ReviewCandidate:
+    candidate_id: str
+    block_id: str
+    start: int
+    end: int
+    source_text: str
+    suggestion: str
+    reason_code: str
+
+
+@dataclass(frozen=True, slots=True)
+class DiscoveryProposal:
+    block_id: str
+    start: int
+    end: int
+    source_text: str
+    suggestion: str
+    category: str
+    reason_code: str
+    confidence: float
+
+
+@dataclass(frozen=True, slots=True)
+class FullReviewResult:
+    verdicts: tuple[ClassifierVerdict, ...]
+    discoveries: tuple[DiscoveryProposal, ...]
+    total_chunks: int
+    reviewed_chunks: int
+    failed_chunk_ids: tuple[str, ...] = ()
+    failed_block_ids: tuple[str, ...] = ()
+
+    @property
+    def status(self) -> str:
+        return "complete" if not self.failed_chunk_ids else "partial"
+
+
 class ContextClassifier(Protocol):
     @property
     def version(self) -> str: ...
@@ -72,5 +109,24 @@ class ContextClassifier(Protocol):
     ) -> tuple[ClassifierVerdict, ...]: ...
 
 
+class FullTextReviewer(Protocol):
+    @property
+    def version(self) -> str: ...
+
+    @property
+    def minimum_confidence(self) -> float: ...
+
+    def review(
+        self,
+        blocks: tuple[Block, ...],
+        candidates: tuple[ReviewCandidate, ...],
+        custom_prompt: str,
+        cancellation: CancellationToken,
+        progress: Callable[[int, int], None] | None = None,
+    ) -> FullReviewResult: ...
+
+
 class ClassifierProvider(Protocol):
     def classifier(self) -> ContextClassifier | None: ...
+
+    def supports_full_review(self) -> bool: ...

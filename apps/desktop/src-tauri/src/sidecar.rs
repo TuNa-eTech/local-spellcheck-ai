@@ -16,7 +16,12 @@ use uuid::Uuid;
 use std::os::windows::process::CommandExt;
 
 type Waiters = Arc<Mutex<HashMap<String, mpsc::Sender<AppResult<Value>>>>>;
-type JobWaiters = Arc<Mutex<HashMap<String, mpsc::Sender<AppResult<Value>>>>>;
+type JobWaiters = Arc<Mutex<HashMap<String, mpsc::Sender<JobUpdate>>>>;
+
+enum JobUpdate {
+    Activity,
+    Finished(AppResult<Value>),
+}
 
 pub struct EngineBroker {
     child: Mutex<Child>,
@@ -54,6 +59,15 @@ impl EngineBroker {
                     };
                     if let Some(event) = frame.get("event").and_then(Value::as_str) {
                         let payload = frame.get("data").cloned().unwrap_or(Value::Null);
+                        if event == "job.progress" {
+                            if let Some(job_id) = payload.get("job_id").and_then(Value::as_str) {
+                                if let Some(sender) =
+                                    reader_jobs.lock().expect("jobs poisoned").get(job_id)
+                                {
+                                    let _ = sender.send(JobUpdate::Activity);
+                                }
+                            }
+                        }
                         if matches!(event, "job.completed" | "job.no_findings" | "job.failed") {
                             if let Some(job_id) = payload.get("job_id").and_then(Value::as_str) {
                                 if let Some(sender) =
@@ -70,11 +84,15 @@ impl EngineBroker {
                                     } else {
                                         Ok(payload.clone())
                                     };
-                                    let _ = sender.send(result);
+                                    let _ = sender.send(JobUpdate::Finished(result));
                                 }
                             }
                         }
-                        let _ = app_handle.emit(event, payload);
+                        // Sidecar protocol methods use dotted names, while Tauri 2 event
+                        // names only allow alphanumeric characters plus - / : _. Keep the
+                        // protocol stable and translate only at the WebView bridge.
+                        let bridge_event = event.replace('.', "-");
+                        let _ = app_handle.emit(&bridge_event, payload);
                         continue;
                     }
                     if let Some(id) = frame.get("id").and_then(Value::as_str) {
@@ -142,7 +160,7 @@ impl EngineBroker {
         }
     }
 
-    pub fn run_job(&self, params: Value, timeout: Duration) -> AppResult<Value> {
+    pub fn run_job(&self, params: Value, idle_timeout: Duration) -> AppResult<Value> {
         let job_id = params
             .get("job_id")
             .and_then(Value::as_str)
@@ -157,18 +175,23 @@ impl EngineBroker {
             self.jobs.lock().expect("jobs poisoned").remove(&job_id);
             return Err(error);
         }
-        match receiver.recv_timeout(timeout) {
-            Ok(result) => result,
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                self.jobs.lock().expect("jobs poisoned").remove(&job_id);
-                let _ = self.call(
-                    "job.cancel",
-                    json!({"job_id": job_id}),
-                    Duration::from_secs(3),
-                );
-                Err(AppError::EngineTimeout)
+        loop {
+            match receiver.recv_timeout(idle_timeout) {
+                Ok(JobUpdate::Activity) => continue,
+                Ok(JobUpdate::Finished(result)) => return result,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    self.jobs.lock().expect("jobs poisoned").remove(&job_id);
+                    let _ = self.call(
+                        "job.cancel",
+                        json!({"job_id": job_id}),
+                        Duration::from_secs(3),
+                    );
+                    return Err(AppError::EngineTimeout);
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(AppError::EngineUnavailable);
+                }
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => Err(AppError::EngineUnavailable),
         }
     }
 }
@@ -181,7 +204,7 @@ fn fail_pending(waiters: &Waiters, jobs: &JobWaiters) {
     drop(pending);
     let mut pending_jobs = jobs.lock().expect("jobs poisoned");
     for (_, sender) in pending_jobs.drain() {
-        let _ = sender.send(Err(AppError::EngineUnavailable));
+        let _ = sender.send(JobUpdate::Finished(Err(AppError::EngineUnavailable)));
     }
 }
 
@@ -224,7 +247,10 @@ fn engine_command(app: &AppHandle, data_dir: &std::path::Path) -> AppResult<Comm
         .or_else(|| {
             std::env::current_exe()
                 .ok()
-                .and_then(|p| p.parent().map(|dir| dir.join("resources").join("engine").join(executable)))
+                .and_then(|p| {
+                    p.parent()
+                        .map(|dir| dir.join("resources").join("engine").join(executable))
+                })
                 .filter(|p| p.exists())
         })
         .ok_or(AppError::EngineUnavailable)?;
@@ -359,9 +385,15 @@ mod tests {
         ));
         assert!(matches!(
             job_receiver.recv().unwrap(),
-            Err(AppError::EngineUnavailable)
+            JobUpdate::Finished(Err(AppError::EngineUnavailable))
         ));
         assert!(waiters.lock().unwrap().is_empty());
         assert!(jobs.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn tauri_bridge_event_names_are_legal() {
+        assert_eq!("job.progress".replace('.', "-"), "job-progress");
+        assert_eq!("model.progress".replace('.', "-"), "model-progress");
     }
 }

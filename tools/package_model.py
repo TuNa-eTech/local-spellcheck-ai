@@ -23,7 +23,7 @@ def file_sha256(path: Path) -> str:
 
 def finite_number(value: object) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError("benchmark metric must be numeric")
+        raise TypeError("benchmark metric must be numeric")
     converted = float(value)
     if not math.isfinite(converted):
         raise ValueError("benchmark metric must be finite")
@@ -45,7 +45,7 @@ def load_private_key(path: Path) -> Ed25519PrivateKey:
     if len(raw) != 32:
         try:
             raw = base64.b64decode(raw.strip(), validate=True)
-        except ValueError as error:
+        except (TypeError, ValueError) as error:
             raise ValueError("private key must be 32 raw bytes or base64") from error
     if len(raw) != 32:
         raise ValueError("private key must decode to exactly 32 bytes")
@@ -125,6 +125,7 @@ def package_model(
     context_size: int = 2048,
     batch_size: int = 8,
     max_tokens: int = 512,
+    review_chunk_tokens: int = 1200,
     timeout_seconds: int = 120,
     seed: int = 42,
     minimum_confidence: float = 0.8,
@@ -147,6 +148,8 @@ def package_model(
         or not 512 <= context_size <= 32768
         or not 1 <= batch_size <= 64
         or not 32 <= max_tokens <= 4096
+        or not 64 <= review_chunk_tokens <= 32768
+        or context_size - max_tokens - 256 < review_chunk_tokens
         or not 1 <= timeout_seconds <= 180
         or not math.isfinite(minimum_confidence)
         or not 0 <= minimum_confidence <= 1
@@ -154,7 +157,7 @@ def package_model(
         raise ValueError("invalid model runtime limits")
     model_hash = file_sha256(model)
     manifest: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "model_id": model_id,
         "version": version,
         "engine_protocol": 1,
@@ -166,9 +169,14 @@ def package_model(
         "context_size": context_size,
         "batch_size": batch_size,
         "max_tokens": max_tokens,
+        "review_chunk_tokens": review_chunk_tokens,
         "timeout_seconds": timeout_seconds,
         "seed": seed,
         "minimum_confidence": minimum_confidence,
+        "trust": "release_signed",
+        # The current benchmark contract measures candidate classification only.
+        # Full review must remain disabled until it has dedicated signed evidence.
+        "capabilities": {"candidate_filter": True, "full_review": False},
         "quality_gate": quality_gate_from_reports(
             benchmark_reports, model_id, version, model_hash
         ),
@@ -200,6 +208,7 @@ def main() -> None:
     parser.add_argument("--context-size", type=int, default=2048)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--max-tokens", type=int, default=512)
+    parser.add_argument("--review-chunk-tokens", type=int, default=1200)
     parser.add_argument("--timeout-seconds", type=int, default=120)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--minimum-confidence", type=float, default=0.8)
@@ -217,6 +226,7 @@ def main() -> None:
         context_size=args.context_size,
         batch_size=args.batch_size,
         max_tokens=args.max_tokens,
+        review_chunk_tokens=args.review_chunk_tokens,
         timeout_seconds=args.timeout_seconds,
         seed=args.seed,
         minimum_confidence=args.minimum_confidence,

@@ -83,6 +83,25 @@ def test_malformed_classifier_output_fails_closed(tmp_path: Path) -> None:
     assert classifier.classify((candidate(),), "", Token()) == ()
 
 
+def test_classifier_rejects_an_incomplete_batch_of_verdicts(tmp_path: Path) -> None:
+    runtime = Runtime(
+        json.dumps(
+            {
+                "verdicts": [
+                    {"candidate_id": "candidate-1", "verdict": "drop", "confidence": 1}
+                ]
+            }
+        )
+    )
+    classifier = LlamaCppClassifier(
+        tmp_path / "model.gguf",
+        {"model_id": "test", "version": "1", "batch_size": 2},
+        lambda *_: runtime,
+    )
+
+    assert classifier.classify((candidate(), candidate("candidate-2")), "", Token()) == ()
+
+
 def test_streaming_classifier_collects_json_and_enforces_deadline(tmp_path: Path) -> None:
     class StreamingRuntime:
         def create_chat_completion(self, **_: Any):
@@ -169,7 +188,7 @@ def test_registry_only_reports_ready_after_integrity_and_smoke_load(tmp_path: Pa
     model.write_bytes(b"test-model")
     (active / "LICENSE.txt").write_text("approved", encoding="utf-8")
     manifest: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "model_id": "test-model",
         "version": "1.0.0",
         "engine_protocol": 1,
@@ -177,6 +196,8 @@ def test_registry_only_reports_ready_after_integrity_and_smoke_load(tmp_path: Pa
         "size": model.stat().st_size,
         "sha256": hashlib.sha256(model.read_bytes()).hexdigest(),
         "license_file": "LICENSE.txt",
+        "trust": "release_signed",
+        "capabilities": {"candidate_filter": True, "full_review": False},
         "quality_gate": {
             "corpus_sha256": "c" * 64,
             "profiles": [
@@ -213,6 +234,9 @@ def test_registry_only_reports_ready_after_integrity_and_smoke_load(tmp_path: Pa
         "state": "ready",
         "model_id": "test-model",
         "version": "1.0.0",
+        "trust": "release_signed",
+        "release_approved": True,
+        "capabilities": {"candidate_filter": True, "full_review": False},
     }
     assert registry.classifier() is not None
 
@@ -222,6 +246,13 @@ def test_registry_only_reports_ready_after_integrity_and_smoke_load(tmp_path: Pa
     manifest.pop("timeout_seconds")
     write_signed()
     assert registry.status()["state"] == "ready"
+    manifest["context_size"] = 512
+    manifest["max_tokens"] = 512
+    write_signed()
+    assert registry.status() == {"state": "invalid", "code": "MODEL_MANIFEST_INVALID"}
+    manifest.pop("context_size")
+    manifest.pop("max_tokens")
+    write_signed()
     assert registry.status(activate=False)["state"] == "installed"
     assert runtime.closed is True
     assert registry.status()["state"] == "ready"
@@ -230,3 +261,73 @@ def test_registry_only_reports_ready_after_integrity_and_smoke_load(tmp_path: Pa
     assert registry.status() == {"state": "invalid", "code": "MODEL_INTEGRITY_FAILED"}
     assert registry.classifier() is None
     assert runtime.closed is True
+
+
+def test_registry_runs_local_import_as_explicit_unverified_filter_only(
+    tmp_path: Path,
+) -> None:
+    active = tmp_path / "active"
+    active.mkdir()
+    model = active / "model.gguf"
+    model.write_bytes(b"test-model")
+    notice = active / "LOCAL-IMPORT-NOTICE.txt"
+    notice.write_text("No license or release approval supplied.", encoding="utf-8")
+    manifest = {
+        "schema_version": 2,
+        "model_id": "local-model",
+        "version": "local",
+        "engine_protocol": 1,
+        "file": model.name,
+        "size": model.stat().st_size,
+        "sha256": hashlib.sha256(model.read_bytes()).hexdigest(),
+        "license_file": notice.name,
+        "trust": "local_unverified",
+        "capabilities": {"candidate_filter": True, "full_review": False},
+    }
+    (active / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    runtime = Runtime('{"verdicts":[]}')
+    registry = ModelRegistry(tmp_path, lambda *_: runtime)
+
+    assert registry.status() == {
+        "state": "ready",
+        "model_id": "local-model",
+        "version": "local",
+        "trust": "local_unverified",
+        "release_approved": False,
+        "capabilities": {"candidate_filter": True, "full_review": False},
+    }
+    assert registry.classifier() is not None
+    assert registry.supports_full_review() is False
+
+
+def test_registry_rejects_legacy_auto_local_signature_and_unverified_full_review(
+    tmp_path: Path,
+) -> None:
+    active = tmp_path / "active"
+    active.mkdir()
+    model = active / "model.gguf"
+    model.write_bytes(b"test-model")
+    notice = active / "NOTICE.txt"
+    notice.write_text("notice", encoding="utf-8")
+    manifest = {
+        "schema_version": 2,
+        "model_id": "local-model",
+        "version": "local",
+        "engine_protocol": 1,
+        "file": model.name,
+        "size": model.stat().st_size,
+        "sha256": hashlib.sha256(model.read_bytes()).hexdigest(),
+        "license_file": notice.name,
+        "trust": "local_unverified",
+        "capabilities": {"candidate_filter": True, "full_review": False},
+        "signature": "auto-local",
+    }
+    manifest_path = active / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    registry = ModelRegistry(tmp_path, lambda *_: Runtime('{"verdicts":[]}'))
+    assert registry.status() == {"state": "invalid", "code": "MODEL_MANIFEST_INVALID"}
+
+    manifest.pop("signature")
+    manifest["capabilities"]["full_review"] = True
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    assert registry.status() == {"state": "invalid", "code": "MODEL_MANIFEST_INVALID"}

@@ -42,12 +42,27 @@ class ModelRegistry:
             manifest = json.loads(active.read_text(encoding="utf-8"))
             if not isinstance(manifest, dict):
                 raise ValueError
-            if not self._verify_signature(manifest):
+            trust = manifest.get("trust")
+            capabilities = manifest.get("capabilities")
+            if manifest.get("schema_version") != 2 or not _capabilities_valid(
+                capabilities, trust
+            ):
                 self._clear_cache()
-                return {"state": "invalid", "code": "MODEL_SIGNATURE_INVALID"}
-            if not _quality_approved(manifest.get("quality_gate")):
+                return {"state": "invalid", "code": "MODEL_MANIFEST_INVALID"}
+            if trust == "release_signed":
+                if not self._verify_signature(manifest):
+                    self._clear_cache()
+                    return {"state": "invalid", "code": "MODEL_SIGNATURE_INVALID"}
+                if not _quality_approved(manifest.get("quality_gate")):
+                    self._clear_cache()
+                    return {"state": "installed", "code": "MODEL_QUALITY_GATE_REQUIRED"}
+            elif trust == "local_unverified":
+                if "signature" in manifest or "quality_gate" in manifest:
+                    self._clear_cache()
+                    return {"state": "invalid", "code": "MODEL_MANIFEST_INVALID"}
+            else:
                 self._clear_cache()
-                return {"state": "installed", "code": "MODEL_QUALITY_GATE_REQUIRED"}
+                return {"state": "invalid", "code": "MODEL_MANIFEST_INVALID"}
             if not _runtime_config_approved(manifest):
                 self._clear_cache()
                 return {"state": "invalid", "code": "MODEL_MANIFEST_INVALID"}
@@ -110,6 +125,15 @@ class ModelRegistry:
     def classifier(self) -> ContextClassifier | None:
         return self._classifier if self.status().get("state") == "ready" else None
 
+    def supports_full_review(self) -> bool:
+        status = self.status()
+        capabilities = status.get("capabilities")
+        return bool(
+            status.get("state") in {"installed", "ready"}
+            and isinstance(capabilities, dict)
+            and capabilities.get("full_review") is True
+        )
+
     def deactivate(self) -> None:
         self._clear_cache()
 
@@ -125,8 +149,6 @@ class ModelRegistry:
         self._classifier = None
 
     def _verify_signature(self, manifest: dict[str, Any]) -> bool:
-        if manifest.get("signature") == "auto-local":
-            return True
         if not self._public_key or not isinstance(manifest.get("signature"), str):
             return False
         try:
@@ -151,7 +173,22 @@ def _status(state: str, manifest: dict[str, Any]) -> dict[str, Any]:
         "state": state,
         "model_id": manifest["model_id"],
         "version": manifest["version"],
+        "trust": manifest["trust"],
+        "release_approved": manifest["trust"] == "release_signed",
+        "capabilities": dict(manifest["capabilities"]),
     }
+
+
+def _capabilities_valid(value: object, trust: object) -> bool:
+    if not isinstance(value, dict) or set(value) != {"candidate_filter", "full_review"}:
+        return False
+    if value.get("candidate_filter") is not True or not isinstance(
+        value.get("full_review"), bool
+    ):
+        return False
+    return trust == "release_signed" or (
+        trust == "local_unverified" and value["full_review"] is False
+    )
 
 
 def _sha256_file(path: Path) -> str:
@@ -214,6 +251,7 @@ def _runtime_config_approved(manifest: dict[str, Any]) -> bool:
         "context_size": (512, 32_768),
         "batch_size": (1, 64),
         "max_tokens": (32, 4096),
+        "review_chunk_tokens": (64, 32_768),
         "timeout_seconds": (1, 180),
     }
     for name, (minimum, maximum) in integer_limits.items():
@@ -224,6 +262,14 @@ def _runtime_config_approved(manifest: dict[str, Any]) -> bool:
             or not minimum <= value <= maximum
         ):
             return False
+    context_size = manifest.get("context_size", 2048)
+    max_tokens = manifest.get("max_tokens", 512)
+    available_review_tokens = context_size - max_tokens - 256
+    if available_review_tokens < 64:
+        return False
+    review_chunk_tokens = manifest.get("review_chunk_tokens")
+    if review_chunk_tokens is not None and review_chunk_tokens > available_review_tokens:
+        return False
     seed = manifest.get("seed")
     if seed is not None and (isinstance(seed, bool) or not isinstance(seed, int)):
         return False

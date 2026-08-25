@@ -20,12 +20,23 @@ export interface DocumentInfo {
   page_count?: number;
 }
 
+export interface ReviewCoverage {
+  status: "complete" | "partial";
+  total_chunks: number;
+  reviewed_chunks: number;
+  failed_chunks: number;
+  total_blocks: number;
+  reviewed_blocks: number;
+  failed_blocks: number;
+}
+
 export interface JobResult {
   job_id: string;
-  status: "completed" | "no_findings";
+  status: "completed" | "no_findings" | "partial";
   output_path: string | null;
   finding_count: number;
   counts: { category: Record<string, number>; origin: Record<string, number> } | Record<string, never>;
+  review?: ReviewCoverage | null;
 }
 
 export interface ProgressEvent {
@@ -35,5 +46,24 @@ export interface ProgressEvent {
   message_code: string;
 }
 
-export interface DictionaryEntry { word: string; note: string }
-export interface ModelStatus { state: "not_installed" | "downloading" | "importing" | "verifying" | "installed" | "ready" | "invalid" | "cancelled" | "error" | "incompatible"; model_id?: string; version?: string; code?: string }
+export interface CustomRule {
+  id: string;
+  prompt: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ModelCapabilities {
+  candidate_filter: boolean;
+  full_review: boolean;
+}
+
+export interface ModelStatus {
+  state: "not_installed" | "downloading" | "importing" | "verifying" | "installed" | "ready" | "unverified" | "invalid" | "cancelled" | "error" | "incompatible";
+  model_id?: string;
+  version?: string;
+  code?: string;
+  trust?: "release_signed" | "local_unverified";
+  release_approved?: boolean;
+  capabilities?: ModelCapabilities;
+}

@@ -106,7 +106,7 @@ Runtime model được cài cùng extra `model`:
 uv sync --project engine --extra dev --extra model --locked
 ```
 
-Quy trình phê duyệt là: tạo manifest nháp chứa identity/runtime limits → chạy cùng một corpus đã duyệt trên máy 8 GB và 16 GB → ký gói bằng hai report. Lệnh benchmark ghi SHA-256 của cả GGUF và corpus vào report:
+Quy trình phê duyệt hiện tại là: tạo manifest nháp chứa identity/runtime limits → chạy cùng một corpus candidate-filter đã duyệt trên máy 8 GB và 16 GB → ký gói bằng hai report. Lệnh benchmark ghi SHA-256 của cả GGUF và corpus vào report:
 
 ```sh
 uv run --project engine python tools/benchmark_model.py \
@@ -135,6 +135,8 @@ uv run --project engine python tools/package_model.py \
 ```
 
 Tool in public key base64 cần đưa vào `SOATVAN_MODEL_PUBLIC_KEY`. Không commit private key, GGUF, corpus khách hàng hoặc report chứa metadata máy. Cấu trúc corpus và manifest nháp xem tại [`model-benchmark.md`](model-benchmark.md).
+
+Hai report do lệnh trên tạo chỉ là evidence cho **AI filter**, và `tools/package_model.py` mặc định ký package với `capabilities.full_review=false`. Trước khi phát hành **AI full review**, phải chạy benchmark riêng bằng production token-aware chunker trên toàn bộ supported block, đo discovery precision/recall, coverage, partial semantics, latency và RAM ở cả hai profile. Chỉ manifest schema v2 `release_signed` có `capabilities.full_review=true` mới mở chức năng; trạng thái `ready` theo gate filter không tự động phê duyệt full review.
 
 ## Chữ ký cho nhu cầu cá nhân
 

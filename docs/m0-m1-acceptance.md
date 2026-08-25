@@ -1,6 +1,6 @@
 # M0/M1 acceptance — SoátVăn Desktop
 
-Ngày cập nhật: 24/8/2026
+Ngày cập nhật: 25/8/2026
 
 Tài liệu này phân biệt rõ **implementation**, **test tự động**, **evidence Windows GitHub Actions** và **evidence đầu vào chưa có**. Không dùng kết quả macOS để tuyên bố một gate Windows đã đạt.
 
@@ -22,16 +22,16 @@ Evidence Windows hiện tại: commit `ad8ae1a`, [verify #32618189142](https://g
 
 | Requirement | Evidence tự động | Trạng thái |
 |---|---|---|
-| Workflow `Chọn file → Quy tắc → Xử lý → Kết quả`, không preview | 12 Vitest/jsdom tests | Đã triển khai |
+| Workflow `Chọn file → Chuẩn bị rà soát → Xử lý → Kết quả`, không preview/finding list trong app | Vitest/jsdom workflow tests | Đã triển khai |
 | File dialog, Tauri drop, `Ctrl+O`, progress, cancel, output/open-folder | DOM tests; late-result-after-cancel regression | Đã triển khai |
-| Ba preset đúng scope | Rule tests chứng minh preset spelling không chạy technical rules | Đã triển khai |
-| Bật/tắt từng nhóm rule và từ bỏ qua chỉ trong phiên hiện tại | DOM/API/Rust/Python boundary tests và workflow tests | Đã triển khai |
-| Prompt tự do khóa khi model chưa `ready` | DOM test và Rust fail-closed command | Đã triển khai |
+| Bộ kiểm tra cơ bản cố định, không có preset, checkbox nhóm rule, từ điển người dùng hoặc danh sách bỏ qua | DOM test xác nhận không render control cũ; host luôn gửi cấu hình mặc định và danh sách rỗng | Đã triển khai |
+| CRUD quy tắc riêng; mỗi mục là prompt text, tổng tối đa 4.000 ký tự | DOM/API/Rust/Python/SQLite tests cho list/upsert/delete, Unicode, persistence, race và rollback UI | Đã triển khai |
+| Các quy tắc riêng được ghép bằng dòng trống và chỉ gửi làm context khi AI `ready` | DOM/API boundary tests; transport fail-closed ở 4.200 ký tự | Đã triển khai |
 | NFC, khoảng trắng/dấu câu/từ lặp, confusion, viết hoa hành chính, âm tiết | Unit + Hypothesis property tests; detector âm tiết M1 chỉ sửa vi phạm phụ âm đầu có độ tin cậy cao | Đã triển khai theo scope bảo thủ |
 | Main body/table; giữ nguyên vùng chưa hỗ trợ | Advanced golden inventory và semantic assertions | Đã triển khai |
 | Annotation-only, vàng + comment, không overlap | DOCX/rule/property tests; source hash bất biến | Đã triển khai |
 | `name-soat.docx`, collision suffix, atomic no-clobber; no finding không output | Rust hard-link finalization test và Python workflow tests | Đã triển khai |
-| SQLite dictionary CRUD/search và CSV UTF-8 BOM transaction | Unicode casefold CRUD/search/export/import/rollback tests | Đã triển khai |
+| Dữ liệu từ điển cũ không còn public hoặc ảnh hưởng workflow | Protocol không quảng bá/dispatch dictionary; workflow regression xác nhận dữ liệu cũ không suppress finding | Đã triển khai |
 | ZIP/XML security | traversal, backslash/drive path, duplicate entry, compression bomb, malformed XML, external entity, external relationship và size-limit tests | Đã triển khai |
 | Contract/crash/timeout/cancel | Schema parity, ordering, frame limit, cancel, EOF propagation; timeout chủ động gửi cancel | Đã triển khai |
 | Rule layer ≤2 giây trên corpus chuẩn hóa 50 trang | 50 × 500 âm tiết, assertion 2 giây; Actions ghi thời gian test | Đạt trên Windows Actions |

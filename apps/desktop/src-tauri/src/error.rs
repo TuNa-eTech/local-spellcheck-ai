@@ -24,6 +24,8 @@ pub enum AppError {
     ModelDiskSpace,
     #[error("MODEL_OPERATION_CANCELLED")]
     ModelCancelled,
+    #[error("MODEL_OPERATION_IN_PROGRESS")]
+    ModelOperationInProgress,
     #[error("{0}")]
     Engine(String),
     #[error("{0}")]

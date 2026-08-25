@@ -34,13 +34,15 @@ class DocxPackage:
 
     def inspect(self, source: Path) -> dict[str, object]:
         self._validate_archive(source)
-        blocks = self.read_blocks(source)
+        with zipfile.ZipFile(source) as archive:
+            root = self._parse_xml(archive.read("word/document.xml"))
+        blocks = self._blocks(root)
         text = "\n".join(block.text for block in blocks)
         return {
             "name": source.name,
             "size": source.stat().st_size,
             "paragraph_count": sum(block.kind == "paragraph" for block in blocks),
-            "table_cell_count": sum(block.kind == "table_cell" for block in blocks),
+            "table_cell_count": len(root.xpath("//w:body//w:tc", namespaces=NS)),
             "character_count": sum(len(block.text) for block in blocks),
             "word_count": len(re.findall(r"[^\W_]+", text, flags=re.UNICODE)),
             "page_count": self._page_count(source),
@@ -65,6 +67,10 @@ class DocxPackage:
         self._validate_archive(source)
         with zipfile.ZipFile(source) as archive:
             root = self._parse_xml(archive.read("word/document.xml"))
+        return self._blocks(root)
+
+    @staticmethod
+    def _blocks(root: etree._Element) -> list[Block]:
         blocks: list[Block] = []
         for index, paragraph in enumerate(root.xpath("//w:body//w:p", namespaces=NS)):
             text = "".join(paragraph.xpath(".//w:t/text()", namespaces=NS))
@@ -171,40 +177,46 @@ class DocxPackage:
     def _annotate_one(
         self, paragraph: etree._Element, comments: etree._Element, finding: Finding, comment_id: int
     ) -> bool:
-        runs = paragraph.xpath("./w:r", namespaces=NS)
         all_texts = paragraph.xpath(".//w:t", namespaces=NS)
-        if any(
-            text.getparent() is None or text.getparent().getparent() is not paragraph
-            for text in all_texts
-        ):
-            # Hyperlinks, tracked changes and content controls are preserved but
-            # intentionally not mutated in M1 because their anchors are not flat.
-            return False
         spans: list[tuple[etree._Element, int, int, int, int]] = []
         cursor = 0
-        for run in runs:
-            texts = run.xpath("./w:t", namespaces=NS)
-            if len(texts) != 1:
-                cursor += sum(len(text.text or "") for text in texts)
-                continue
-            value = texts[0].text or ""
-            spans.append((run, cursor, cursor + len(value), 0, len(value)))
+        for text in all_texts:
+            value = text.text or ""
+            run = text.getparent()
+            if (
+                run is not None
+                and run.tag == f"{{{W}}}r"
+                and run.getparent() is paragraph
+                and len(run.xpath("./w:t", namespaces=NS)) == 1
+            ):
+                # A paragraph can mix ordinary runs with structures whose
+                # anchoring rules are more complex (hyperlinks, tracked changes
+                # and content controls). Keep their text in the global offset
+                # map, but only mutate a finding that is wholly covered by flat
+                # direct-child runs.
+                spans.append((run, cursor, cursor + len(value), 0, len(value)))
             cursor += len(value)
-        full_text = "".join(paragraph.xpath(".//w:t/text()", namespaces=NS))
+        full_text = "".join(text.text or "" for text in all_texts)
         if (
             finding.end > len(full_text)
             or full_text[finding.start : finding.end] != finding.source_text
         ):
             return False
-        selected: list[etree._Element] = []
+        selected_spans: list[tuple[etree._Element, int, int]] = []
+        covered = 0
         for run, global_start, global_end, _, _ in spans:
             left = max(finding.start, global_start)
             right = min(finding.end, global_end)
             if left >= right:
                 continue
-            selected.append(self._isolate_run(run, left - global_start, right - global_start))
-        if not selected:
+            selected_spans.append((run, left - global_start, right - global_start))
+            covered += right - left
+        if not selected_spans or covered != finding.end - finding.start:
             return False
+        selected = [
+            self._isolate_run(run, start, end)
+            for run, start, end in selected_spans
+        ]
         for run in selected:
             props = run.find(f"{{{W}}}rPr")
             if props is None:

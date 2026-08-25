@@ -1,6 +1,9 @@
-/* Hallmark · macrostructure: Workbench · genre: modern-minimal · theme: Cobalt · tone: utilitarian · anchor hue: cobalt · nav: N3 · footer: Ft2
+/* Hallmark · macrostructure: Guided Task · genre: modern-minimal · theme: Cobalt · tone: utilitarian · anchor hue: cobalt · nav: none · footer: Ft2
  * audience: cán bộ văn thư không rành kỹ thuật · use: mở DOCX, duyệt lỗi, xuất bản sao
- * pre-emit critique: P5 H5 E5 S5 R5 V5
+ * knobs: containment=flat · dialog=native · compact-window=height-aware
+ * pre-emit critique: P5 H5 E5 S5 R5 V4 · contrast: pass (40–41) · slop: pass (42–45)
+ * honest: pass (46) · chrome: pass (47) · tokens: pass (48) · responsive: pass (49) · icons: pass (30)
+ * mobile: pass (34, 49, 50–57)
  */
 :root {
   color-scheme: light;
@@ -9,6 +12,7 @@
   --color-paper-raised: oklch(99.3% 0.003 250);
   --color-paper-soft: oklch(96% 0.009 250);
   --color-paper-active: oklch(92.5% 0.028 250);
+  --color-paper-disabled: oklch(94% 0.008 250);
   --color-rail: oklch(22% 0.022 258);
   --color-rail-raised: oklch(28% 0.026 258);
   --color-ink: oklch(22% 0.022 258);
@@ -19,7 +23,7 @@
   --color-accent: oklch(48% 0.19 256);
   --color-accent-soft: oklch(93% 0.035 256);
   --color-accent-ink: oklch(98.5% 0.004 250);
-  --color-focus: oklch(22% 0.022 258);
+  --color-focus: oklch(13% 0.03 258);
   --color-highlight: oklch(88% 0.14 92);
   --color-highlight-active: oklch(82% 0.17 88);
   --color-success: oklch(42% 0.11 150);

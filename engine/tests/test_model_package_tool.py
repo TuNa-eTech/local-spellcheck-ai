@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from jsonschema import Draft202012Validator
+from jsonschema import Draft202012Validator, ValidationError
 
 TOOL_PATH = Path(__file__).parents[2] / "tools" / "package_model.py"
 SPEC = importlib.util.spec_from_file_location("package_model", TOOL_PATH)
@@ -63,6 +63,13 @@ def test_package_model_creates_verifiable_deterministic_manifest(tmp_path: Path)
     private_key.public_key().verify(
         base64.b64decode(manifest["signature"]), canonical_unsigned(manifest)
     )
+    assert manifest["schema_version"] == 2
+    assert manifest["trust"] == "release_signed"
+    assert manifest["capabilities"] == {
+        "candidate_filter": True,
+        "full_review": False,
+    }
+    assert manifest["review_chunk_tokens"] == 1200
     with zipfile.ZipFile(package) as archive:
         assert set(archive.namelist()) == {"model.gguf", "LICENSE.txt", "manifest.json"}
         stored = json.loads(archive.read("manifest.json"))
@@ -131,3 +138,54 @@ def test_packager_rejects_reserved_or_empty_license_file(tmp_path: Path) -> None
             version="1.0.0",
             memory_mb=2048,
         )
+
+
+def test_packager_rejects_review_budget_that_exceeds_the_context(tmp_path: Path) -> None:
+    model = tmp_path / "model.gguf"
+    model.write_bytes(b"GGUF")
+    license_file = tmp_path / "LICENSE.txt"
+    license_file.write_text("approved", encoding="utf-8")
+    with pytest.raises(ValueError, match="runtime limits"):
+        package_model(
+            model,
+            license_file,
+            tmp_path / "bad.svmodel",
+            Ed25519PrivateKey.generate(),
+            [],
+            model_id="approved-model",
+            version="1.0.0",
+            memory_mb=2048,
+            context_size=1024,
+            max_tokens=512,
+            review_chunk_tokens=1200,
+        )
+
+
+def test_manifest_schema_keeps_local_import_unverified_and_filter_only() -> None:
+    schema = json.loads(
+        (Path(__file__).parents[2] / "contracts" / "model-manifest.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    validator = Draft202012Validator(schema)
+    manifest = {
+        "schema_version": 2,
+        "model_id": "local-custom-model",
+        "version": "local",
+        "engine_protocol": 1,
+        "file": "model.gguf",
+        "size": 4,
+        "sha256": "a" * 64,
+        "license_file": "LOCAL-IMPORT-NOTICE.txt",
+        "trust": "local_unverified",
+        "capabilities": {"candidate_filter": True, "full_review": False},
+    }
+    validator.validate(manifest)
+
+    manifest["signature"] = "auto-local" * 4
+    with pytest.raises(ValidationError):
+        validator.validate(manifest)
+    manifest.pop("signature")
+    manifest["capabilities"]["full_review"] = True
+    with pytest.raises(ValidationError):
+        validator.validate(manifest)

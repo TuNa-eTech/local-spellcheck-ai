@@ -19,3 +19,4 @@ apps/desktop/src-tauri/resources/engine/*
 *.db
 *.db-shm
 *.db-wal
+*.gguf

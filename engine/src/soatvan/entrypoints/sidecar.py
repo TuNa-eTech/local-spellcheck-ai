@@ -11,6 +11,7 @@ from typing import Any
 
 from soatvan import PROTOCOL_VERSION, __version__
 from soatvan.checking import Preset, RuleConfig, RuleEngine
+from soatvan.custom_rules import SqliteCustomRuleRepository
 from soatvan.dictionary import SqliteDictionaryRepository
 from soatvan.document import DocxPackage, InvalidDocument
 from soatvan.models import ModelRegistry, runtime_available
@@ -24,11 +25,9 @@ PUBLIC_METHODS = frozenset(
         "document.inspect",
         "job.start",
         "job.cancel",
-        "dictionary.list",
-        "dictionary.upsert",
-        "dictionary.delete",
-        "dictionary.import",
-        "dictionary.export",
+        "custom_rule.list",
+        "custom_rule.upsert",
+        "custom_rule.delete",
         "model.status",
         "model.download",
         "model.import",
@@ -75,6 +74,7 @@ class Sidecar:
         )
         self.documents = DocxPackage()
         self.dictionary = SqliteDictionaryRepository(local_data / "dictionary.db")
+        self.custom_rules = SqliteCustomRuleRepository(local_data / "preferences.db")
         self.models = ModelRegistry(local_data / "models")
         self.processor = ProcessDocument(self.documents, self.dictionary, RuleEngine(), self.models)
         self.jobs: dict[str, Token] = {}
@@ -85,11 +85,9 @@ class Sidecar:
             "document.inspect": self.inspect,
             "job.start": self.start_job,
             "job.cancel": self.cancel_job,
-            "dictionary.list": self.dictionary_list,
-            "dictionary.upsert": self.dictionary_upsert,
-            "dictionary.delete": self.dictionary_delete,
-            "dictionary.import": self.dictionary_import,
-            "dictionary.export": self.dictionary_export,
+            "custom_rule.list": self.custom_rule_list,
+            "custom_rule.upsert": self.custom_rule_upsert,
+            "custom_rule.delete": self.custom_rule_delete,
             "model.status": self.model_status,
             "model.remove": self.model_remove,
         }
@@ -100,9 +98,9 @@ class Sidecar:
         return handlers[method](params)
 
     def hello(self, _: dict[str, Any]) -> dict[str, Any]:
-        capabilities = ["rules", "dictionary", "docx_annotations"]
+        capabilities = ["rules", "custom_rules", "docx_annotations"]
         if runtime_available():
-            capabilities.append("model_classifier")
+            capabilities.extend(("model_classifier", "model_full_review"))
         return {
             "protocol": PROTOCOL_VERSION,
             "engine_version": __version__,
@@ -137,6 +135,7 @@ class Sidecar:
                 bool(params.get("use_model", False)),
                 _custom_prompt(params.get("custom_prompt", "")),
                 _ignored_words(params.get("ignored_words", [])),
+                bool(params.get("full_review", False)),
             )
 
             def progress(stage: str, percent: int, message_code: str) -> None:
@@ -154,7 +153,14 @@ class Sidecar:
                 )
 
             result = self.processor.execute(request, progress, token)
-            event = "job.completed" if result.output_path else "job.no_findings"
+            review_partial = bool(
+                result.review and result.review.get("status") == "partial"
+            )
+            event = (
+                "job.completed"
+                if result.output_path or review_partial
+                else "job.no_findings"
+            )
             emit(
                 {
                     "v": 1,
@@ -166,6 +172,7 @@ class Sidecar:
                         else None,
                         "finding_count": result.finding_count,
                         "counts": result.counts,
+                        "review": result.review,
                     },
                 }
             )
@@ -194,24 +201,16 @@ class Sidecar:
             token.cancel()
         return {"cancelled": bool(token)}
 
-    def dictionary_list(self, params: dict[str, Any]) -> dict[str, Any]:
+    def custom_rule_list(self, _: dict[str, Any]) -> dict[str, Any]:
         return {
-            "entries": [
-                asdict(entry) for entry in self.dictionary.list(str(params.get("query", "")))
-            ]
+            "entries": [asdict(entry) for entry in self.custom_rules.list()]
         }
 
-    def dictionary_upsert(self, params: dict[str, Any]) -> dict[str, Any]:
-        return asdict(self.dictionary.upsert(str(params["word"]), str(params.get("note", ""))))
+    def custom_rule_upsert(self, params: dict[str, Any]) -> dict[str, Any]:
+        return asdict(self.custom_rules.upsert(params["prompt"], params.get("id")))
 
-    def dictionary_delete(self, params: dict[str, Any]) -> dict[str, Any]:
-        return {"deleted": self.dictionary.delete(str(params["word"]))}
-
-    def dictionary_import(self, params: dict[str, Any]) -> dict[str, Any]:
-        return {"count": self.dictionary.import_csv(Path(params["path"]))}
-
-    def dictionary_export(self, params: dict[str, Any]) -> dict[str, Any]:
-        return {"count": self.dictionary.export_csv(Path(params["path"]))}
+    def custom_rule_delete(self, params: dict[str, Any]) -> dict[str, Any]:
+        return {"deleted": self.custom_rules.delete(params["id"])}
 
     def model_status(self, params: dict[str, Any]) -> dict[str, Any]:
         activate = params.get("activate", True)
@@ -235,7 +234,7 @@ def _rule_config(value: object) -> RuleConfig | None:
 def _custom_prompt(value: object) -> str:
     if not isinstance(value, str):
         raise ValueError("INVALID_PARAMS")
-    if len(value) > 1000:
+    if len(value) > 4200:
         raise ValueError("CUSTOM_PROMPT_TOO_LONG")
     return value
 
@@ -328,6 +327,8 @@ def main() -> None:
 
 def safe_message(code: str) -> str:
     messages = {
+        "DOCUMENT_FINDINGS_NOT_EXPORTABLE": "Không thể gắn các cảnh báo vào cấu trúc tài liệu này.",
+        "MODEL_FULL_REVIEW_NOT_APPROVED": "Model này chưa được phê duyệt để rà soát toàn văn.",
         "DOCUMENT_INVALID_TYPE": "Tệp không phải DOCX hợp lệ.",
         "DOCUMENT_INVALID_PACKAGE": "Không thể đọc cấu trúc tệp Word.",
         "DOCUMENT_UNSAFE_ZIP_ENTRY": "Tệp Word chứa đường dẫn không an toàn.",
@@ -342,10 +343,17 @@ def safe_message(code: str) -> str:
         "CSV_INVALID_HEADER": "CSV phải có hai cột word,note.",
         "MODEL_PROVISIONING_OWNED_BY_HOST": "Model được quản lý bởi ứng dụng desktop.",
         "MODEL_CLASSIFIER_NOT_READY": "Model AI chưa sẵn sàng.",
+        "MODEL_FULL_REVIEW_UNSUPPORTED": "Model AI không hỗ trợ rà soát toàn văn.",
+        "MODEL_FULL_REVIEW_FAILED": "Model AI không rà soát được nội dung tài liệu.",
+        "MODEL_REVIEW_CONTEXT_TOO_SMALL": "Cửa sổ ngữ cảnh của model quá nhỏ để rà soát toàn văn.",
         "CUSTOM_PROMPT_REQUIRES_MODEL": "Prompt riêng yêu cầu bật model AI.",
-        "CUSTOM_PROMPT_TOO_LONG": "Prompt riêng vượt quá 1.000 ký tự.",
+        "FULL_REVIEW_REQUIRES_MODEL": "Rà soát toàn văn yêu cầu bật model AI.",
+        "CUSTOM_PROMPT_TOO_LONG": "Nội dung quy tắc riêng vượt giới hạn cho phép.",
         "RULE_CONFIG_INVALID": "Cấu hình quy tắc không hợp lệ.",
         "SESSION_DICTIONARY_INVALID": "Danh sách từ bỏ qua không hợp lệ.",
+        "CUSTOM_RULE_INVALID_ID": "Mã quy tắc riêng không hợp lệ.",
+        "CUSTOM_RULE_INVALID_PROMPT": "Nội dung quy tắc riêng không hợp lệ.",
+        "CUSTOM_RULE_LIMIT_REACHED": "Các quy tắc riêng đã đạt giới hạn lưu trữ.",
         "MODEL_INFERENCE_TIMEOUT": "Model AI vượt quá thời gian xử lý cho phép.",
     }
     return messages.get(code, "Không thể hoàn tất yêu cầu.")

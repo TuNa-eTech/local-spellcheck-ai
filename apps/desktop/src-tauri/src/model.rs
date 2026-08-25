@@ -16,6 +16,27 @@ pub struct ModelStatus {
     pub model_id: Option<String>,
     pub version: Option<String>,
     pub code: Option<String>,
+    #[serde(default)]
+    pub trust: Option<ModelTrust>,
+    #[serde(default)]
+    pub release_approved: bool,
+    #[serde(default)]
+    pub capabilities: ModelCapabilities,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelTrust {
+    ReleaseSigned,
+    LocalUnverified,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelCapabilities {
+    #[serde(default)]
+    pub candidate_filter: bool,
+    #[serde(default)]
+    pub full_review: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -32,11 +53,16 @@ struct Manifest {
     context_size: Option<u64>,
     batch_size: Option<u64>,
     max_tokens: Option<u64>,
+    review_chunk_tokens: Option<u64>,
     timeout_seconds: Option<u64>,
     seed: Option<i64>,
     minimum_confidence: Option<f64>,
-    quality_gate: QualityGate,
-    signature: String,
+    trust: ModelTrust,
+    capabilities: ModelCapabilities,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    quality_gate: Option<QualityGate>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    signature: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -92,34 +118,55 @@ impl ModelProvisioner {
                 model_id: None,
                 version: None,
                 code: None,
+                trust: None,
+                release_approved: false,
+                capabilities: ModelCapabilities::default(),
             };
         }
         match fs::read_to_string(manifest)
             .ok()
             .and_then(|value| serde_json::from_str::<Manifest>(&value).ok())
         {
-            Some(value) => ModelStatus {
-                state: "installed".into(),
-                model_id: Some(value.model_id),
-                version: Some(value.version),
-                code: None,
-            },
+            Some(value)
+                if valid_trust_contract(&value)
+                    && (value.trust == ModelTrust::LocalUnverified
+                        || release_signature_is_valid(&value)) =>
+            {
+                status_for_manifest("installed", value)
+            }
             None => ModelStatus {
                 state: "invalid".into(),
                 model_id: None,
                 version: None,
                 code: Some("MODEL_MANIFEST_INVALID".into()),
+                trust: None,
+                release_approved: false,
+                capabilities: ModelCapabilities::default(),
+            },
+            Some(_) => ModelStatus {
+                state: "invalid".into(),
+                model_id: None,
+                version: None,
+                code: Some("MODEL_MANIFEST_INVALID".into()),
+                trust: None,
+                release_approved: false,
+                capabilities: ModelCapabilities::default(),
             },
         }
     }
-    pub fn import_with_cancel<F>(&self, package: &Path, cancelled: F) -> AppResult<ModelStatus>
+    pub fn import_with_cancel<F>(
+        &self,
+        package: &Path,
+        expected_model_id: Option<&str>,
+        cancelled: F,
+    ) -> AppResult<ModelStatus>
     where
         F: Fn() -> bool,
     {
         let staging = self.root.join(format!("staging-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&staging)?;
         let result = self
-            .verify_and_extract(package, &staging, &cancelled)
+            .verify_and_extract(package, &staging, expected_model_id, &cancelled)
             .and_then(|manifest| {
                 let active = self.root.join("active");
                 let backup = self.root.join("previous");
@@ -135,12 +182,7 @@ impl ModelProvisioner {
                     }
                     return Err(error.into());
                 }
-                Ok(ModelStatus {
-                    state: "installed".into(),
-                    model_id: Some(manifest.model_id),
-                    version: Some(manifest.version),
-                    code: None,
-                })
+                Ok(status_for_manifest("installed", manifest))
             });
         if staging.exists() {
             let _ = fs::remove_dir_all(staging);
@@ -151,6 +193,7 @@ impl ModelProvisioner {
         &self,
         package: &Path,
         staging: &Path,
+        expected_model_id: Option<&str>,
         cancelled: &F,
     ) -> AppResult<Manifest>
     where
@@ -163,7 +206,7 @@ impl ModelProvisioner {
         let mut magic = [0u8; 4];
         let is_gguf = check_file.read_exact(&mut magic).is_ok() && &magic == b"GGUF";
         if is_gguf {
-            return self.extract_raw_gguf(package, staging, cancelled);
+            return self.extract_raw_gguf(package, staging, expected_model_id, cancelled);
         }
         let file = fs::File::open(package)?;
         let mut archive = zip::ZipArchive::new(file).map_err(|_| AppError::ModelPackageInvalid)?;
@@ -184,7 +227,7 @@ impl ModelProvisioner {
         ]
         .into_iter()
         .collect();
-        if manifest.schema_version != 1
+        if manifest.schema_version != 2
             || manifest.engine_protocol != 1
             || !safe_package_name(&manifest.file)
             || !safe_package_name(&manifest.license_file)
@@ -208,12 +251,24 @@ impl ModelProvisioner {
             || manifest
                 .max_tokens
                 .is_some_and(|value| !(32..=4096).contains(&value))
+            || manifest
+                .review_chunk_tokens
+                .is_some_and(|value| !(64..=32_768).contains(&value))
+            || !valid_runtime_window(
+                manifest.context_size,
+                manifest.max_tokens,
+                manifest.review_chunk_tokens,
+            )
             || !valid_timeout_seconds(manifest.timeout_seconds)
             || manifest
                 .minimum_confidence
                 .is_some_and(|value| !value.is_finite() || !(0.0..=1.0).contains(&value))
-            || !valid_quality_gate(&manifest.quality_gate)
+            || !valid_trust_contract(&manifest)
+            || expected_model_id.is_some_and(|expected| manifest.model_id != expected)
         {
+            return Err(AppError::ModelPackageInvalid);
+        }
+        if manifest.trust != ModelTrust::ReleaseSigned {
             return Err(AppError::ModelPackageInvalid);
         }
         let public_key =
@@ -225,7 +280,12 @@ impl ModelProvisioner {
             .map_err(|_| AppError::ModelNotConfigured)?;
         let signature = Signature::from_slice(
             &STANDARD
-                .decode(&manifest.signature)
+                .decode(
+                    manifest
+                        .signature
+                        .as_deref()
+                        .ok_or(AppError::ModelSignatureInvalid)?,
+                )
                 .map_err(|_| AppError::ModelSignatureInvalid)?,
         )
         .map_err(|_| AppError::ModelSignatureInvalid)?;
@@ -251,6 +311,7 @@ impl ModelProvisioner {
         &self,
         gguf_path: &Path,
         staging: &Path,
+        expected_model_id: Option<&str>,
         cancelled: &F,
     ) -> AppResult<Manifest>
     where
@@ -260,84 +321,83 @@ impl ModelProvisioner {
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("gemma-4-e4b");
-        let model_id = if file_stem.to_lowercase().contains("e2b") {
-            "gemma-4-e2b"
-        } else if file_stem.to_lowercase().contains("12b") {
-            "gemma-4-12b"
-        } else {
-            "gemma-4-e4b"
-        };
+        let model_id = expected_model_id
+            .map(str::to_owned)
+            .unwrap_or_else(|| local_model_id(file_stem));
+        if !valid_model_id(&model_id) {
+            return Err(AppError::ModelPackageInvalid);
+        }
         let file_name = "model.gguf";
         let target_path = staging.join(file_name);
-        
+
         let metadata = fs::metadata(gguf_path)?;
         let size = metadata.len();
-        
-        fs::copy(gguf_path, &target_path)?;
-        if cancelled() {
-            return Err(AppError::ModelCancelled);
+        const DISK_MARGIN: u64 = 64 * 1024 * 1024;
+        if size == 0 || fs2::available_space(staging)? < size.saturating_add(DISK_MARGIN) {
+            return Err(AppError::ModelDiskSpace);
         }
-        
-        let mut file = fs::File::open(&target_path)?;
+
+        let mut source = fs::File::open(gguf_path)?;
+        let partial_path = staging.join(format!("{file_name}.partial"));
+        let mut target = fs::File::create(&partial_path)?;
         let mut hasher = Sha256::new();
         let mut buffer = [0u8; 1024 * 1024];
+        let mut copied = 0_u64;
         loop {
             if cancelled() {
                 return Err(AppError::ModelCancelled);
             }
-            let count = file.read(&mut buffer)?;
+            let count = source.read(&mut buffer)?;
             if count == 0 {
                 break;
             }
+            copied = copied.saturating_add(count as u64);
+            if copied > size {
+                return Err(AppError::ModelPackageInvalid);
+            }
             hasher.update(&buffer[..count]);
+            target.write_all(&buffer[..count])?;
         }
+        if copied != size {
+            return Err(AppError::ModelPackageInvalid);
+        }
+        target.flush()?;
+        target.sync_all()?;
         let sha256 = format!("{:x}", hasher.finalize());
-        
-        let license_name = "LICENSE.txt";
-        fs::write(staging.join(license_name), b"Google Gemma Open Model License\n")?;
-        
+        fs::rename(partial_path, &target_path)?;
+
+        let license_name = "LOCAL-IMPORT-NOTICE.txt";
+        fs::write(
+            staging.join(license_name),
+            b"Locally imported GGUF. No license or release approval was supplied.\n",
+        )?;
+
         let manifest = Manifest {
-            schema_version: 1,
-            model_id: model_id.to_string(),
-            version: "1.0.0".to_string(),
+            schema_version: 2,
+            model_id,
+            version: "local".to_string(),
             engine_protocol: 1,
             file: file_name.to_string(),
             size,
             sha256,
             license_file: license_name.to_string(),
-            memory_mb: Some(8192),
+            memory_mb: None,
             context_size: Some(2048),
             batch_size: Some(8),
             max_tokens: Some(512),
+            review_chunk_tokens: Some(1200),
             timeout_seconds: Some(120),
             seed: Some(42),
             minimum_confidence: Some(0.8),
-            quality_gate: QualityGate {
-                corpus_sha256: "0".repeat(64),
-                profiles: vec![
-                    BenchmarkProfile {
-                        machine_memory_mb: 8192.0,
-                        documents: 20,
-                        precision: 0.95,
-                        recall: 0.90,
-                        p95_seconds: 1.5,
-                        peak_rss_mb: 2048.0,
-                        report_sha256: "0".repeat(64),
-                    },
-                    BenchmarkProfile {
-                        machine_memory_mb: 16384.0,
-                        documents: 20,
-                        precision: 0.95,
-                        recall: 0.90,
-                        p95_seconds: 1.0,
-                        peak_rss_mb: 2048.0,
-                        report_sha256: "0".repeat(64),
-                    },
-                ],
+            trust: ModelTrust::LocalUnverified,
+            capabilities: ModelCapabilities {
+                candidate_filter: true,
+                full_review: false,
             },
-            signature: "auto-local".to_string(),
+            quality_gate: None,
+            signature: None,
         };
-        
+
         let manifest_bytes = serde_json::to_vec_pretty(&manifest)?;
         fs::write(staging.join("manifest.json"), manifest_bytes)?;
         Ok(manifest)
@@ -443,6 +503,8 @@ fn canonical_unsigned(value: &Manifest) -> AppResult<Vec<u8>> {
         "size": value.size,
         "sha256": value.sha256,
         "license_file": value.license_file,
+        "trust": value.trust,
+        "capabilities": value.capabilities,
     });
     let object = unsigned.as_object_mut().expect("canonical manifest object");
     for (name, item) in [
@@ -454,6 +516,10 @@ fn canonical_unsigned(value: &Manifest) -> AppResult<Vec<u8>> {
         ("batch_size", value.batch_size.map(serde_json::Value::from)),
         ("max_tokens", value.max_tokens.map(serde_json::Value::from)),
         (
+            "review_chunk_tokens",
+            value.review_chunk_tokens.map(serde_json::Value::from),
+        ),
+        (
             "timeout_seconds",
             value.timeout_seconds.map(serde_json::Value::from),
         ),
@@ -462,16 +528,77 @@ fn canonical_unsigned(value: &Manifest) -> AppResult<Vec<u8>> {
             "minimum_confidence",
             value.minimum_confidence.map(serde_json::Value::from),
         ),
-        (
-            "quality_gate",
-            Some(serde_json::to_value(&value.quality_gate)?),
-        ),
     ] {
         if let Some(item) = item {
             object.insert(name.into(), item);
         }
     }
+    if let Some(quality_gate) = value.quality_gate.as_ref() {
+        object.insert("quality_gate".into(), serde_json::to_value(quality_gate)?);
+    }
     Ok(serde_json::to_vec(&unsigned)?)
+}
+
+fn status_for_manifest(state: &str, manifest: Manifest) -> ModelStatus {
+    let release_approved = manifest.trust == ModelTrust::ReleaseSigned;
+    ModelStatus {
+        state: state.into(),
+        model_id: Some(manifest.model_id),
+        version: Some(manifest.version),
+        code: None,
+        trust: Some(manifest.trust),
+        release_approved,
+        capabilities: manifest.capabilities,
+    }
+}
+
+fn valid_trust_contract(manifest: &Manifest) -> bool {
+    match manifest.trust {
+        ModelTrust::ReleaseSigned => {
+            manifest.capabilities.candidate_filter
+                && manifest
+                    .quality_gate
+                    .as_ref()
+                    .is_some_and(valid_quality_gate)
+                && manifest
+                    .signature
+                    .as_ref()
+                    .is_some_and(|signature| signature.len() >= 32)
+        }
+        ModelTrust::LocalUnverified => {
+            manifest.capabilities.candidate_filter
+                && !manifest.capabilities.full_review
+                && manifest.quality_gate.is_none()
+                && manifest.signature.is_none()
+        }
+    }
+}
+
+fn release_signature_is_valid(manifest: &Manifest) -> bool {
+    let Some(public_key) = option_env!("SOATVAN_MODEL_PUBLIC_KEY") else {
+        return false;
+    };
+    let Ok(key_bytes) = STANDARD.decode(public_key) else {
+        return false;
+    };
+    let Ok(key_bytes) = <[u8; 32]>::try_from(key_bytes) else {
+        return false;
+    };
+    let Some(encoded_signature) = manifest.signature.as_deref() else {
+        return false;
+    };
+    let Ok(signature_bytes) = STANDARD.decode(encoded_signature) else {
+        return false;
+    };
+    let Ok(signature) = Signature::from_slice(&signature_bytes) else {
+        return false;
+    };
+    let Ok(payload) = canonical_unsigned(manifest) else {
+        return false;
+    };
+    VerifyingKey::from_bytes(&key_bytes)
+        .and_then(|key| key.verify(&payload, &signature))
+        .is_ok()
 }
 
 fn safe_package_name(value: &str) -> bool {
@@ -494,6 +621,49 @@ fn valid_timeout_seconds(value: Option<u64>) -> bool {
         Some(seconds) => (1..=180).contains(&seconds),
         None => true,
     }
+}
+
+fn local_model_id(file_stem: &str) -> String {
+    let lower = file_stem.to_ascii_lowercase();
+    if lower.contains("e2b") {
+        return "gemma-4-e2b".into();
+    }
+    if lower.contains("e4b") {
+        return "gemma-4-e4b".into();
+    }
+    if lower.contains("12b") {
+        return "gemma-4-12b".into();
+    }
+    let mut previous_separator = false;
+    let slug: String = lower
+        .bytes()
+        .filter_map(|byte| {
+            let output = if byte.is_ascii_lowercase() || byte.is_ascii_digit() {
+                previous_separator = false;
+                byte as char
+            } else if !previous_separator {
+                previous_separator = true;
+                '-'
+            } else {
+                return None;
+            };
+            Some(output)
+        })
+        .take(48)
+        .collect();
+    let slug = slug.trim_matches('-');
+    format!("local-{}", if slug.is_empty() { "gguf" } else { slug })
+}
+
+fn valid_runtime_window(
+    context_size: Option<u64>,
+    max_tokens: Option<u64>,
+    review_chunk_tokens: Option<u64>,
+) -> bool {
+    let available = context_size
+        .unwrap_or(2048)
+        .saturating_sub(max_tokens.unwrap_or(512).saturating_add(256));
+    available >= 64 && review_chunk_tokens.map_or(true, |value| value <= available)
 }
 
 fn valid_quality_gate(value: &QualityGate) -> bool {
@@ -537,7 +707,7 @@ mod tests {
 
     fn manifest_for(bytes: &[u8]) -> Manifest {
         Manifest {
-            schema_version: 1,
+            schema_version: 2,
             model_id: "approved-model".into(),
             version: "1.0.0".into(),
             engine_protocol: 1,
@@ -549,10 +719,16 @@ mod tests {
             context_size: Some(2048),
             batch_size: Some(8),
             max_tokens: Some(512),
+            review_chunk_tokens: Some(1200),
             timeout_seconds: Some(120),
             seed: Some(42),
             minimum_confidence: Some(0.8),
-            quality_gate: QualityGate {
+            trust: ModelTrust::ReleaseSigned,
+            capabilities: ModelCapabilities {
+                candidate_filter: true,
+                full_review: false,
+            },
+            quality_gate: Some(QualityGate {
                 corpus_sha256: "c".repeat(64),
                 profiles: vec![
                     BenchmarkProfile {
@@ -574,8 +750,8 @@ mod tests {
                         report_sha256: "b".repeat(64),
                     },
                 ],
-            },
-            signature: "unused-in-unit-test".into(),
+            }),
+            signature: Some("unused-in-unit-test".into()),
         }
     }
 
@@ -586,16 +762,35 @@ mod tests {
         assert!(!valid_model_id("../model"));
         assert!(safe_package_name("model.gguf"));
         assert!(!safe_package_name("folder/model.gguf"));
+        assert_eq!(local_model_id("gemma-4-E2B-it-Q4"), "gemma-4-e2b");
+        assert_eq!(local_model_id("My Custom Model"), "local-my-custom-model");
+        assert_eq!(local_model_id("má»™t-model"), "local-m-t-model");
     }
 
     #[test]
     fn model_quality_and_runtime_deadlines_are_bounded_by_m2_sla() {
         let mut manifest = manifest_for(b"model");
-        assert!(valid_quality_gate(&manifest.quality_gate));
-        manifest.quality_gate.profiles[0].p95_seconds = 181.0;
-        assert!(!valid_quality_gate(&manifest.quality_gate));
+        assert!(valid_quality_gate(
+            manifest.quality_gate.as_ref().expect("quality gate")
+        ));
+        manifest
+            .quality_gate
+            .as_mut()
+            .expect("quality gate")
+            .profiles[0]
+            .p95_seconds = 181.0;
+        assert!(!valid_quality_gate(
+            manifest.quality_gate.as_ref().expect("quality gate")
+        ));
         assert!(valid_timeout_seconds(Some(180)));
         assert!(!valid_timeout_seconds(Some(181)));
+        assert!(valid_runtime_window(Some(2048), Some(512), Some(1200)));
+        assert!(!valid_runtime_window(Some(512), Some(512), None));
+        assert!(!valid_runtime_window(Some(1024), Some(512), Some(1200)));
+        manifest.review_chunk_tokens = Some(63);
+        assert!(manifest
+            .review_chunk_tokens
+            .is_some_and(|value| !(64..=32_768).contains(&value)));
     }
 
     #[test]
@@ -652,9 +847,76 @@ mod tests {
         let manifest = manifest_for(b"model");
         let payload = String::from_utf8(canonical_unsigned(&manifest).unwrap()).unwrap();
         assert!(!payload.contains("signature"));
-        assert!(payload.starts_with("{\"batch_size\":8,\"context_size\":2048"));
+        assert!(payload.starts_with(
+            "{\"batch_size\":8,\"capabilities\":{\"candidate_filter\":true,\"full_review\":false},\"context_size\":2048"
+        ));
         assert!(payload.contains("\"quality_gate\":{\"corpus_sha256\":"));
+        assert!(payload.contains("\"review_chunk_tokens\":1200"));
+        assert!(payload.contains("\"trust\":\"release_signed\""));
+        assert!(payload.contains("\"full_review\":false"));
         assert!(payload.ends_with("\"version\":\"1.0.0\"}"));
+    }
+
+    #[test]
+    fn local_import_contract_never_claims_release_or_full_review() {
+        let mut manifest = manifest_for(b"model");
+        manifest.trust = ModelTrust::LocalUnverified;
+        manifest.capabilities.full_review = false;
+        manifest.quality_gate = None;
+        manifest.signature = None;
+
+        assert!(valid_trust_contract(&manifest));
+        let status = status_for_manifest("ready", manifest);
+        assert_eq!(status.trust, Some(ModelTrust::LocalUnverified));
+        assert!(!status.release_approved);
+        assert!(status.capabilities.candidate_filter);
+        assert!(!status.capabilities.full_review);
+    }
+
+    #[test]
+    fn unverified_manifest_cannot_claim_full_review_or_fake_evidence() {
+        let mut manifest = manifest_for(b"model");
+        manifest.trust = ModelTrust::LocalUnverified;
+        manifest.quality_gate = None;
+        manifest.signature = None;
+        manifest.capabilities.full_review = true;
+        assert!(!valid_trust_contract(&manifest));
+
+        manifest.capabilities.full_review = false;
+        manifest.quality_gate = Some(QualityGate {
+            corpus_sha256: "0".repeat(64),
+            profiles: Vec::new(),
+        });
+        assert!(!valid_trust_contract(&manifest));
+    }
+
+    #[test]
+    fn raw_gguf_import_records_provenance_without_fabricated_approval() {
+        let folder = tempfile::tempdir().unwrap();
+        let source = folder.path().join("download-cache.partial");
+        fs::write(&source, b"GGUF-local-model").unwrap();
+        let staging = folder.path().join("staging");
+        fs::create_dir(&staging).unwrap();
+        let provisioner = ModelProvisioner::new(folder.path().join("models"));
+
+        let manifest = provisioner
+            .extract_raw_gguf(&source, &staging, Some("gemma-4-e2b"), &|| false)
+            .unwrap();
+
+        assert_eq!(manifest.model_id, "gemma-4-e2b");
+        assert_eq!(manifest.version, "local");
+        assert_eq!(manifest.trust, ModelTrust::LocalUnverified);
+        assert!(manifest.capabilities.candidate_filter);
+        assert!(!manifest.capabilities.full_review);
+        assert!(manifest.quality_gate.is_none());
+        assert!(manifest.signature.is_none());
+        let stored: serde_json::Value = serde_json::from_slice(
+            &fs::read(staging.join("manifest.json")).expect("stored manifest"),
+        )
+        .unwrap();
+        assert!(stored.get("quality_gate").is_none());
+        assert!(stored.get("signature").is_none());
+        assert!(staging.join("LOCAL-IMPORT-NOTICE.txt").is_file());
     }
 
     #[test]

@@ -8,10 +8,21 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any, Protocol, cast
 
+from soatvan.checking.domain import Block
 from soatvan.workflow.ports import (
     CancellationToken,
     ClassificationCandidate,
     ClassifierVerdict,
+    DiscoveryProposal,
+    FullReviewResult,
+    ReviewCandidate,
+)
+
+from .review import (
+    REVIEW_SCHEMA,
+    REVIEW_SYSTEM_PROMPT,
+    parse_review_content,
+    plan_review_chunks,
 )
 
 
@@ -80,6 +91,9 @@ class _NativeLlamaRuntime:
     def create_chat_completion(self, **kwargs: Any) -> Any:
         return self._runtime.create_chat_completion(**kwargs)
 
+    def count_tokens(self, value: str) -> int:
+        return len(self._runtime.tokenize(value.encode("utf-8"), add_bos=False, special=False))
+
     def reset_after_abort(self) -> None:
         self._runtime.reset()
 
@@ -122,10 +136,20 @@ class LlamaCppClassifier:
         self._minimum_confidence = float(manifest.get("minimum_confidence", 0.5))
         self._batch_size = int(manifest.get("batch_size", 8))
         self._max_tokens = int(manifest.get("max_tokens", 512))
+        self._review_candidate_limit = max(
+            1, min(self._batch_size, self._max_tokens // 80)
+        )
         self._timeout_seconds = int(manifest.get("timeout_seconds", 120))
         self._seed = int(manifest.get("seed", 42))
-        context_size = int(manifest.get("context_size", 2048))
-        self._runtime = runtime_factory(model_path, context_size, self._seed)
+        self._context_size = int(manifest.get("context_size", 2048))
+        available_review_tokens = self._context_size - self._max_tokens - 256
+        if available_review_tokens < 64:
+            raise ValueError("MODEL_REVIEW_CONTEXT_TOO_SMALL")
+        requested_review_tokens = int(manifest.get("review_chunk_tokens", 1200))
+        if "review_chunk_tokens" in manifest and requested_review_tokens > available_review_tokens:
+            raise ValueError("MODEL_REVIEW_CONTEXT_TOO_SMALL")
+        self._review_chunk_tokens = min(requested_review_tokens, available_review_tokens)
+        self._runtime = runtime_factory(model_path, self._context_size, self._seed)
         self._lock = threading.Lock()
 
     @property
@@ -232,6 +256,118 @@ class LlamaCppClassifier:
                 )
         return tuple(verdicts)
 
+    def review(
+        self,
+        blocks: tuple[Block, ...],
+        candidates: tuple[ReviewCandidate, ...],
+        custom_prompt: str,
+        cancellation: CancellationToken,
+        progress: Callable[[int, int], None] | None = None,
+    ) -> FullReviewResult:
+        verdicts: list[ClassifierVerdict] = []
+        discoveries: list[DiscoveryProposal] = []
+        failed_chunks: list[str] = []
+        failed_blocks: set[str] = set()
+        reviewed_chunks = 0
+        with self._lock:
+            chunks = plan_review_chunks(
+                blocks,
+                candidates,
+                custom_prompt,
+                self._review_chunk_tokens,
+                self._count_tokens,
+                self._review_candidate_limit,
+                cancellation.raise_if_cancelled,
+            )
+            if not chunks:
+                return FullReviewResult((), (), 0, 0)
+            for processed_chunks, chunk in enumerate(chunks, start=1):
+                cancellation.raise_if_cancelled()
+                deadline = time.monotonic() + self._timeout_seconds
+                abort_reason: list[Exception] = []
+                should_abort = _abort_predicate(cancellation, deadline, abort_reason)
+                set_abort = getattr(self._runtime, "set_abort_predicate", None)
+                if callable(set_abort):
+                    set_abort(should_abort)
+                try:
+                    completion = self._runtime.create_chat_completion(
+                        messages=[
+                            {"role": "system", "content": REVIEW_SYSTEM_PROMPT},
+                            {
+                                "role": "user",
+                                "content": json.dumps(
+                                    chunk.payload(),
+                                    ensure_ascii=False,
+                                    separators=(",", ":"),
+                                ),
+                            },
+                        ],
+                        temperature=0,
+                        seed=self._seed,
+                        max_tokens=self._max_tokens,
+                        stream=True,
+                        response_format={"type": "json_object", "schema": REVIEW_SCHEMA},
+                    )
+                    raw = _collect_stream(completion, cancellation, deadline)
+                except Exception as error:
+                    reset = getattr(self._runtime, "reset_after_abort", None)
+                    if callable(reset):
+                        reset()
+                    if abort_reason and not isinstance(abort_reason[0], ModelInferenceTimeout):
+                        raise abort_reason[0] from error
+                    try:
+                        cancellation.raise_if_cancelled()
+                    except Exception as cancellation_error:
+                        raise cancellation_error from error
+                    failed_chunks.append(chunk.chunk_id)
+                    failed_blocks.update(chunk.target_block_ids)
+                    if progress:
+                        progress(processed_chunks, len(chunks))
+                    continue
+                if abort_reason:
+                    reset = getattr(self._runtime, "reset_after_abort", None)
+                    if callable(reset):
+                        reset()
+                    if not isinstance(abort_reason[0], ModelInferenceTimeout):
+                        raise abort_reason[0]
+                    failed_chunks.append(chunk.chunk_id)
+                    failed_blocks.update(chunk.target_block_ids)
+                    if progress:
+                        progress(processed_chunks, len(chunks))
+                    continue
+                parsed = parse_review_content(_response_content(raw), chunk)
+                if parsed is None:
+                    failed_chunks.append(chunk.chunk_id)
+                    failed_blocks.update(chunk.target_block_ids)
+                else:
+                    chunk_verdicts, chunk_discoveries = parsed
+                    verdicts.extend(chunk_verdicts)
+                    discoveries.extend(chunk_discoveries)
+                    reviewed_chunks += 1
+                if progress:
+                    progress(processed_chunks, len(chunks))
+        if chunks and reviewed_chunks == 0:
+            raise ValueError("MODEL_FULL_REVIEW_FAILED")
+        return FullReviewResult(
+            tuple(verdicts),
+            tuple(discoveries),
+            len(chunks),
+            reviewed_chunks,
+            tuple(failed_chunks),
+            tuple(sorted(failed_blocks)),
+        )
+
+    def _count_tokens(self, value: str) -> int:
+        counter = getattr(self._runtime, "count_tokens", None)
+        if callable(counter):
+            try:
+                count = counter(value)
+                if isinstance(count, int) and count >= 0:
+                    return count
+            except (TypeError, ValueError):
+                pass
+        return max(1, (len(value.encode("utf-8")) + 2) // 3)
+
 
 def _collect_stream(
     completion: object, cancellation: CancellationToken, deadline: float
@@ -256,6 +392,33 @@ def _collect_stream(
         if isinstance(value, str):
             content.append(value)
     return {"choices": [{"message": {"content": "".join(content)}}]}
+
+
+def _response_content(response: dict[str, Any]) -> str:
+    try:
+        value = response["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        return ""
+    return value if isinstance(value, str) else ""
+
+
+def _abort_predicate(
+    cancellation: CancellationToken, deadline: float, abort_reason: list[Exception]
+) -> Callable[[], bool]:
+    def should_abort() -> bool:
+        try:
+            cancellation.raise_if_cancelled()
+        except Exception as error:
+            if not abort_reason:
+                abort_reason.append(error)
+            return True
+        if time.monotonic() > deadline:
+            if not abort_reason:
+                abort_reason.append(ModelInferenceTimeout("MODEL_INFERENCE_TIMEOUT"))
+            return True
+        return False
+
+    return should_abort
 
 
 def _parse_verdicts(response: dict[str, Any], accepted_ids: set[str]) -> list[ClassifierVerdict]:
@@ -287,4 +450,8 @@ def _parse_verdicts(response: dict[str, Any], accepted_ids: set[str]) -> list[Cl
             continue
         seen.add(candidate_id)
         parsed.append(ClassifierVerdict(candidate_id, verdict, float(confidence)))
-    return parsed
+    # A batch response is only authoritative when it covers every candidate.
+    # The workflow treats an empty result conservatively and keeps the original
+    # rule findings instead of letting malformed or truncated model output hide
+    # them.
+    return parsed if seen == accepted_ids else []

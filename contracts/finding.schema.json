@@ -7,7 +7,7 @@
   "required": ["id", "category", "origin", "detector_id", "block_id", "start", "end", "source_text", "suggestion", "reason", "rule_version"],
   "properties": {
     "id": {"type": "string", "minLength": 1},
-    "category": {"enum": ["spelling", "compound_word", "capitalization", "technical", "custom_rule"]},
+    "category": {"enum": ["spelling", "compound_word", "capitalization", "technical", "custom_rule", "grammar", "word_choice"]},
     "origin": {"enum": ["rule", "llm"]},
     "detector_id": {"type": "string", "minLength": 1},
     "block_id": {"type": "string", "minLength": 1},
