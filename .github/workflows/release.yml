@@ -116,6 +116,7 @@ jobs:
             ${{ runner.os }}-tauri-bundler-
 
       - name: Build NSIS installer
+        timeout-minutes: 45
         run: npm run build:windows
         env:
           SOATVAN_PYINSTALLER_CACHE_HIT: ${{ steps.pyinstaller-cache.outputs.cache-hit }}

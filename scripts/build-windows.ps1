@@ -88,6 +88,45 @@ function Remove-CertificateFromStore {
     }
 }
 
+function Invoke-SignToolBatch {
+    param(
+        [Parameter(Mandatory = $true)][string]$SignToolPath,
+        [Parameter(Mandatory = $true)][string]$CertificateThumbprint,
+        [Parameter(Mandatory = $true)][string[]]$Files
+    )
+
+    if ($Files.Count -eq 0) {
+        return
+    }
+    Invoke-Checked $SignToolPath (@(
+        "sign", "/fd", "SHA256", "/sha1", $CertificateThumbprint, "/s", "My"
+    ) + $Files)
+    Invoke-Checked $SignToolPath (@("verify", "/pa", "/all") + $Files)
+}
+
+function Invoke-SignToolForFiles {
+    param(
+        [Parameter(Mandatory = $true)][string]$SignToolPath,
+        [Parameter(Mandatory = $true)][string]$CertificateThumbprint,
+        [Parameter(Mandatory = $true)][System.IO.FileInfo[]]$Files
+    )
+
+    $batch = @()
+    $batchLength = 0
+    foreach ($file in $Files) {
+        if ($batch.Count -ge 20 -or ($batchLength + $file.FullName.Length) -gt 6000) {
+            Invoke-SignToolBatch -SignToolPath $SignToolPath `
+                -CertificateThumbprint $CertificateThumbprint -Files $batch
+            $batch = @()
+            $batchLength = 0
+        }
+        $batch += $file.FullName
+        $batchLength += $file.FullName.Length + 3
+    }
+    Invoke-SignToolBatch -SignToolPath $SignToolPath `
+        -CertificateThumbprint $CertificateThumbprint -Files $batch
+}
+
 foreach ($commandName in @("uv", "npm", "cargo")) {
     if (-not (Get-Command $commandName -ErrorAction SilentlyContinue)) {
         throw "Khong tim thay lenh '$commandName'."
@@ -181,22 +220,20 @@ try {
         throw "PFX khong phai certificate code-signing con hieu luc va co private key."
     }
     $certificateThumbprint = $certificate.Thumbprint
-    foreach ($storeName in @("My", "Root", "TrustedPublisher")) {
+    foreach ($storeName in @("My", "TrustedPeople")) {
+        Write-Host "Dang dang ky certificate vao CurrentUser\$storeName"
         if (Add-CertificateToStore -Certificate $certificate -StoreName $storeName) {
             $addedCertificateStores += $storeName
         }
+        Write-Host "Da dang ky certificate vao CurrentUser\$storeName"
     }
     $signToolPath = Get-SignToolPath
 
     $engineFilesToSign = Get-ChildItem -LiteralPath $engineDistDir -Recurse -File |
         Where-Object { $_.Extension -in @(".exe", ".dll") }
-    foreach ($engineFile in $engineFilesToSign) {
-        Invoke-Checked $signToolPath @(
-            "sign", "/fd", "SHA256", "/sha1", $certificateThumbprint,
-            "/s", "My", $engineFile.FullName
-        )
-        Invoke-Checked $signToolPath @("verify", "/pa", "/all", $engineFile.FullName)
-    }
+    Write-Host "Ky $($engineFilesToSign.Count) binary engine theo batch"
+    Invoke-SignToolForFiles -SignToolPath $signToolPath `
+        -CertificateThumbprint $certificateThumbprint -Files $engineFilesToSign
 
     New-Item -ItemType Directory -Force -Path $tauriTargetDir | Out-Null
     $personalSigningConfigPath = Join-Path $tauriTargetDir "personal-signing.json"

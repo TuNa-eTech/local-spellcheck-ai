@@ -558,7 +558,7 @@ async fn model_download(
     let generation = next_model_generation(&state.model_generation);
     let redirect_hosts = allowed_hosts.clone();
     let client = reqwest::Client::builder()
-        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) SoatVan/0.1.2")
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) SoatVan/0.1.3")
         .redirect(reqwest::redirect::Policy::custom(move |attempt| {
             if attempt.previous().len() >= 10 {
                 attempt.error("too many model download redirects")
