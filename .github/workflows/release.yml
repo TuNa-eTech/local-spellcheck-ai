@@ -122,6 +122,8 @@ jobs:
           SOATVAN_MODEL_ENDPOINT: ${{ vars.SOATVAN_MODEL_ENDPOINT }}
           SOATVAN_MODEL_ALLOWLIST: ${{ vars.SOATVAN_MODEL_ALLOWLIST }}
           SOATVAN_MODEL_PUBLIC_KEY: ${{ vars.SOATVAN_MODEL_PUBLIC_KEY }}
+          SOATVAN_WINDOWS_CERT_PFX_BASE64: ${{ secrets.SOATVAN_WINDOWS_CERT_PFX_BASE64 }}
+          SOATVAN_WINDOWS_CERT_PASSWORD: ${{ secrets.SOATVAN_WINDOWS_CERT_PASSWORD }}
 
       - name: Run Windows M0/M1 acceptance and M2 capability probe
         timeout-minutes: 20

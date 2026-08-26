@@ -144,17 +144,17 @@ Dự án mặc định dùng chữ ký nội bộ, không cần certificate thư
 
 ### Windows self-signed
 
-`scripts/build-windows.ps1` tìm hoặc tạo certificate với thông số mặc định:
+`scripts/build-windows.ps1` nạp PFX code-signing cố định, xác minh private key, thời hạn và EKU Code Signing, rồi đăng ký tạm bằng .NET `X509Store`:
 
 - Subject: `CN=SoatVan Personal Use`.
 - RSA 3072 bit.
 - SHA-256.
 - Hiệu lực 5 năm.
-- Private key không export được.
+- Cùng một identity được dùng lại giữa các release.
 
-Có thể đổi subject bằng biến môi trường `SOATVAN_WINDOWS_CERT_SUBJECT`. Script ký Python sidecar, yêu cầu Tauri ký app/installer bằng thumbprint động và xuất public certificate `SoatVan-Personal-CodeSigning.cer` cạnh installer.
+GitHub Actions lấy PFX base64 và mật khẩu từ hai repository secret `SOATVAN_WINDOWS_CERT_PFX_BASE64` và `SOATVAN_WINDOWS_CERT_PASSWORD`. Build local có thể dùng `SOATVAN_WINDOWS_CERT_PFX` trỏ tới file PFX cùng `SOATVAN_WINDOWS_CERT_PASSWORD`. Script không dùng PowerShell `Cert:` drive: nó ký Python sidecar/portable bằng `signtool`, yêu cầu Tauri ký app/installer bằng thumbprint, xuất public certificate `SoatVan-Personal-CodeSigning.cer`, rồi gỡ key khỏi các store tạm và xóa PFX tạm.
 
-Certificate self-signed chỉ phù hợp kiểm thử hoặc máy cá nhân. Nó không tạo uy tín SmartScreen. Trước khi trust file `.cer` trên một máy khác, phải đối chiếu SHA-256/checksum từ Release và hiểu rằng certificate được thêm vào trust store có quyền xác nhận code ký bởi certificate đó. Runner GitHub là máy tạm nên mỗi Release sẽ tạo certificate mới; muốn có identity ổn định phải dùng PFX thật trong GitHub Secrets hoặc dịch vụ ký code.
+Certificate self-signed chỉ phù hợp kiểm thử hoặc máy cá nhân. Nó không tạo uy tín SmartScreen. Trước khi trust file `.cer` trên một máy khác, phải đối chiếu SHA-256/checksum từ Release và hiểu rằng certificate được thêm vào trust store có quyền xác nhận code ký bởi certificate đó. PFX và mật khẩu chỉ nằm trong GitHub Secrets, không nằm trong repository hoặc release artifact.
 
 ### macOS ad-hoc
 
