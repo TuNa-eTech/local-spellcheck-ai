@@ -10,6 +10,7 @@ from pathlib import Path
 
 MAX_CUSTOM_RULE_COUNT = 100
 MAX_CUSTOM_RULE_PROMPT_LENGTH = 4_000
+_CUSTOM_RULES_DATABASE_LOCK = threading.RLock()
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,15 +26,15 @@ class SqliteCustomRuleRepository:
 
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        self._lock = threading.RLock()
+        self._lock = _CUSTOM_RULES_DATABASE_LOCK
         self._connection = sqlite3.connect(
             path,
             check_same_thread=False,
-            timeout=5,
+            timeout=30,
         )
         self._connection.row_factory = sqlite3.Row
         self._connection.execute("PRAGMA journal_mode=WAL")
-        self._connection.execute("PRAGMA busy_timeout=5000")
+        self._connection.execute("PRAGMA busy_timeout=30000")
         self._connection.execute(
             "CREATE TABLE IF NOT EXISTS custom_rules ("
             "id TEXT PRIMARY KEY, "
