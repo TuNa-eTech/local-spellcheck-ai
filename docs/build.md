@@ -144,7 +144,7 @@ Dự án mặc định dùng chữ ký nội bộ, không cần certificate thư
 
 ### Windows self-signed
 
-`scripts/build-windows.ps1` nạp PFX code-signing cố định, xác minh private key, thời hạn và EKU Code Signing, rồi đăng ký tạm vào `CurrentUser\My` và `CurrentUser\TrustedPeople` bằng .NET `X509Store`:
+`scripts/build-windows.ps1` nạp PFX code-signing cố định, xác minh private key, thời hạn và EKU Code Signing, đăng ký private key tạm vào `CurrentUser\My` bằng .NET `X509Store`, rồi trust public certificate tạm trong `CurrentUser\Root` bằng `certutil -user`:
 
 - Subject: `CN=SoatVan Personal Use`.
 - RSA 3072 bit.

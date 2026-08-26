@@ -127,7 +127,7 @@ function Invoke-SignToolForFiles {
         -CertificateThumbprint $CertificateThumbprint -Files $batch
 }
 
-foreach ($commandName in @("uv", "npm", "cargo")) {
+foreach ($commandName in @("uv", "npm", "cargo", "certutil.exe")) {
     if (-not (Get-Command $commandName -ErrorAction SilentlyContinue)) {
         throw "Khong tim thay lenh '$commandName'."
     }
@@ -142,6 +142,8 @@ $tauriTargetDir = Join-Path $repoRoot "apps\desktop\src-tauri\target"
 $certificate = $null
 $certificateThumbprint = $null
 $temporarySigningPfx = $null
+$temporaryRootCertificate = $null
+$rootCertificateAdded = $false
 $addedCertificateStores = @()
 
 Push-Location $repoRoot
@@ -220,13 +222,24 @@ try {
         throw "PFX khong phai certificate code-signing con hieu luc va co private key."
     }
     $certificateThumbprint = $certificate.Thumbprint
-    foreach ($storeName in @("My", "TrustedPeople")) {
-        Write-Host "Dang dang ky certificate vao CurrentUser\$storeName"
-        if (Add-CertificateToStore -Certificate $certificate -StoreName $storeName) {
-            $addedCertificateStores += $storeName
-        }
-        Write-Host "Da dang ky certificate vao CurrentUser\$storeName"
+    Write-Host "Dang dang ky certificate vao CurrentUser\My"
+    if (Add-CertificateToStore -Certificate $certificate -StoreName "My") {
+        $addedCertificateStores += "My"
     }
+    Write-Host "Da dang ky certificate vao CurrentUser\My"
+
+    $temporaryRootCertificate = Join-Path ([System.IO.Path]::GetTempPath()) `
+        "soatvan-root-$PID-$([Guid]::NewGuid().ToString('N')).cer"
+    [System.IO.File]::WriteAllBytes(
+        $temporaryRootCertificate,
+        $certificate.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert)
+    )
+    Write-Host "Dang trust public certificate bang certutil CurrentUser\Root"
+    Invoke-Checked "certutil.exe" @(
+        "-user", "-f", "-addstore", "Root", $temporaryRootCertificate
+    )
+    $rootCertificateAdded = $true
+    Write-Host "Da trust public certificate bang certutil CurrentUser\Root"
     $signToolPath = Get-SignToolPath
 
     $engineFilesToSign = Get-ChildItem -LiteralPath $engineDistDir -Recurse -File |
@@ -309,6 +322,9 @@ try {
     Write-Host $portableZip
 }
 finally {
+    if ($rootCertificateAdded -and $certificateThumbprint) {
+        & "certutil.exe" -user -delstore Root $certificateThumbprint | Out-Null
+    }
     if ($certificateThumbprint) {
         foreach ($storeName in $addedCertificateStores) {
             Remove-CertificateFromStore -Thumbprint $certificateThumbprint -StoreName $storeName
@@ -316,6 +332,9 @@ finally {
     }
     if ($temporarySigningPfx) {
         Remove-Item -LiteralPath $temporarySigningPfx -Force -ErrorAction SilentlyContinue
+    }
+    if ($temporaryRootCertificate) {
+        Remove-Item -LiteralPath $temporaryRootCertificate -Force -ErrorAction SilentlyContinue
     }
     if ($certificate) {
         $certificate.Dispose()

@@ -36,7 +36,7 @@ export const api = {
         if (path) handler(path);
       }).catch(() => () => undefined);
   },
-  appVersion(): Promise<string> { return isTauri() ? getVersion() : Promise.resolve("0.1.3"); },
+  appVersion(): Promise<string> { return isTauri() ? getVersion() : Promise.resolve("0.1.4"); },
   openOutput(path: string, reveal = false) { return invoke("open_output", { path, reveal }); },
   customRuleList(): Promise<CustomRule[]> { return invoke("custom_rule_list"); },
   customRuleUpsert(id: string | null, prompt: string): Promise<CustomRule> { return invoke("custom_rule_upsert", { id, prompt }); },
