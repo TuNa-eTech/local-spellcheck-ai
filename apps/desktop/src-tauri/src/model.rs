@@ -105,6 +105,46 @@ impl ModelProvisioner {
                 fs::remove_dir_all(entry.path())?;
             }
         }
+        self.migrate_local_experimental_review_defaults()?;
+        Ok(())
+    }
+
+    fn migrate_local_experimental_review_defaults(&self) -> AppResult<()> {
+        let manifest_path = self.root.join("active/manifest.json");
+        if !manifest_path.is_file() {
+            return Ok(());
+        }
+        let Some(mut manifest) = fs::read_to_string(&manifest_path)
+            .ok()
+            .and_then(|value| serde_json::from_str::<Manifest>(&value).ok())
+        else {
+            return Ok(());
+        };
+        let eligible = manifest.schema_version == 2
+            && manifest.trust == ModelTrust::LocalUnverified
+            && manifest.capabilities.candidate_filter
+            && manifest.quality_gate.is_none()
+            && manifest.signature.is_none();
+        let mut changed = false;
+        if eligible && !manifest.capabilities.full_review {
+            manifest.capabilities.full_review = true;
+            changed = true;
+        }
+        if eligible
+            && manifest
+                .review_chunk_tokens
+                .is_none_or(|tokens| tokens > 500)
+        {
+            manifest.review_chunk_tokens = Some(500);
+            changed = true;
+        }
+        if eligible && manifest.timeout_seconds.is_none_or(|seconds| seconds < 300) {
+            manifest.timeout_seconds = Some(300);
+            changed = true;
+        }
+        if changed {
+            fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)?;
+        }
         Ok(())
     }
     pub fn has_pending_activation(&self) -> bool {
@@ -385,14 +425,14 @@ impl ModelProvisioner {
             context_size: Some(2048),
             batch_size: Some(8),
             max_tokens: Some(512),
-            review_chunk_tokens: Some(1200),
-            timeout_seconds: Some(120),
+            review_chunk_tokens: Some(500),
+            timeout_seconds: Some(300),
             seed: Some(42),
             minimum_confidence: Some(0.8),
             trust: ModelTrust::LocalUnverified,
             capabilities: ModelCapabilities {
                 candidate_filter: true,
-                full_review: false,
+                full_review: true,
             },
             quality_gate: None,
             signature: None,
@@ -567,7 +607,6 @@ fn valid_trust_contract(manifest: &Manifest) -> bool {
         }
         ModelTrust::LocalUnverified => {
             manifest.capabilities.candidate_filter
-                && !manifest.capabilities.full_review
                 && manifest.quality_gate.is_none()
                 && manifest.signature.is_none()
         }
@@ -618,7 +657,7 @@ fn valid_model_id(value: &str) -> bool {
 
 fn valid_timeout_seconds(value: Option<u64>) -> bool {
     match value {
-        Some(seconds) => (1..=180).contains(&seconds),
+        Some(seconds) => (1..=900).contains(&seconds),
         None => true,
     }
 }
@@ -782,8 +821,8 @@ mod tests {
         assert!(!valid_quality_gate(
             manifest.quality_gate.as_ref().expect("quality gate")
         ));
-        assert!(valid_timeout_seconds(Some(180)));
-        assert!(!valid_timeout_seconds(Some(181)));
+        assert!(valid_timeout_seconds(Some(900)));
+        assert!(!valid_timeout_seconds(Some(901)));
         assert!(valid_runtime_window(Some(2048), Some(512), Some(1200)));
         assert!(!valid_runtime_window(Some(512), Some(512), None));
         assert!(!valid_runtime_window(Some(1024), Some(512), Some(1200)));
@@ -858,10 +897,10 @@ mod tests {
     }
 
     #[test]
-    fn local_import_contract_never_claims_release_or_full_review() {
+    fn local_import_exposes_experimental_full_review_without_release_approval() {
         let mut manifest = manifest_for(b"model");
         manifest.trust = ModelTrust::LocalUnverified;
-        manifest.capabilities.full_review = false;
+        manifest.capabilities.full_review = true;
         manifest.quality_gate = None;
         manifest.signature = None;
 
@@ -870,19 +909,18 @@ mod tests {
         assert_eq!(status.trust, Some(ModelTrust::LocalUnverified));
         assert!(!status.release_approved);
         assert!(status.capabilities.candidate_filter);
-        assert!(!status.capabilities.full_review);
+        assert!(status.capabilities.full_review);
     }
 
     #[test]
-    fn unverified_manifest_cannot_claim_full_review_or_fake_evidence() {
+    fn unverified_manifest_cannot_claim_fake_release_evidence() {
         let mut manifest = manifest_for(b"model");
         manifest.trust = ModelTrust::LocalUnverified;
         manifest.quality_gate = None;
         manifest.signature = None;
         manifest.capabilities.full_review = true;
-        assert!(!valid_trust_contract(&manifest));
+        assert!(valid_trust_contract(&manifest));
 
-        manifest.capabilities.full_review = false;
         manifest.quality_gate = Some(QualityGate {
             corpus_sha256: "0".repeat(64),
             profiles: Vec::new(),
@@ -907,7 +945,7 @@ mod tests {
         assert_eq!(manifest.version, "local");
         assert_eq!(manifest.trust, ModelTrust::LocalUnverified);
         assert!(manifest.capabilities.candidate_filter);
-        assert!(!manifest.capabilities.full_review);
+        assert!(manifest.capabilities.full_review);
         assert!(manifest.quality_gate.is_none());
         assert!(manifest.signature.is_none());
         let stored: serde_json::Value = serde_json::from_slice(
@@ -947,5 +985,35 @@ mod tests {
         assert_eq!(fs::read(root.join("active/model.gguf")).unwrap(), b"old");
         assert!(!root.join("previous").exists());
         assert!(!root.join("staging-interrupted").exists());
+    }
+
+    #[test]
+    fn startup_recovery_migrates_existing_local_model_to_experimental_review_defaults() {
+        let folder = tempfile::tempdir().unwrap();
+        let root = folder.path().join("models");
+        fs::create_dir_all(root.join("active")).unwrap();
+        let mut manifest = manifest_for(b"model");
+        manifest.trust = ModelTrust::LocalUnverified;
+        manifest.capabilities.full_review = false;
+        manifest.quality_gate = None;
+        manifest.signature = None;
+        fs::write(
+            root.join("active/manifest.json"),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        ModelProvisioner::new(root.clone())
+            .recover_interrupted_activation()
+            .unwrap();
+
+        let migrated: Manifest =
+            serde_json::from_slice(&fs::read(root.join("active/manifest.json")).unwrap()).unwrap();
+        assert_eq!(migrated.trust, ModelTrust::LocalUnverified);
+        assert!(migrated.capabilities.full_review);
+        assert_eq!(migrated.review_chunk_tokens, Some(500));
+        assert_eq!(migrated.timeout_seconds, Some(300));
+        assert!(migrated.quality_gate.is_none());
+        assert!(migrated.signature.is_none());
     }
 }

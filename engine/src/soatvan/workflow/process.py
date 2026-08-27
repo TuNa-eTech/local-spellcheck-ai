@@ -66,24 +66,27 @@ class ProcessDocument:
         progress("reading", 10, "job.reading")
         blocks = self._documents.read_blocks(request.source)
         cancel.raise_if_cancelled()
-        progress("rules", 35, "job.applying_rules")
-        # The legacy persistent dictionary is intentionally no longer applied.
-        # Only explicit per-job exclusions may affect deterministic findings.
-        ignored_words = request.ignored_words
-        findings = self._rules.check(
-            blocks,
-            request.preset,
-            ignored_words,
-            cancellation=cancel.raise_if_cancelled,
-            config=request.rule_config,
-        )
-        cancel.raise_if_cancelled()
         if request.custom_prompt and not request.use_model:
             raise ValueError("CUSTOM_PROMPT_REQUIRES_MODEL")
         if request.full_review and not request.use_model:
             raise ValueError("FULL_REVIEW_REQUIRES_MODEL")
         if len(request.custom_prompt) > MAX_CUSTOM_PROMPT_LENGTH:
             raise ValueError("CUSTOM_PROMPT_TOO_LONG")
+        # Full review is intentionally LLM-only: deterministic rules would both
+        # bias the model and leak rule-origin findings into the final document.
+        # The legacy rule/filter path remains available when full_review is off.
+        ignored_words = request.ignored_words
+        findings: list[Finding] = []
+        if not request.full_review:
+            progress("rules", 35, "job.applying_rules")
+            findings = self._rules.check(
+                blocks,
+                request.preset,
+                ignored_words,
+                cancellation=cancel.raise_if_cancelled,
+                config=request.rule_config,
+            )
+            cancel.raise_if_cancelled()
         review_summary: dict[str, int | str] | None = None
         review_failed_block_ids: frozenset[str] = frozenset()
         if request.use_model:
@@ -234,10 +237,9 @@ def _apply_full_review(
     accepted: list[Finding] = []
     for finding in findings:
         verdict = verdicts.get(finding.id)
-        if finding.block_id in failed_blocks:
-            accepted.append(finding)
-        elif (
-            verdict is not None
+        if (
+            finding.block_id not in failed_blocks
+            and verdict is not None
             and verdict.verdict == "keep"
             and verdict.confidence >= reviewer.minimum_confidence
         ):
@@ -249,6 +251,10 @@ def _apply_full_review(
                     rule_version=f"{finding.rule_version}+{reviewer.version}",
                 )
             )
+        else:
+            # Full review optimizes recall: deterministic findings are always
+            # preserved. Use AI filter mode when model-driven dropping is wanted.
+            accepted.append(finding)
 
     block_text = {block.id: block.text for block in blocks}
     for proposal in result.discoveries:
@@ -297,6 +303,11 @@ def _apply_full_review(
         "total_blocks": len(blocks),
         "reviewed_blocks": max(0, len(blocks) - failed_block_count),
         "failed_blocks": failed_block_count,
+        "timeout_chunks": result.timeout_chunks,
+        "invalid_output_chunks": result.invalid_output_chunks,
+        "inference_error_chunks": result.inference_error_chunks,
+        "retried_chunks": result.retried_chunks,
+        "recovered_chunks": result.recovered_chunks,
     }
     return limited, summary, failed_block_ids
 

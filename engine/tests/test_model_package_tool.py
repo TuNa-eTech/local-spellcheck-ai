@@ -70,6 +70,7 @@ def test_package_model_creates_verifiable_deterministic_manifest(tmp_path: Path)
         "full_review": False,
     }
     assert manifest["review_chunk_tokens"] == 1200
+    assert manifest["timeout_seconds"] == 300
     with zipfile.ZipFile(package) as archive:
         assert set(archive.namelist()) == {"model.gguf", "LICENSE.txt", "manifest.json"}
         stored = json.loads(archive.read("manifest.json"))

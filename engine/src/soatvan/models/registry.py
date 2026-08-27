@@ -186,9 +186,7 @@ def _capabilities_valid(value: object, trust: object) -> bool:
         value.get("full_review"), bool
     ):
         return False
-    return trust == "release_signed" or (
-        trust == "local_unverified" and value["full_review"] is False
-    )
+    return trust in {"release_signed", "local_unverified"}
 
 
 def _sha256_file(path: Path) -> str:
@@ -252,7 +250,7 @@ def _runtime_config_approved(manifest: dict[str, Any]) -> bool:
         "batch_size": (1, 64),
         "max_tokens": (32, 4096),
         "review_chunk_tokens": (64, 32_768),
-        "timeout_seconds": (1, 180),
+        "timeout_seconds": (1, 900),
     }
     for name, (minimum, maximum) in integer_limits.items():
         value = manifest.get(name)

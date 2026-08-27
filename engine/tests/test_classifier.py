@@ -11,6 +11,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from soatvan.models import LlamaCppClassifier, ModelInferenceTimeout, ModelRegistry
+from soatvan.models.classifier import _preferred_gpu_layers
 from soatvan.workflow.ports import ClassificationCandidate
 
 
@@ -31,6 +32,19 @@ class Runtime:
 
     def close(self) -> None:
         self.closed = True
+
+
+def test_runtime_enables_gpu_layers_only_when_backend_supports_offload() -> None:
+    class Module:
+        def __init__(self, supported: bool) -> None:
+            self.supported = supported
+
+        def llama_supports_gpu_offload(self) -> bool:
+            return self.supported
+
+    assert _preferred_gpu_layers(Module(True)) == -1
+    assert _preferred_gpu_layers(Module(False)) == 0
+    assert _preferred_gpu_layers(object()) == 0
 
 
 def candidate(candidate_id: str = "candidate-1") -> ClassificationCandidate:
@@ -240,7 +254,7 @@ def test_registry_only_reports_ready_after_integrity_and_smoke_load(tmp_path: Pa
     }
     assert registry.classifier() is not None
 
-    manifest["timeout_seconds"] = 181
+    manifest["timeout_seconds"] = 901
     write_signed()
     assert registry.status() == {"state": "invalid", "code": "MODEL_MANIFEST_INVALID"}
     manifest.pop("timeout_seconds")
@@ -263,7 +277,7 @@ def test_registry_only_reports_ready_after_integrity_and_smoke_load(tmp_path: Pa
     assert runtime.closed is True
 
 
-def test_registry_runs_local_import_as_explicit_unverified_filter_only(
+def test_registry_runs_local_import_with_experimental_full_review(
     tmp_path: Path,
 ) -> None:
     active = tmp_path / "active"
@@ -282,7 +296,7 @@ def test_registry_runs_local_import_as_explicit_unverified_filter_only(
         "sha256": hashlib.sha256(model.read_bytes()).hexdigest(),
         "license_file": notice.name,
         "trust": "local_unverified",
-        "capabilities": {"candidate_filter": True, "full_review": False},
+        "capabilities": {"candidate_filter": True, "full_review": True},
     }
     (active / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     runtime = Runtime('{"verdicts":[]}')
@@ -294,13 +308,13 @@ def test_registry_runs_local_import_as_explicit_unverified_filter_only(
         "version": "local",
         "trust": "local_unverified",
         "release_approved": False,
-        "capabilities": {"candidate_filter": True, "full_review": False},
+        "capabilities": {"candidate_filter": True, "full_review": True},
     }
     assert registry.classifier() is not None
-    assert registry.supports_full_review() is False
+    assert registry.supports_full_review() is True
 
 
-def test_registry_rejects_legacy_auto_local_signature_and_unverified_full_review(
+def test_registry_rejects_legacy_auto_local_signature_but_allows_full_review(
     tmp_path: Path,
 ) -> None:
     active = tmp_path / "active"
@@ -330,4 +344,5 @@ def test_registry_rejects_legacy_auto_local_signature_and_unverified_full_review
     manifest.pop("signature")
     manifest["capabilities"]["full_review"] = True
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    assert registry.status() == {"state": "invalid", "code": "MODEL_MANIFEST_INVALID"}
+    assert registry.status()["state"] == "ready"
+    assert registry.supports_full_review() is True

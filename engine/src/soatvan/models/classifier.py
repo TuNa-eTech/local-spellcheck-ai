@@ -19,11 +19,18 @@ from soatvan.workflow.ports import (
 )
 
 from .review import (
+    LLM_ONLY_REVIEW_SCHEMA,
+    LLM_ONLY_REVIEW_SYSTEM_PROMPT,
     REVIEW_SCHEMA,
     REVIEW_SYSTEM_PROMPT,
+    ReviewChunk,
     parse_review_content,
     plan_review_chunks,
+    split_llm_only_chunk,
 )
+
+LLM_ONLY_MAX_TOKENS = 768
+LLM_ONLY_MAX_SPLIT_DEPTH = 2
 
 
 class ModelRuntimeUnavailable(RuntimeError):
@@ -106,17 +113,40 @@ def _default_runtime_factory(model_path: Path, context_size: int, seed: int) -> 
         llama = import_module("llama_cpp")
     except ImportError as error:
         raise ModelRuntimeUnavailable("llama-cpp-python is not installed") from error
+    gpu_layers = _preferred_gpu_layers(llama)
     try:
-        runtime = llama.Llama(
-            model_path=str(model_path),
-            n_ctx=context_size,
-            seed=seed,
-            n_gpu_layers=0,
-            verbose=False,
-        )
+        runtime = _create_llama_runtime(llama, model_path, context_size, seed, gpu_layers)
         return cast(CompletionRuntime, _NativeLlamaRuntime(runtime, llama))
     except Exception as error:
+        if gpu_layers != 0:
+            try:
+                runtime = _create_llama_runtime(llama, model_path, context_size, seed, 0)
+                return cast(CompletionRuntime, _NativeLlamaRuntime(runtime, llama))
+            except Exception:
+                pass
         raise ModelLoadFailed("MODEL_LOAD_FAILED") from error
+
+
+def _preferred_gpu_layers(module: Any) -> int:
+    supports_offload = getattr(module, "llama_supports_gpu_offload", None)
+    if not callable(supports_offload):
+        return 0
+    try:
+        return -1 if supports_offload() else 0
+    except Exception:
+        return 0
+
+
+def _create_llama_runtime(
+    module: Any, model_path: Path, context_size: int, seed: int, gpu_layers: int
+) -> Any:
+    return module.Llama(
+        model_path=str(model_path),
+        n_ctx=context_size,
+        seed=seed,
+        n_gpu_layers=gpu_layers,
+        verbose=False,
+    )
 
 
 class LlamaCppClassifier:
@@ -139,7 +169,7 @@ class LlamaCppClassifier:
         self._review_candidate_limit = max(
             1, min(self._batch_size, self._max_tokens // 80)
         )
-        self._timeout_seconds = int(manifest.get("timeout_seconds", 120))
+        self._timeout_seconds = int(manifest.get("timeout_seconds", 300))
         self._seed = int(manifest.get("seed", 42))
         self._context_size = int(manifest.get("context_size", 2048))
         available_review_tokens = self._context_size - self._max_tokens - 256
@@ -149,6 +179,13 @@ class LlamaCppClassifier:
         if "review_chunk_tokens" in manifest and requested_review_tokens > available_review_tokens:
             raise ValueError("MODEL_REVIEW_CONTEXT_TOO_SMALL")
         self._review_chunk_tokens = min(requested_review_tokens, available_review_tokens)
+        self._llm_only_max_tokens = max(
+            32,
+            min(
+                LLM_ONLY_MAX_TOKENS,
+                self._context_size - self._review_chunk_tokens - 256,
+            ),
+        )
         self._runtime = runtime_factory(model_path, self._context_size, self._seed)
         self._lock = threading.Lock()
 
@@ -269,6 +306,10 @@ class LlamaCppClassifier:
         failed_chunks: list[str] = []
         failed_blocks: set[str] = set()
         reviewed_chunks = 0
+        successful_attempts = 0
+        failure_counts = {"timeout": 0, "invalid_output": 0, "inference_error": 0}
+        retried_chunks = 0
+        recovered_chunks = 0
         with self._lock:
             chunks = plan_review_chunks(
                 blocks,
@@ -283,70 +324,29 @@ class LlamaCppClassifier:
                 return FullReviewResult((), (), 0, 0)
             for processed_chunks, chunk in enumerate(chunks, start=1):
                 cancellation.raise_if_cancelled()
-                deadline = time.monotonic() + self._timeout_seconds
-                abort_reason: list[Exception] = []
-                should_abort = _abort_predicate(cancellation, deadline, abort_reason)
-                set_abort = getattr(self._runtime, "set_abort_predicate", None)
-                if callable(set_abort):
-                    set_abort(should_abort)
-                try:
-                    completion = self._runtime.create_chat_completion(
-                        messages=[
-                            {"role": "system", "content": REVIEW_SYSTEM_PROMPT},
-                            {
-                                "role": "user",
-                                "content": json.dumps(
-                                    chunk.payload(),
-                                    ensure_ascii=False,
-                                    separators=(",", ":"),
-                                ),
-                            },
-                        ],
-                        temperature=0,
-                        seed=self._seed,
-                        max_tokens=self._max_tokens,
-                        stream=True,
-                        response_format={"type": "json_object", "schema": REVIEW_SCHEMA},
-                    )
-                    raw = _collect_stream(completion, cancellation, deadline)
-                except Exception as error:
-                    reset = getattr(self._runtime, "reset_after_abort", None)
-                    if callable(reset):
-                        reset()
-                    if abort_reason and not isinstance(abort_reason[0], ModelInferenceTimeout):
-                        raise abort_reason[0] from error
-                    try:
-                        cancellation.raise_if_cancelled()
-                    except Exception as cancellation_error:
-                        raise cancellation_error from error
-                    failed_chunks.append(chunk.chunk_id)
-                    failed_blocks.update(chunk.target_block_ids)
-                    if progress:
-                        progress(processed_chunks, len(chunks))
-                    continue
-                if abort_reason:
-                    reset = getattr(self._runtime, "reset_after_abort", None)
-                    if callable(reset):
-                        reset()
-                    if not isinstance(abort_reason[0], ModelInferenceTimeout):
-                        raise abort_reason[0]
-                    failed_chunks.append(chunk.chunk_id)
-                    failed_blocks.update(chunk.target_block_ids)
-                    if progress:
-                        progress(processed_chunks, len(chunks))
-                    continue
-                parsed = parse_review_content(_response_content(raw), chunk)
-                if parsed is None:
-                    failed_chunks.append(chunk.chunk_id)
-                    failed_blocks.update(chunk.target_block_ids)
-                else:
-                    chunk_verdicts, chunk_discoveries = parsed
-                    verdicts.extend(chunk_verdicts)
-                    discoveries.extend(chunk_discoveries)
+                (
+                    chunk_verdicts,
+                    chunk_discoveries,
+                    chunk_failures,
+                    chunk_retries,
+                    chunk_successes,
+                ) = self._review_chunk_with_retries(chunk, cancellation)
+                verdicts.extend(chunk_verdicts)
+                discoveries.extend(chunk_discoveries)
+                retried_chunks += chunk_retries
+                successful_attempts += chunk_successes
+                if not chunk_failures:
                     reviewed_chunks += 1
+                    if chunk_retries:
+                        recovered_chunks += 1
+                else:
+                    failed_chunks.append(chunk.chunk_id)
+                    for _failure, block_ids in chunk_failures:
+                        failed_blocks.update(block_ids)
+                    failure_counts[chunk_failures[0][0]] += 1
                 if progress:
                     progress(processed_chunks, len(chunks))
-        if chunks and reviewed_chunks == 0:
+        if chunks and successful_attempts == 0:
             raise ValueError("MODEL_FULL_REVIEW_FAILED")
         return FullReviewResult(
             tuple(verdicts),
@@ -355,7 +355,117 @@ class LlamaCppClassifier:
             reviewed_chunks,
             tuple(failed_chunks),
             tuple(sorted(failed_blocks)),
+            failure_counts["timeout"],
+            failure_counts["invalid_output"],
+            failure_counts["inference_error"],
+            retried_chunks,
+            recovered_chunks,
         )
+
+    def _review_chunk_with_retries(
+        self,
+        chunk: ReviewChunk,
+        cancellation: CancellationToken,
+        depth: int = 0,
+    ) -> tuple[
+        list[ClassifierVerdict],
+        list[DiscoveryProposal],
+        list[tuple[str, frozenset[str]]],
+        int,
+        int,
+    ]:
+        parsed, failure = self._review_chunk(chunk, cancellation)
+        if parsed is not None:
+            parsed_verdicts, parsed_discoveries = parsed
+            return list(parsed_verdicts), list(parsed_discoveries), [], 0, 1
+        if depth >= LLM_ONLY_MAX_SPLIT_DEPTH:
+            return [], [], [(failure or "inference_error", chunk.target_block_ids)], 0, 0
+        retries = split_llm_only_chunk(chunk)
+        if not retries:
+            return [], [], [(failure or "inference_error", chunk.target_block_ids)], 0, 0
+
+        verdicts: list[ClassifierVerdict] = []
+        discoveries: list[DiscoveryProposal] = []
+        failures: list[tuple[str, frozenset[str]]] = []
+        retry_count = 1
+        successful_attempts = 0
+        for retry in retries:
+            (
+                retry_verdicts,
+                retry_discoveries,
+                retry_failures,
+                nested_retries,
+                retry_successes,
+            ) = self._review_chunk_with_retries(retry, cancellation, depth + 1)
+            verdicts.extend(retry_verdicts)
+            discoveries.extend(retry_discoveries)
+            failures.extend(retry_failures)
+            retry_count += nested_retries
+            successful_attempts += retry_successes
+        return verdicts, discoveries, failures, retry_count, successful_attempts
+
+    def _review_chunk(
+        self, chunk: ReviewChunk, cancellation: CancellationToken
+    ) -> tuple[
+        tuple[tuple[ClassifierVerdict, ...], tuple[DiscoveryProposal, ...]] | None,
+        str | None,
+    ]:
+        deadline = time.monotonic() + self._timeout_seconds
+        abort_reason: list[Exception] = []
+        should_abort = _abort_predicate(cancellation, deadline, abort_reason)
+        set_abort = getattr(self._runtime, "set_abort_predicate", None)
+        if callable(set_abort):
+            set_abort(should_abort)
+        llm_only = not chunk.candidates
+        try:
+            completion = self._runtime.create_chat_completion(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": LLM_ONLY_REVIEW_SYSTEM_PROMPT
+                        if llm_only
+                        else REVIEW_SYSTEM_PROMPT,
+                    },
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            chunk.payload(), ensure_ascii=False, separators=(",", ":")
+                        ),
+                    },
+                ],
+                temperature=0,
+                seed=self._seed,
+                max_tokens=self._llm_only_max_tokens if llm_only else self._max_tokens,
+                stream=True,
+                response_format={
+                    "type": "json_object",
+                    "schema": LLM_ONLY_REVIEW_SCHEMA if llm_only else REVIEW_SCHEMA,
+                },
+            )
+            raw = _collect_stream(completion, cancellation, deadline)
+        except Exception as error:
+            reset = getattr(self._runtime, "reset_after_abort", None)
+            if callable(reset):
+                reset()
+            try:
+                cancellation.raise_if_cancelled()
+            except Exception as cancellation_error:
+                raise cancellation_error from error
+            if abort_reason and not isinstance(abort_reason[0], ModelInferenceTimeout):
+                raise abort_reason[0] from error
+            timed_out = isinstance(error, ModelInferenceTimeout) or (
+                abort_reason and isinstance(abort_reason[0], ModelInferenceTimeout)
+            )
+            return None, "timeout" if timed_out else "inference_error"
+        if abort_reason:
+            reset = getattr(self._runtime, "reset_after_abort", None)
+            if callable(reset):
+                reset()
+            if not isinstance(abort_reason[0], ModelInferenceTimeout):
+                raise abort_reason[0]
+            return None, "timeout"
+        parsed = parse_review_content(_response_content(raw), chunk)
+        return (parsed, None) if parsed is not None else (None, "invalid_output")
 
     def _count_tokens(self, value: str) -> int:
         counter = getattr(self._runtime, "count_tokens", None)

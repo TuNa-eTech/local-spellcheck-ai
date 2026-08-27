@@ -14,6 +14,7 @@ from soatvan.models.review import (
     _preferred_boundary,
     parse_review_content,
     plan_review_chunks,
+    split_llm_only_chunk,
 )
 from soatvan.workflow import ProcessDocument, ProcessRequest
 from soatvan.workflow.ports import (
@@ -49,6 +50,22 @@ class PartiallyFailingRuntime(Runtime):
         self.calls.append(kwargs)
         if len(self.calls) == 2:
             raise RuntimeError("transient inference failure")
+        return {"choices": [{"message": {"content": self.content}}]}
+
+
+class RetryStillFailingRuntime(Runtime):
+    def create_chat_completion(self, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(kwargs)
+        if len(self.calls) in {2, 3, 4}:
+            raise RuntimeError("persistent inference failure")
+        return {"choices": [{"message": {"content": self.content}}]}
+
+
+class NestedRetryRuntime(Runtime):
+    def create_chat_completion(self, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(kwargs)
+        if len(self.calls) in {2, 3}:
+            raise RuntimeError("nested transient inference failure")
         return {"choices": [{"message": {"content": self.content}}]}
 
 
@@ -166,6 +183,26 @@ def test_review_segmenter_prefers_a_sentence_boundary_over_later_spaces() -> Non
     assert _preferred_boundary(text, 0, 18) == expected
 
 
+def test_failed_llm_only_chunk_splits_without_losing_source_offsets() -> None:
+    target = ReviewSegment(
+        "document:p0@10:39",
+        "document:p0",
+        0,
+        10,
+        "Câu thứ nhất. Câu thứ hai.",
+        "paragraph",
+    )
+    retries = split_llm_only_chunk(ReviewChunk("chunk-1", (target,), (), (), ""))
+
+    assert retries
+    left, right = retries
+    assert left.context == right.context == ()
+    assert left.targets[0].text + right.targets[0].text == target.text
+    assert left.targets[0].source_start == target.source_start
+    assert left.targets[0].source_end == right.targets[0].source_start
+    assert right.targets[0].source_end == target.source_end
+
+
 def test_review_planning_can_be_cancelled_between_blocks() -> None:
     calls = 0
 
@@ -192,7 +229,6 @@ def test_review_parser_only_accepts_target_segments_and_exact_quotes() -> None:
     chunk = ReviewChunk("chunk-1", (target,), (context,), (), "")
     content = json.dumps(
         {
-            "verdicts": [],
             "discoveries": [
                 {
                     "segment_id": target.segment_id,
@@ -224,24 +260,21 @@ def test_review_parser_only_accepts_target_segments_and_exact_quotes() -> None:
     ]
 
 
-def test_review_parser_rejects_a_chunk_with_missing_candidate_verdict() -> None:
+def test_review_parser_accepts_a_chunk_with_missing_candidate_verdict() -> None:
     target = ReviewSegment("p0@0:12", "document:p0", 0, 0, "Nội dung sai", "paragraph")
     candidate = ReviewCandidate(
         "candidate-1", "document:p0", 9, 12, "sai", "đúng", "test.rule"
     )
     chunk = ReviewChunk("chunk-1", (target,), (), (candidate,), "")
-    assert (
-        parse_review_content('{"verdicts":[],"discoveries":[]}', chunk) is None
-    )
+    assert parse_review_content('{"verdicts":[],"discoveries":[]}', chunk) == ((), ())
 
 
-def test_review_parser_drops_unhashable_nested_values_without_crashing() -> None:
+def test_llm_only_review_parser_drops_invalid_discovery_without_failing_chunk() -> None:
     target = ReviewSegment("p0@0:12", "document:p0", 0, 0, "Nội dung sai", "paragraph")
     chunk = ReviewChunk("chunk-1", (target,), (), (), "")
     parsed = parse_review_content(
         json.dumps(
             {
-                "verdicts": [],
                 "discoveries": [
                     {
                         "segment_id": target.segment_id,
@@ -258,7 +291,18 @@ def test_review_parser_drops_unhashable_nested_values_without_crashing() -> None
         ),
         chunk,
     )
-    assert parsed is None
+    assert parsed == ((), ())
+
+
+def test_llm_only_review_parser_accepts_legacy_empty_verdict_wrapper() -> None:
+    target = ReviewSegment("p0@0:12", "document:p0", 0, 0, "Nội dung sai", "paragraph")
+    chunk = ReviewChunk("chunk-1", (target,), (), (), "")
+
+    assert parse_review_content('{"verdicts":[],"discoveries":[]}', chunk) == ((), ())
+    assert parse_review_content(
+        '{"verdicts":[{"candidate_id":"x","verdict":"keep","confidence":1}],"discoveries":[]}',
+        chunk,
+    ) is None
 
 
 @pytest.mark.parametrize("unsafe_suggestion", ["\ud800", "\ufffe"])
@@ -270,7 +314,6 @@ def test_review_parser_drops_suggestions_that_are_not_valid_xml(
     parsed = parse_review_content(
         json.dumps(
             {
-                "verdicts": [],
                 "discoveries": [
                     {
                         "segment_id": target.segment_id,
@@ -283,6 +326,38 @@ def test_review_parser_drops_suggestions_that_are_not_valid_xml(
                     }
                 ],
             }
+        ),
+        chunk,
+    )
+    assert parsed == ((), ())
+
+
+def test_review_parser_rejects_unsafe_long_or_semantic_deletions() -> None:
+    target = ReviewSegment(
+        "p0@0:120",
+        "document:p0",
+        0,
+        0,
+        "Nội dung hành chính cần được giữ nguyên trong văn bản.",
+        "paragraph",
+    )
+    chunk = ReviewChunk("chunk-1", (target,), (), (), "")
+    parsed = parse_review_content(
+        json.dumps(
+            {
+                "discoveries": [
+                    {
+                        "segment_id": target.segment_id,
+                        "source_text": target.text,
+                        "occurrence_index": 0,
+                        "suggestion": "",
+                        "category": "word_choice",
+                        "reason_code": "word_choice",
+                        "confidence": 0.99,
+                    }
+                ],
+            },
+            ensure_ascii=False,
         ),
         chunk,
     )
@@ -343,6 +418,30 @@ def test_classifier_full_review_combines_verdicts_and_discoveries(tmp_path: Path
     assert prompt["candidates"][0]["occurrence_index"] == 0
 
 
+def test_classifier_llm_only_review_uses_small_discovery_contract(tmp_path: Path) -> None:
+    runtime = Runtime('{"discoveries":[]}')
+    classifier = LlamaCppClassifier(
+        tmp_path / "model.gguf",
+        {
+            "model_id": "test",
+            "version": "1",
+            "max_tokens": 512,
+            "review_chunk_tokens": 500,
+        },
+        lambda *_: runtime,
+    )
+
+    result = classifier.review((Block("document:p0", "Nội dung hợp lệ"),), (), "", Token())
+
+    assert result.status == "complete"
+    call = runtime.calls[0]
+    assert call["max_tokens"] == 768
+    assert call["response_format"]["schema"]["required"] == ["discoveries"]
+    prompt = json.loads(call["messages"][1]["content"])
+    assert "candidates" not in prompt
+    assert "verdict" not in call["messages"][0]["content"]
+
+
 def test_classifier_full_review_fails_when_every_chunk_is_malformed(tmp_path: Path) -> None:
     classifier = LlamaCppClassifier(
         tmp_path / "model.gguf",
@@ -365,7 +464,7 @@ def test_classifier_rejects_a_context_window_without_review_input_space(
                 "context_size": 512,
                 "max_tokens": 512,
             },
-            lambda *_: Runtime('{"verdicts":[],"discoveries":[]}'),
+            lambda *_: Runtime('{"discoveries":[]}'),
         )
     with pytest.raises(ValueError, match="MODEL_REVIEW_CONTEXT_TOO_SMALL"):
         LlamaCppClassifier(
@@ -377,14 +476,14 @@ def test_classifier_rejects_a_context_window_without_review_input_space(
                 "max_tokens": 512,
                 "review_chunk_tokens": 1200,
             },
-            lambda *_: Runtime('{"verdicts":[],"discoveries":[]}'),
+            lambda *_: Runtime('{"discoveries":[]}'),
         )
 
 
-def test_classifier_full_review_reports_a_runtime_failed_chunk_as_partial(
+def test_classifier_full_review_retries_a_failed_chunk_sequentially(
     tmp_path: Path,
 ) -> None:
-    runtime = PartiallyFailingRuntime('{"verdicts":[],"discoveries":[]}')
+    runtime = PartiallyFailingRuntime('{"discoveries":[]}')
     classifier = LlamaCppClassifier(
         tmp_path / "model.gguf",
         {
@@ -402,9 +501,69 @@ def test_classifier_full_review_reports_a_runtime_failed_chunk_as_partial(
         Token(),
     )
     assert len(runtime.calls) > 2
+    assert result.status == "complete"
+    assert result.reviewed_chunks == result.total_chunks
+    assert result.failed_chunk_ids == ()
+    assert result.retried_chunks == 1
+    assert result.recovered_chunks == 1
+
+
+def test_classifier_reports_failure_reason_after_sequential_retry_is_exhausted(
+    tmp_path: Path,
+) -> None:
+    runtime = RetryStillFailingRuntime('{"discoveries":[]}')
+    classifier = LlamaCppClassifier(
+        tmp_path / "model.gguf",
+        {
+            "model_id": "test",
+            "version": "1",
+            "context_size": 2048,
+            "review_chunk_tokens": 90,
+        },
+        lambda *_: runtime,
+    )
+
+    result = classifier.review(
+        (Block("document:p0", " ".join(f"từ{index}" for index in range(160))),),
+        (),
+        "",
+        Token(),
+    )
+
     assert result.status == "partial"
-    assert result.reviewed_chunks == result.total_chunks - 1
-    assert result.failed_chunk_ids == ("chunk-2",)
+    assert result.retried_chunks == 2
+    assert result.recovered_chunks == 0
+    assert result.inference_error_chunks == 1
+    assert result.timeout_chunks == 0
+    assert result.invalid_output_chunks == 0
+
+
+def test_classifier_recovers_with_a_second_sequential_split_level(
+    tmp_path: Path,
+) -> None:
+    runtime = NestedRetryRuntime('{"discoveries":[]}')
+    classifier = LlamaCppClassifier(
+        tmp_path / "model.gguf",
+        {
+            "model_id": "test",
+            "version": "1",
+            "context_size": 2048,
+            "review_chunk_tokens": 90,
+        },
+        lambda *_: runtime,
+    )
+
+    result = classifier.review(
+        (Block("document:p0", " ".join(f"từ{index}" for index in range(160))),),
+        (),
+        "",
+        Token(),
+    )
+
+    assert result.status == "complete"
+    assert result.retried_chunks == 2
+    assert result.recovered_chunks == 1
+    assert result.failed_chunk_ids == ()
 
 
 class Reviewer:
@@ -442,13 +601,18 @@ class UnapprovedReviewers(Reviewers):
         return False
 
 
+class ExplodingRules:
+    def check(self, *_args, **_kwargs):
+        raise AssertionError("LLM-only full review must not execute deterministic rules")
+
+
 def test_workflow_full_review_finds_error_without_rule_candidate(tmp_path: Path) -> None:
     documents = Documents([Block("document:p0", "Tôi dang làm việc")])
     discovery = DiscoveryProposal(
         "document:p0", 4, 8, "dang", "đang", "spelling", "spelling", 0.96
     )
     reviewer = Reviewer(FullReviewResult((), (discovery,), 1, 1))
-    processor = ProcessDocument(documents, Dictionary(), RuleEngine(), Reviewers(reviewer))
+    processor = ProcessDocument(documents, Dictionary(), ExplodingRules(), Reviewers(reviewer))
     result = processor.execute(
         ProcessRequest(
             tmp_path / "source.docx",
@@ -470,6 +634,11 @@ def test_workflow_full_review_finds_error_without_rule_candidate(tmp_path: Path)
         "total_blocks": 1,
         "reviewed_blocks": 1,
         "failed_blocks": 0,
+        "timeout_chunks": 0,
+        "invalid_output_chunks": 0,
+        "inference_error_chunks": 0,
+        "retried_chunks": 0,
+        "recovered_chunks": 0,
     }
     assert documents.written[0].source_text == "dang"
 
@@ -497,7 +666,7 @@ def test_workflow_rejects_full_review_without_an_approved_capability(
         )
 
 
-def test_partial_full_review_preserves_rules_for_failed_blocks(tmp_path: Path) -> None:
+def test_partial_llm_only_review_does_not_fall_back_to_rules(tmp_path: Path) -> None:
     documents = Documents(
         [Block("document:p0", "sát nhập nội dung"), Block("document:p1", "Đoạn khác")]
     )
@@ -511,7 +680,7 @@ def test_partial_full_review_preserves_rules_for_failed_blocks(tmp_path: Path) -
             ("document:p0",),
         )
     )
-    processor = ProcessDocument(documents, Dictionary(), RuleEngine(), Reviewers(reviewer))
+    processor = ProcessDocument(documents, Dictionary(), ExplodingRules(), Reviewers(reviewer))
     result = processor.execute(
         ProcessRequest(
             tmp_path / "source.docx",
@@ -523,8 +692,9 @@ def test_partial_full_review_preserves_rules_for_failed_blocks(tmp_path: Path) -
         lambda *_: None,
         Token(),
     )
-    assert result.finding_count == 1
-    assert result.counts["origin"] == {"rule": 1}
+    assert result.finding_count == 0
+    assert result.output_path is None
+    assert result.counts == {}
     assert result.review and result.review["status"] == "partial"
 
 
@@ -574,6 +744,11 @@ def test_full_review_marks_blocks_with_unexportable_findings_as_partial(
         "total_blocks": 2,
         "reviewed_blocks": 1,
         "failed_blocks": 1,
+        "timeout_chunks": 0,
+        "invalid_output_chunks": 0,
+        "inference_error_chunks": 0,
+        "retried_chunks": 0,
+        "recovered_chunks": 0,
     }
 
 

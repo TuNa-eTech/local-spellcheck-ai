@@ -370,6 +370,11 @@ describe("four-step desktop workflow", () => {
           total_blocks: 12,
           reviewed_blocks: 8,
           failed_blocks: 4,
+          timeout_chunks: 1,
+          invalid_output_chunks: 0,
+          inference_error_chunks: 0,
+          retried_chunks: 1,
+          recovered_chunks: 0,
         },
       }),
     });
@@ -378,7 +383,9 @@ describe("four-step desktop workflow", () => {
     await vi.waitFor(() => expect(document.body.textContent).toContain("Rà soát chỉ hoàn tất một phần"));
     expect(document.body.textContent).not.toContain("Không phát hiện cảnh báo");
     expect(document.querySelector<HTMLElement>(".review-warning")?.textContent).toContain("2/3");
-    expect(document.querySelector<HTMLElement>(".review-warning")?.textContent).toContain("quy tắc tự động");
+    expect(document.querySelector<HTMLElement>(".review-warning")?.textContent).toContain("1 quá thời gian");
+    expect(document.querySelector<HTMLElement>(".review-warning")?.textContent).toContain("Đã tự chia nhỏ và thử lại 1 phần");
+    expect(document.querySelector<HTMLElement>(".review-warning")?.textContent).toContain("Không thể kết luận toàn bộ tài liệu không có lỗi");
     expect(document.querySelector("#open")).toBeNull();
   });
 
@@ -389,7 +396,7 @@ describe("four-step desktop workflow", () => {
         status: "partial",
         output_path: "C:\\Tài liệu\\nguồn-soat.docx",
         finding_count: 2,
-        counts: { category: { spelling: 2 }, origin: { rule: 2 } },
+        counts: { category: { spelling: 2 }, origin: { llm: 2 } },
         review: {
           status: "partial",
           total_chunks: 5,
@@ -398,6 +405,11 @@ describe("four-step desktop workflow", () => {
           total_blocks: 20,
           reviewed_blocks: 16,
           failed_blocks: 4,
+          timeout_chunks: 0,
+          invalid_output_chunks: 1,
+          inference_error_chunks: 0,
+          retried_chunks: 1,
+          recovered_chunks: 0,
         },
       }),
     });
@@ -405,7 +417,8 @@ describe("four-step desktop workflow", () => {
     document.querySelector<HTMLButtonElement>("#start")!.click();
     await vi.waitFor(() => expect(document.querySelector("#open")).not.toBeNull());
     expect(document.body.textContent).toContain("Đã tạo tệp kết quả khi AI rà chưa hết");
-    expect(document.body.textContent).toContain("Tệp vẫn gồm cảnh báo từ quy tắc tự động");
+    expect(document.body.textContent).toContain("Tệp gồm các cảnh báo AI đã ghi nhận");
+    expect(document.body.textContent).toContain("1 trả kết quả không hợp lệ");
     expect(document.querySelector<HTMLElement>(".review-warning")?.textContent).toContain("4/5");
   });
 
@@ -598,8 +611,8 @@ describe("four-step desktop workflow", () => {
     await vi.waitFor(() => expect(document.body.textContent).toContain("2 quy tắc riêng"));
     const fullReview = document.querySelector<HTMLInputElement>("#full-review")!;
     expect(fullReview).not.toBeNull();
-    expect(fullReview.checked).toBe(false);
-    fullReview.click();
+    expect(fullReview.checked).toBe(true);
+    expect(document.body.textContent).toContain("Chỉ dùng AI để rà soát");
     document.querySelector<HTMLButtonElement>("#start")!.click();
     await vi.waitFor(() => expect(api.startJob).toHaveBeenCalled());
     expect(api.startJob.mock.calls[0][3]).toBe("Giữ nguyên tên SoátVăn.\n\nDùng thuật ngữ khách hàng.");
@@ -631,14 +644,14 @@ describe("four-step desktop workflow", () => {
     expect(api.startJob.mock.calls[0][7]).toBe(false);
   });
 
-  it("uses local-unverified AI only for filtering and keeps full review locked", async () => {
+  it("offers experimental full review for local-unverified AI without release approval", async () => {
     const localUnverified: ModelStatus = {
       state: "ready",
       model_id: "gemma-4-e4b",
       version: "local",
       trust: "local_unverified",
       release_approved: false,
-      capabilities: { candidate_filter: true, full_review: false },
+      capabilities: { candidate_filter: true, full_review: true },
     };
     const api = await loadApp({
       modelStatus: () => Promise.resolve(localUnverified),
@@ -646,17 +659,20 @@ describe("four-step desktop workflow", () => {
     });
     await vi.waitFor(() => expect(api.customRuleList).toHaveBeenCalled());
     await chooseDocument();
-    expect(document.querySelector("#full-review")).toBeNull();
+    const fullReview = document.querySelector<HTMLInputElement>("#full-review")!;
+    expect(fullReview).not.toBeNull();
+    expect(fullReview.checked).toBe(true);
+    expect(document.body.textContent).toContain("chế độ thử nghiệm");
     document.querySelector<HTMLButtonElement>("#settings")!.click();
     await vi.waitFor(() => expect(document.querySelector('[data-tab="model"]')).not.toBeNull());
     document.querySelector<HTMLButtonElement>('[data-tab="model"]')!.click();
-    expect(document.body.textContent).toContain("rà soát sâu bị khoá");
+    expect(document.body.textContent).toContain("kết quả chưa được phê duyệt cho phát hành");
     document.querySelector<HTMLButtonElement>("#close-settings")!.click();
     document.querySelector<HTMLButtonElement>("#start")!.click();
     await vi.waitFor(() => expect(api.startJob).toHaveBeenCalled());
     expect(api.startJob.mock.calls[0][3]).toBe("Không đổi tên đơn vị.");
     expect(api.startJob.mock.calls[0][4]).toBe(true);
-    expect(api.startJob.mock.calls[0][7]).toBe(false);
+    expect(api.startJob.mock.calls[0][7]).toBe(true);
   });
 
   it("cancels an import and ignores its late success", async () => {

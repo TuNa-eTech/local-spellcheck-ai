@@ -154,7 +154,8 @@ function fullReviewAvailable(): boolean { return state.useModel && modelFilterAv
 function clearUnavailableFullReview(): void { if (!fullReviewAvailable()) state.fullReview = false; }
 function fullReviewOptionHtml(): string {
   if (!fullReviewAvailable()) return "";
-  return `<label class="setting-row full-review-option"><span><strong>Rà soát sâu thân bài và bảng</strong><small>AI đọc từng phần được hỗ trợ để tìm thêm lỗi; quá trình sẽ lâu hơn.</small></span><input type="checkbox" id="full-review" ${state.fullReview ? "checked" : ""}></label>`;
+  const experimental = state.model.trust === "local_unverified" ? " Đây là chế độ thử nghiệm vì model chưa được benchmark và phê duyệt phát hành." : "";
+  return `<label class="setting-row full-review-option"><span><strong>Chỉ dùng AI để rà soát</strong><small>Bật mặc định. AI dùng prompt tiếng Việt tích hợp để đọc toàn bộ văn bản; các rule kiểm tra viết bằng code sẽ không chạy.${experimental}</small></span><input type="checkbox" id="full-review" ${state.fullReview ? "checked" : ""}></label>`;
 }
 function compiledCustomPrompt(): string { return state.useModel ? state.customRules.map(rule => rule.prompt).join("\n\n") : ""; }
 function customRuleCharacterCount(): number { return state.customRules.reduce((total, rule) => total + [...rule.prompt].length, 0); }
@@ -180,7 +181,7 @@ function render(preferredFocus?: string): void {
         return `<li ${current ? 'aria-current="step"' : ""} data-complete="${complete}"><span aria-hidden="true">${complete ? "✓" : index + 1}</span><strong>${label}</strong><span class="sr-only">${current ? "Bước hiện tại" : complete ? "Đã hoàn thành" : "Chưa thực hiện"}</span></li>`;
       }).join("")}</ol>
       ${state.step === "file" ? `<section class="workflow-card"><div class="section-copy"><p class="step-label">Bước 1</p><h1>Chọn tệp Word cần kiểm tra</h1><p>Ứng dụng tạo một bản kết quả mới và luôn giữ nguyên tệp gốc.</p></div><button class="drop-zone" id="choose"><strong>Chọn hoặc kéo thả tệp .docx</strong><span>Nhấn Ctrl+O để mở nhanh</span></button>${errorHtml()}</section>` : ""}
-      ${state.step === "rules" && doc ? `<section class="workflow-card"><button class="back-button" id="back">← Chọn tệp khác</button><div class="file-chip"><strong>${escape(doc.name)}</strong><span>${documentMetadata(doc)}</span></div><div class="section-copy"><p class="step-label">Bước 2</p><h1>Chuẩn bị rà soát</h1><p>Bộ kiểm tra cơ bản luôn chạy trên máy. AI sẽ nhận toàn bộ quy tắc riêng đã lưu làm ngữ cảnh chung.</p></div><div class="custom-rules-summary"><div><strong>${customRuleCount.toLocaleString("vi-VN")} quy tắc riêng</strong><span>${customRuleCount === 0 ? "Chưa có yêu cầu bổ sung; ứng dụng sẽ dùng bộ kiểm tra cơ bản." : customRulesApply ? "Sẽ được gộp thành một prompt chung cho lần rà soát này." : "Chưa được áp dụng vì AI cục bộ đang tắt hoặc chưa sẵn sàng."}</span></div><button class="button button--secondary" id="manage-custom-rules" type="button">Quản lý quy tắc</button></div>${customRuleCount > 0 && !customRulesApply ? `<p class="settings-message settings-message--error" role="alert">Bật AI cục bộ để áp dụng các quy tắc riêng. Nếu tiếp tục, ứng dụng chỉ chạy bộ kiểm tra cơ bản. <button class="inline-button" id="open-model-settings" type="button">Thiết lập AI</button></p>` : ""}${fullReviewOptionHtml()}<div class="workflow-actions"><button class="button button--primary" id="start">${customRuleCount > 0 && !customRulesApply ? "Chạy kiểm tra cơ bản" : "Bắt đầu xử lý"}</button></div>${errorHtml()}</section>` : ""}
+      ${state.step === "rules" && doc ? `<section class="workflow-card"><button class="back-button" id="back">← Chọn tệp khác</button><div class="file-chip"><strong>${escape(doc.name)}</strong><span>${documentMetadata(doc)}</span></div><div class="section-copy"><p class="step-label">Bước 2</p><h1>Chuẩn bị rà soát</h1><p>${state.fullReview ? "AI sẽ dùng prompt tiếng Việt mặc định để tự tìm lỗi trong toàn bộ nội dung; không chạy rule kiểm tra viết bằng code." : "Bộ kiểm tra cơ bản sẽ tạo candidate, sau đó AI có thể lọc lại kết quả."}</p></div><div class="custom-rules-summary"><div><strong>${customRuleCount.toLocaleString("vi-VN")} quy tắc riêng</strong><span>${customRuleCount === 0 ? "Không có yêu cầu bổ sung; AI vẫn dùng prompt mặc định." : customRulesApply ? "Sẽ được gộp thành yêu cầu bổ sung cho prompt mặc định." : "Chưa được áp dụng vì AI cục bộ đang tắt hoặc chưa sẵn sàng."}</span></div><button class="button button--secondary" id="manage-custom-rules" type="button">Quản lý quy tắc</button></div>${customRuleCount > 0 && !customRulesApply ? `<p class="settings-message settings-message--error" role="alert">Bật AI cục bộ để áp dụng các quy tắc riêng. <button class="inline-button" id="open-model-settings" type="button">Thiết lập AI</button></p>` : ""}${fullReviewOptionHtml()}<div class="workflow-actions"><button class="button button--primary" id="start">Bắt đầu xử lý</button></div>${errorHtml()}</section>` : ""}
       ${state.step === "processing" ? `<section class="workflow-card centered"><span class="spinner" aria-hidden="true"></span><div class="section-copy center"><p class="step-label">Bước 3</p><h1>${progressTitle()}</h1><p>Mọi xử lý tài liệu diễn ra trên máy này.</p></div><div class="progress" role="progressbar" aria-label="Tiến độ xử lý" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${state.progress}"><span style="--progress-scale:${state.progress / 100}"></span></div><strong class="progress-value">${state.progress}%</strong><p class="sr-only progress-announcement" aria-live="polite" aria-atomic="true">${progressTitle()} ${state.progress}%</p><button class="button button--secondary" id="cancel" ${state.jobStarting || state.cancelPending ? "disabled" : ""} ${state.jobStarting || state.cancelPending ? 'aria-busy="true"' : ""}>${state.jobStarting ? "Đang chuẩn bị…" : state.cancelPending ? "Đang dừng…" : "Dừng xử lý"}</button>${errorHtml()}</section>` : ""}
       ${(state.step === "result" || state.step === "no-findings") ? resultHtml() : ""}
     </main>
@@ -250,11 +251,19 @@ function isPartialReview(): boolean { return state.result?.review?.status === "p
 function reviewCoverageWarningHtml(): string {
   const review = state.result?.review;
   if (!isPartialReview()) return "";
-  if (!review) return `<aside class="review-warning" role="alert"><strong>Rà soát sâu chưa hoàn tất</strong><p>Các quy tắc tự động vẫn đã kiểm tra toàn bộ phạm vi hỗ trợ, nhưng AI có thể bỏ sót lỗi ở phần chưa rà xong.</p></aside>`;
+  if (!review) return `<aside class="review-warning" role="alert"><strong>Rà soát sâu chưa hoàn tất</strong><p>AI chưa rà xong toàn bộ nội dung; không thể kết luận tài liệu không có lỗi.</p></aside>`;
   const reviewed = review.reviewed_chunks.toLocaleString("vi-VN");
   const total = review.total_chunks.toLocaleString("vi-VN");
   const failed = review.failed_chunks.toLocaleString("vi-VN");
-  return `<aside class="review-warning" role="alert"><strong>Rà soát sâu chưa hoàn tất</strong><p>AI đã rà ${reviewed}/${total} phần nội dung; ${failed} phần không hoàn tất. Các quy tắc tự động vẫn đã kiểm tra toàn bộ phạm vi hỗ trợ.</p></aside>`;
+  const reasons = [
+    review.timeout_chunks ? `${review.timeout_chunks.toLocaleString("vi-VN")} quá thời gian` : "",
+    review.invalid_output_chunks ? `${review.invalid_output_chunks.toLocaleString("vi-VN")} trả kết quả không hợp lệ` : "",
+    review.inference_error_chunks ? `${review.inference_error_chunks.toLocaleString("vi-VN")} lỗi xử lý model` : "",
+  ].filter(Boolean).join("; ");
+  const retry = review.retried_chunks
+    ? ` Đã tự chia nhỏ và thử lại ${review.retried_chunks.toLocaleString("vi-VN")} phần${review.recovered_chunks ? `, khôi phục hoàn tất ${review.recovered_chunks.toLocaleString("vi-VN")} phần` : ""}.`
+    : "";
+  return `<aside class="review-warning" role="alert"><strong>Rà soát sâu chưa hoàn tất</strong><p>AI đã rà ${reviewed}/${total} phần nội dung; ${failed} phần không hoàn tất${reasons ? ` (${reasons})` : ""}.${retry} Không thể kết luận toàn bộ tài liệu không có lỗi.</p></aside>`;
 }
 function resultHtml(): string {
   const partial = isPartialReview();
@@ -262,7 +271,7 @@ function resultHtml(): string {
   if (partial && !path) return `<section class="workflow-card centered"><div class="partial-symbol" aria-hidden="true">!</div><div class="section-copy center"><p class="step-label">Bước 4</p><h1>Rà soát chỉ hoàn tất một phần</h1><p>Không tạo bản sao vì chưa ghi nhận cảnh báo. Tệp gốc vẫn giữ nguyên.</p></div>${reviewCoverageWarningHtml()}<button class="button button--primary" id="restart">Kiểm tra tệp khác</button>${errorHtml()}</section>`;
   if (state.step === "no-findings") return `<section class="workflow-card centered"><div class="success" aria-hidden="true">✓</div><div class="section-copy center"><p class="step-label">Bước 4</p><h1>Không phát hiện cảnh báo</h1><p>Không tạo bản sao; tệp gốc vẫn giữ nguyên.</p></div><button class="button button--primary" id="restart">Kiểm tra tệp khác</button>${errorHtml()}</section>`;
   const outputPending = state.outputActionPending !== null;
-  return `<section class="workflow-card centered"><div class="${partial ? "partial-symbol" : "success"}" aria-hidden="true">${partial ? "!" : "✓"}</div><div class="section-copy center"><p class="step-label">Bước 4</p><h1>${partial ? "Đã tạo tệp kết quả khi AI rà chưa hết" : "Đã tạo tệp kết quả"}</h1><p>${partial ? "Tệp vẫn gồm cảnh báo từ quy tắc tự động; phần rà soát bổ sung bằng AI chưa hoàn tất ở một số nội dung." : "Ứng dụng không xem trước tài liệu. Hãy mở bằng Microsoft Word để xem các vị trí được đánh dấu."}</p></div>${reviewCoverageWarningHtml()}<div class="result-file"><strong>${escape(path.split(/[\\/]/).pop() ?? path)}</strong><span>${escape(path)}</span></div><dl class="summary"><div><dt>Cảnh báo</dt><dd>${state.result?.finding_count ?? 0}</dd></div><div><dt>Tệp gốc</dt><dd>Không thay đổi</dd></div></dl><div class="button-row"><button class="button button--primary" id="open" ${outputPending ? "disabled" : ""} ${state.outputActionPending === "open" ? 'aria-busy="true"' : ""}>${state.outputActionPending === "open" ? "Đang mở tệp…" : "Mở tệp kết quả"}</button><button class="button button--secondary" id="reveal" ${outputPending ? "disabled" : ""} ${state.outputActionPending === "reveal" ? 'aria-busy="true"' : ""}>${state.outputActionPending === "reveal" ? "Đang mở thư mục…" : "Mở thư mục"}</button></div><button class="back-button" id="restart">Xử lý tệp khác</button>${errorHtml()}</section>`;
+  return `<section class="workflow-card centered"><div class="${partial ? "partial-symbol" : "success"}" aria-hidden="true">${partial ? "!" : "✓"}</div><div class="section-copy center"><p class="step-label">Bước 4</p><h1>${partial ? "Đã tạo tệp kết quả khi AI rà chưa hết" : "Đã tạo tệp kết quả"}</h1><p>${partial ? "Tệp gồm các cảnh báo AI đã ghi nhận ở phần xử lý thành công; một số nội dung chưa được rà hoàn tất." : "Ứng dụng không xem trước tài liệu. Hãy mở bằng Microsoft Word để xem các vị trí được đánh dấu."}</p></div>${reviewCoverageWarningHtml()}<div class="result-file"><strong>${escape(path.split(/[\\/]/).pop() ?? path)}</strong><span>${escape(path)}</span></div><dl class="summary"><div><dt>Cảnh báo</dt><dd>${state.result?.finding_count ?? 0}</dd></div><div><dt>Tệp gốc</dt><dd>Không thay đổi</dd></div></dl><div class="button-row"><button class="button button--primary" id="open" ${outputPending ? "disabled" : ""} ${state.outputActionPending === "open" ? 'aria-busy="true"' : ""}>${state.outputActionPending === "open" ? "Đang mở tệp…" : "Mở tệp kết quả"}</button><button class="button button--secondary" id="reveal" ${outputPending ? "disabled" : ""} ${state.outputActionPending === "reveal" ? 'aria-busy="true"' : ""}>${state.outputActionPending === "reveal" ? "Đang mở thư mục…" : "Mở thư mục"}</button></div><button class="back-button" id="restart">Xử lý tệp khác</button>${errorHtml()}</section>`;
 }
 
 function settingsHtml(): string {
@@ -307,7 +316,7 @@ function settingsBody(): string {
       ${progressBusy ? progressHtml(state.modelProgress, "Tiến độ thao tác model", "model-download-progress") : ""}
       ${state.modelRemovalPending ? `<div class="destructive-confirm" role="alert"><p>Gỡ model sẽ giải phóng dung lượng, nhưng bạn phải tải lại nếu muốn dùng AI sau này.</p><div class="button-row"><button class="button button--secondary button--small" id="cancel-model-remove" type="button" ${state.modelRemovalRunning ? "disabled" : ""}>Giữ lại</button><button class="button button--danger button--small" id="confirm-model-remove" type="button" ${state.modelRemovalRunning ? 'disabled aria-busy="true"' : ""}>${state.modelRemovalRunning ? "Đang gỡ…" : "Gỡ model"}</button></div></div>` : ""}
     </div>
-    ${installed && state.model.trust === "local_unverified" ? `<p class="settings-message settings-message--error" role="status">Model GGUF nhập cục bộ chưa có chữ ký và benchmark phát hành. Có thể dùng để đánh giá AI filter; rà soát sâu bị khoá.</p>` : ""}
+    ${installed && state.model.trust === "local_unverified" ? `<p class="settings-message settings-message--error" role="status">Model GGUF nhập cục bộ chưa có chữ ký và benchmark phát hành. Có thể rà soát sâu để đánh giá trên máy này, nhưng kết quả chưa được phê duyệt cho phát hành.</p>` : ""}
     ${installed ? `<label class="setting-row"><span><strong>Dùng AI với quy tắc riêng</strong><small>Tắt để giải phóng bộ nhớ; bộ kiểm tra cơ bản vẫn tiếp tục hoạt động.</small></span><input type="checkbox" id="use-model" ${state.useModel ? "checked" : ""} ${controlsLocked ? "disabled" : ""}></label>` : ""}
     <div class="section-copy model-section-copy">
       <h3>Chọn phiên bản Gemma 4</h3>
@@ -721,6 +730,7 @@ async function setModelEnabled(enabled: boolean): Promise<void> {
       if (operation !== modelOperationSequence) return;
       state.model = next;
       state.useModel = modelCanFilter(next);
+      state.fullReview = state.useModel && next.capabilities?.full_review === true;
       if (!state.useModel) state.settingsMessage = { tone: "error", text: "Model chưa cung cấp capability AI filter hoặc chưa thể khởi động. Hãy kiểm tra gói model." };
     } else {
       const next = await api.modelDeactivate();
@@ -761,6 +771,7 @@ async function modelImport(): Promise<void> {
     }
     state.model = status;
     state.useModel = modelCanFilter(status);
+    state.fullReview = state.useModel && status.capabilities?.full_review === true;
     saveModelPreference(state.useModel);
   } catch {
     if (operation === modelOperationSequence) {
@@ -794,6 +805,7 @@ async function downloadGemmaModel(modelId: string): Promise<void> {
     if (operation !== modelOperationSequence) return;
     state.model = status;
     state.useModel = modelCanFilter(status);
+    state.fullReview = state.useModel && status.capabilities?.full_review === true;
     saveModelPreference(state.useModel);
   } catch {
     if (operation === modelOperationSequence) {
@@ -942,6 +954,7 @@ try {
     if (modelSequence !== modelOperationSequence || statusRequest !== modelStatusRequestSequence) return;
     state.model = model;
     state.useModel = initialModelPreference && modelCanFilter(model);
+    state.fullReview = state.useModel && model.capabilities?.full_review === true;
     clearUnavailableFullReview();
     if (model.model_id && gemma4Catalog.some(item => item.id === model.model_id)) state.selectedModelId = model.model_id;
     render();

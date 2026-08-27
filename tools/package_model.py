@@ -126,7 +126,7 @@ def package_model(
     batch_size: int = 8,
     max_tokens: int = 512,
     review_chunk_tokens: int = 1200,
-    timeout_seconds: int = 120,
+    timeout_seconds: int = 300,
     seed: int = 42,
     minimum_confidence: float = 0.8,
 ) -> dict[str, Any]:
@@ -150,7 +150,7 @@ def package_model(
         or not 32 <= max_tokens <= 4096
         or not 64 <= review_chunk_tokens <= 32768
         or context_size - max_tokens - 256 < review_chunk_tokens
-        or not 1 <= timeout_seconds <= 180
+        or not 1 <= timeout_seconds <= 900
         or not math.isfinite(minimum_confidence)
         or not 0 <= minimum_confidence <= 1
     ):
@@ -209,7 +209,7 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--max-tokens", type=int, default=512)
     parser.add_argument("--review-chunk-tokens", type=int, default=1200)
-    parser.add_argument("--timeout-seconds", type=int, default=120)
+    parser.add_argument("--timeout-seconds", type=int, default=300)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--minimum-confidence", type=float, default=0.8)
     args = parser.parse_args()

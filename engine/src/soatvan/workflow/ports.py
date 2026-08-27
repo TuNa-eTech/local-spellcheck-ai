@@ -88,6 +88,11 @@ class FullReviewResult:
     reviewed_chunks: int
     failed_chunk_ids: tuple[str, ...] = ()
     failed_block_ids: tuple[str, ...] = ()
+    timeout_chunks: int = 0
+    invalid_output_chunks: int = 0
+    inference_error_chunks: int = 0
+    retried_chunks: int = 0
+    recovered_chunks: int = 0
 
     @property
     def status(self) -> str:

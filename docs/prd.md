@@ -81,8 +81,8 @@ Kiến trúc lai: **bộ kiểm tra cơ bản cố định** luôn chạy để 
 - ✅ Given file .docx hợp lệ, when người dùng thả vào cửa sổ, then phần mềm hiển thị tên file, số từ và số trang best-effort nếu metadata lần lưu gần nhất có sẵn
 - ✅ Given file không phải .docx, when thả vào, then hiện thông báo nêu rõ định dạng được hỗ trợ, không crash
 
-**F2. Soát lỗi — bộ kiểm tra cơ bản cố định**
-- Luôn chạy; người dùng không chọn preset, không bật/tắt nhóm rule và không có từ điển/danh sách bỏ qua
+**F2. Soát lỗi — bộ kiểm tra cơ bản tương thích**
+- Chỉ chạy khi LLM-only full review bị tắt; người dùng không chọn preset, không bật/tắt nhóm rule và không có từ điển/danh sách bỏ qua
 - Chuẩn hoá Unicode NFC trước mọi xử lý
 - Lỗi kỹ thuật: khoảng trắng thừa/thiếu, dấu câu sai vị trí, lặp từ
 - Âm tiết không tồn tại trong tiếng Việt
@@ -102,15 +102,15 @@ Kiến trúc lai: **bộ kiểm tra cơ bản cố định** luôn chạy để 
 - ✅ Given tổng nội dung vượt giới hạn, when lưu, then thao tác bị từ chối và dữ liệu cũ không đổi
 
 **F4. Soát lỗi — tầng ngữ cảnh (LLM)**
-- Có ba chế độ: **rule-only** (không dùng model), **AI filter** (LLM chỉ giữ/loại candidate do tầng luật sinh) và **AI full review** (LLM vừa phân loại candidate vừa tìm thêm lỗi chính tả, trình bày, ngữ pháp hoặc chọn từ trong mọi block được hỗ trợ)
+- Có ba chế độ tương thích: **rule-only**, **AI filter** và **AI full review / LLM-only**. Khi model hỗ trợ, LLM-only được chọn mặc định, không chạy tầng luật và model tự tìm lỗi chính tả, trình bày, ngữ pháp hoặc chọn từ trong mọi block được hỗ trợ.
 - Full review chia nội dung theo token và cấu trúc; không gửi file DOCX nhị phân hoặc toàn bộ văn bản trong một prompt
 - Mỗi block được hỗ trợ là target đúng một lần; block lân cận có thể chỉ làm context và LLM không được báo finding trong vùng context-only
-- Bật/tắt AI từ tab `AI cục bộ`; full review chỉ xuất hiện khi package ký số phê duyệt capability này và là opt-in vì chậm/tốn RAM hơn
+- Bật/tắt AI từ tab `AI cục bộ`; full review xuất hiện và được bật mặc định khi manifest khai báo capability này. Với GGUF nhập trực tiếp, UI phải ghi rõ đây là chế độ thử nghiệm chưa được benchmark/phê duyệt phát hành.
 - ✅ Given tắt tầng LLM, when soát, then phần mềm chạy bình thường bằng tầng luật
 - ✅ Given bật AI filter, when soát, then LLM không được tạo finding ngoài các candidate đã gửi
 - ✅ Given bật AI full review, when soát, then mọi paragraph/table cell được hỗ trợ đều được đưa qua một chunk target hoặc được báo rõ là chưa rà
 - ✅ Given LLM trả về đề xuất không khớp với văn bản gốc, when xử lý kết quả, then bỏ qua đề xuất đó và không ghi vào output
-- ✅ Given một phần chunk timeout hoặc trả output sai schema, when kết thúc, then kết quả mang trạng thái `partial`; given mọi chunk đều thất bại, then job báo lỗi; không trường hợp nào được hiển thị “không phát hiện lỗi” như thể đã rà đủ
+- ✅ Given một chunk timeout hoặc trả output sai schema, when xử lý, then engine chia đôi và retry tuần tự tối đa hai cấp; nếu vẫn lỗi thì kết quả mang trạng thái `partial` và nêu nguyên nhân. Given mọi attempt đều thất bại, then job báo lỗi; không trường hợp nào được hiển thị “không phát hiện lỗi” như thể đã rà đủ
 
 **F5. Tiến độ và huỷ**
 - Hiển thị stage/progress trong lúc đọc file, chạy bộ kiểm tra, gọi AI và xuất kết quả
@@ -214,7 +214,7 @@ Kiến trúc lai: **bộ kiểm tra cơ bản cố định** luôn chạy để 
 | Rủi ro | Mức | Cách giảm |
 |---|---|---|
 | LLM offline không đủ tốt với tiếng Việt | **Cao** | PoC 2 tuần đo trước. Kiến trúc để tầng luật đứng độc lập, tắt LLM vẫn còn sản phẩm |
-| Full review chậm, thiếu chunk hoặc sinh lỗi ngoài anchor | **Cao** | Opt-in; chunk theo token; timeout/coverage theo chunk; exact-anchor validation; benchmark riêng trước phát hành |
+| Full review chậm, thiếu chunk hoặc sinh lỗi ngoài anchor | **Cao** | Chạy tuần tự; timeout local 300 giây/chunk; retry chia đôi tối đa hai cấp; GPU offload có CPU fallback; exact-anchor validation và benchmark riêng trước phát hành |
 | Annotation OOXML làm hỏng định dạng hoặc không neo được finding | Cao | Clone-and-patch, exact-anchor revalidation, partial/error rõ ràng và golden corpus mở bằng Word |
 | Tách run làm hỏng định dạng | Trung bình | Bộ test hồi quy trên 20 file, so sánh XML trước/sau |
 | Tỷ lệ tài liệu dùng phông chữ cũ cao hơn dự kiến | Trung bình | Đã đưa vào P2 và ghi rõ là hạng mục tính phí riêng |

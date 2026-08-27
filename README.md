@@ -8,15 +8,15 @@ MVP không preview, không duyệt từng finding và không tự sửa text. Fi
 
 ## Cách xử lý
 
-**Bộ kiểm tra cơ bản là cố định và luôn chạy**; giao diện không có preset, checkbox nhóm quy tắc, từ điển người dùng hoặc danh sách từ bỏ qua. Pipeline có ba nhánh kỹ thuật, suy ra từ trạng thái AI và lựa chọn rà soát sâu:
+Khi model sẵn sàng, giao diện mặc định chọn **LLM-only full review**. Prompt tiếng Việt tích hợp yêu cầu model tự tìm lỗi trong từng block; rule engine viết bằng code không chạy trong nhánh này. Hai nhánh cũ vẫn được giữ để tương thích khi AI/full review bị tắt:
 
 - **Kiểm tra cơ bản** (`use_model=false`): chạy bộ luật cố định; không nạp model.
 - **AI filter** (`use_model=true`, `full_review=false`): LLM chỉ giữ hoặc loại candidate do rule engine tạo.
-- **AI full review** (`use_model=true`, `full_review=true`): mọi block được hỗ trợ đều đi qua bộ chia chunk theo token; trong cùng một lượt cho mỗi chunk, LLM vừa phân loại candidate vừa có thể tìm thêm lỗi mà rule bỏ sót.
+- **AI full review / LLM-only** (`use_model=true`, `full_review=true`, mặc định khi model hỗ trợ): mọi block được hỗ trợ đều đi qua bộ chia chunk theo token; LLM tự tạo discovery, không nhận candidate và không chạy rule engine.
 
 Settings chỉ có **Quy tắc riêng** và **AI cục bộ**. Mỗi quy tắc riêng là một đoạn prompt text có thể thêm, sửa hoặc xoá. Tổng text lưu tối đa 4.000 ký tự; khi AI bật và sẵn sàng, các mục được ghép theo thứ tự bằng dòng trống thành một context chung. Khi AI tắt, các mục vẫn được lưu nhưng không ảnh hưởng bộ kiểm tra cơ bản.
 
-Full review không đưa file DOCX nhị phân hoặc toàn bộ nội dung vào một prompt. Engine giữ anchor OOXML, gửi lần lượt các chunk văn bản có giới hạn context và chỉ chấp nhận finding khớp chính xác `paragraph_id + source_text + occurrence_index`. Kết quả full review kèm coverage; nếu một phần chunk timeout/lỗi thì trạng thái là `partial`, còn nếu không chunk nào rà thành công thì job thất bại. Cả hai trường hợp đều không được diễn giải thành “không có lỗi”. Phạm vi hiện tại vẫn là main body và bảng; header/footer/textbox/footnote được giữ nguyên nhưng chưa được soát.
+Full review không đưa file DOCX nhị phân hoặc toàn bộ nội dung vào một prompt. Engine giữ anchor OOXML, gửi tuần tự các chunk văn bản có giới hạn context và chỉ chấp nhận finding khớp chính xác `paragraph_id + source_text + occurrence_index`. Runtime tự dùng GPU offload khi backend hỗ trợ và tự fallback CPU; model local chờ tối đa 300 giây cho mỗi lần gọi. Chunk lỗi được chia đôi và thử lại tuần tự tối đa hai cấp. Kết quả kèm coverage cùng số timeout/JSON lỗi/retry; nếu vẫn còn phần lỗi thì trạng thái là `partial`, còn nếu không phần nào rà thành công thì job thất bại. Cả hai trường hợp đều không được diễn giải thành “không có lỗi”. Phạm vi hiện tại vẫn là main body và bảng; header/footer/textbox/footnote được giữ nguyên nhưng chưa được soát.
 
 ## Cấu trúc
 
@@ -89,7 +89,7 @@ Không có cấu hình trên, lệnh tải fail-closed với `MODEL_NOT_CONFIGUR
 
 - M0: source layout, protocol, persistent sidecar, crash/error boundary, safe DOCX ZIP validation, PyInstaller `onedir`, advanced golden DOCX và Windows Job Object đã được tự động hoá trong workflow `verify`.
 - M1: workflow bốn bước, metadata từ/trang best-effort, bộ kiểm tra cơ bản cố định, technical/confusion/capitalization/conservative-syllable rules, NFC source mapping, annotation-only DOCX, atomic no-clobber output và no-finding đã có unit/property/security/contract/UI/performance tests.
-- M2: CRUD quy tắc riêng, `llama-cpp-python` classifier và nhánh full review tùy chọn theo chunk, output có cấu trúc, anchor/coverage fail-closed, timeout/cancel, signed capability gate, import/download resume, crash recovery, smoke-load/rollback và toggle giải phóng runtime có trong source. Model chỉ `ready` khi package hợp lệ và smoke-load thành công; model chỉ được full review khi manifest ký số phê duyệt capability này. Chưa có model được phê duyệt thì ứng dụng tiếp tục bằng bộ kiểm tra cơ bản cố định.
+- M2: CRUD quy tắc riêng, `llama-cpp-python` classifier và nhánh full review tùy chọn theo chunk, output có cấu trúc, anchor/coverage fail-closed, timeout/cancel, signed capability gate, import/download resume, crash recovery, smoke-load/rollback và toggle giải phóng runtime có trong source. Model chỉ `ready` khi package hợp lệ và smoke-load thành công. GGUF nhập cục bộ có thể chạy full review ở chế độ thử nghiệm nhưng vẫn là `local_unverified`; chỉ package ký số kèm benchmark riêng mới được coi là full review đã phê duyệt phát hành.
 - M3: Windows CI/NSIS/WebView2 offline config, personal signing và Defender gate đã có. Developer ID/notarization và certificate công khai không nằm trong M0/M1.
 
 Corpus regression tổng hợp có 20 trường hợp và gate precision/recall tự động cho AI filter. Quality gate trên 20 DOCX thật vẫn cần bộ tài liệu ẩn danh và ground truth do người dùng duyệt; đây là evidence đầu vào, không được thay thế bằng dữ liệu giả. Full review phải có corpus/gate riêng đo discovery, coverage, latency và RAM trước khi được coi là capability phát hành.

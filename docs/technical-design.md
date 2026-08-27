@@ -69,9 +69,9 @@ Workflow suy ra chế độ từ `use_model` và `full_review` để giữ tươ
 |---|---|---|
 | `rule-only` | `use_model=false` | Không nạp/gọi model; finding đến từ rule engine |
 | `filter` | `use_model=true`, `full_review=false` | Chỉ verdict các candidate đã tồn tại; không được sinh finding mới |
-| `full` | `use_model=true`, `full_review=true` | Mọi block được hỗ trợ là target đúng một lần; mỗi chunk vừa verdict candidate vừa có thể trả discovery mới |
+| `full` | `use_model=true`, `full_review=true` | LLM-only mặc định: không chạy rule engine, mọi block được hỗ trợ là target đúng một lần và mỗi chunk chỉ trả discovery mới |
 
-`full_review=true` không có hiệu lực nếu `use_model=false`. Full review là opt-in vì latency/RAM cao hơn và chỉ được coi là capability phát hành sau benchmark riêng; report classifier hiện tại không đủ để phê duyệt discovery.
+`full_review=true` không có hiệu lực nếu `use_model=false`. UI chọn full review mặc định khi model hỗ trợ; capability chỉ được coi là sẵn sàng phát hành sau benchmark riêng, còn model local-unverified là chế độ thử nghiệm.
 
 Settings lưu một danh sách `CustomRule`; mỗi record chỉ có `id`, prompt text và timestamp. Tổng text tối đa 4.000 ký tự. Frontend nối các prompt theo thứ tự bằng `\n\n` thành một context chung; IPC chừa tối đa 4.200 ký tự để chứa separator. Context không được gửi khi model chưa `ready` hoặc AI tắt. Ở filter, context chỉ ảnh hưởng candidate đã được hệ thống tìm thấy. Ở full, context có thể hướng dẫn discovery, gồm cả finding `grammar` và `word_choice`, nhưng không cho phép viết lại/chấm điểm văn phong toàn đoạn và vẫn chịu toàn bộ giới hạn schema/anchor.
 
@@ -360,7 +360,7 @@ validate package
   ├─ rule-only: không gọi model
   ├─ filter: batch candidate → LLM verdict
   └─ full: token-aware chunks của mọi supported block
-           → LLM verdict candidate + constrained discoveries
+           → LLM discovery-only theo schema giới hạn
 → exact-anchor validation
 → merge + overlap arbitration
 → final findings
@@ -388,10 +388,10 @@ Candidate chứa reason code/template, không chứa UI copy đã format. Export
 - Khởi động sidecar lúc app launch để không tính Python cold start vào click “Soát”.
 - Nạp tài nguyên ngôn ngữ cố định một lần và giữ read-only trong memory.
 - Rules chạy theo block; emit progress theo stage, không theo từng token.
-- LLM chạy sau tầng luật và được nạp một lần cho toàn job. Filter batch theo candidate; full review chunk theo token budget thực của model, không theo số đoạn cố định.
+- Ở filter, LLM chạy sau tầng luật và batch theo candidate. Ở full review LLM-only, tầng luật bị bỏ qua và model nhận chunk theo token budget thực, không theo số đoạn cố định. Model được nạp một lần cho toàn job.
 - Mỗi supported block là target đúng một lần. Block trước/sau có thể lặp như context-only để giữ nghĩa nhưng discovery tại đó bị từ chối, tránh duplicate do overlap.
 - Đo token bằng tokenizer của GGUF. Ngân sách input phải trừ system/custom prompt, output tối đa và safety margin; paragraph quá dài được tách ở biên câu/từ nhưng vẫn giữ anchor về paragraph gốc.
-- Full review có timeout từng chunk; chunk lỗi không làm mất finding hợp lệ của chunk trước nhưng làm coverage thành `partial`. Nếu mọi chunk đều lỗi thì toàn review thất bại.
+- Full review xử lý tuần tự với timeout từng chunk. Chunk timeout/malformed/inference lỗi được chia đôi theo boundary an toàn và retry tuần tự tối đa hai cấp; finding hợp lệ từ phần retry thành công vẫn được giữ. Coverage chỉ `complete` khi toàn bộ chunk gốc hoặc mọi phần retry hoàn tất.
 - UI hiển thị stage/progress/coverage và chờ pipeline hoàn tất trước khi nhận output.
 - Benchmark ghi riêng: parse, normalization, từng detector, chunking, filter/full inference, arbitration và export.
 
@@ -401,7 +401,7 @@ Mốc “50 trang” phải gắn với corpus cố định và machine profile 
 
 ### 11.1. Runtime
 
-`ContextClassifier` và `FullTextReviewer` che giấu cùng runtime. Candidate ban đầu cho PoC là `llama-cpp-python` với model GGUF local; CPU là baseline, GPU/Vulkan là acceleration profile sau khi đo driver matrix. Runtime/model được tái sử dụng giữa các batch/chunk, không load lại cho từng lời gọi.
+`ContextClassifier` và `FullTextReviewer` che giấu cùng runtime. Adapter hỏi backend `llama.cpp` về khả năng GPU offload: nếu có thì offload toàn bộ layer, nếu khởi tạo thất bại thì fallback CPU. Runtime/model được tái sử dụng giữa các batch/chunk, không load lại cho từng lời gọi và không chạy nhiều chunk song song.
 
 Không gọi `from_pretrained` hoặc API tự tải trong Python engine. Python chỉ nhận đường dẫn model đã được Rust/model registry xác minh. Model cụ thể, quantization, context size và RAM tối thiểu chỉ được chốt sau PoC trên 20 file.
 
@@ -410,9 +410,9 @@ Không gọi `from_pretrained` hoặc API tự tải trong Python engine. Python
 - Temperature 0, seed cố định khi runtime hỗ trợ.
 - Không bao giờ gửi DOCX nhị phân, XML package hoặc toàn bộ nội dung tài liệu trong một prompt.
 - Filter chỉ nhận candidate và context tối thiểu.
-- Full review nhận từng chunk cấu trúc gồm target/context block và candidate thuộc target. Chunker dùng tokenizer/context size của chính model và mỗi target chỉ xuất hiện đúng một lần.
+- Full review LLM-only nhận từng chunk chỉ gồm target/context block; không có candidate. Chunker dùng tokenizer/context size của chính model và mỗi target chỉ xuất hiện đúng một lần.
 - Output bị constrain theo JSON schema/grammar.
-- Filter trả `candidate_id`, `verdict`, `confidence`. Full review trả hai collection: verdict cho candidate và discovery có `segment_id`, `source_text`, `occurrence_index`, suggestion/category/`reason_code`/confidence giới hạn; adapter tự ánh xạ về paragraph/offset nội bộ.
+- Filter trả `candidate_id`, `verdict`, `confidence`. Full review LLM-only chỉ trả collection `discoveries` có `segment_id`, `source_text`, `occurrence_index`, suggestion/category/`reason_code`/confidence giới hạn; adapter tự ánh xạ về paragraph/offset nội bộ.
 - Lý do người dùng ưu tiên template/reason code; không dùng văn xuôi tự do không kiểm soát hoặc toàn bộ đoạn đã viết lại.
 - Timeout, batch/chunk size và token budget bị giới hạn bởi cấu hình runtime/manifest. Full review áp timeout riêng theo chunk thay vì một deadline duy nhất làm mất mọi kết quả trước đó.
 - Candidate lạ, discovery ngoài target, mismatch source/occurrence và output malformed đều bị drop. Chunk malformed/timeout làm tăng `failed_chunks` và kết quả là `partial`.
@@ -446,7 +446,7 @@ Manifest tối thiểu:
   "batch_size": 8,
   "max_tokens": 512,
   "review_chunk_tokens": 1200,
-  "timeout_seconds": 120,
+  "timeout_seconds": 300,
   "seed": 42,
   "minimum_confidence": 0.8,
   "quality_gate": {
@@ -460,7 +460,7 @@ Manifest tối thiểu:
 }
 ```
 
-`quality_gate` phải có evidence phù hợp với capability được ký. Registry chỉ cho full review khi manifest schema v2 có `trust="release_signed"` và `capabilities.full_review=true`; GGUF nhập trực tiếp mang `trust="local_unverified"` và bắt buộc `full_review=false`. Việc ký capability chỉ hợp lệ sau benchmark riêng trên hai profile RAM; không được tái sử dụng report filter để phê duyệt discovery.
+`quality_gate` phải có evidence phù hợp với capability được ký. Package phát hành chỉ được coi là đã phê duyệt full review khi manifest schema v2 có `trust="release_signed"` và `capabilities.full_review=true`. GGUF nhập trực tiếp mang `trust="local_unverified"`, có thể khai báo `full_review=true` để đánh giá thử nghiệm trên máy nhưng không có `quality_gate` hoặc chữ ký. Việc ký capability chỉ hợp lệ sau benchmark riêng trên hai profile RAM; không được tái sử dụng report filter để phê duyệt discovery.
 
 ### 11.4. Download/import/activate
 
@@ -553,7 +553,7 @@ Nếu sau PoC xuất hiện nhiều workflow đồng thời hoặc state phức 
 Màn hình chính có đúng bốn step:
 
 1. `Chọn file`: chọn/thả `.docx`, validate và cam kết không đổi file gốc.
-2. `Chuẩn bị rà soát`: cho biết bộ kiểm tra cơ bản luôn chạy, số quy tắc riêng đã lưu/trạng thái áp dụng và tuỳ chọn rà soát sâu khi model được phê duyệt.
+2. `Chuẩn bị rà soát`: cho biết bộ kiểm tra cơ bản luôn chạy, số quy tắc riêng đã lưu/trạng thái áp dụng và tuỳ chọn rà soát sâu khi model có capability tương ứng; model `local_unverified` phải kèm cảnh báo chế độ thử nghiệm.
 3. `Xử lý`: stage, progress và cancel; khóa file/prompt trong lúc chạy.
 4. `Kết quả`: filename/path, số cảnh báo, `Mở file`, `Mở thư mục`, `Xử lý file khác`.
 

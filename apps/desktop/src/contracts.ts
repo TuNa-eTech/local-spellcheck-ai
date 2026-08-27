@@ -28,6 +28,11 @@ export interface ReviewCoverage {
   total_blocks: number;
   reviewed_blocks: number;
   failed_blocks: number;
+  timeout_chunks?: number;
+  invalid_output_chunks?: number;
+  inference_error_chunks?: number;
+  retried_chunks?: number;
+  recovered_chunks?: number;
 }
 
 export interface JobResult {

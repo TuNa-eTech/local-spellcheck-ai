@@ -75,6 +75,16 @@ struct ReviewCoverage {
     total_blocks: u64,
     reviewed_blocks: u64,
     failed_blocks: u64,
+    #[serde(default)]
+    timeout_chunks: u64,
+    #[serde(default)]
+    invalid_output_chunks: u64,
+    #[serde(default)]
+    inference_error_chunks: u64,
+    #[serde(default)]
+    retried_chunks: u64,
+    #[serde(default)]
+    recovered_chunks: u64,
 }
 
 impl ReviewCoverage {
@@ -87,7 +97,17 @@ impl ReviewCoverage {
             ReviewStatus::Complete => self.failed_chunks == 0 && self.failed_blocks == 0,
             ReviewStatus::Partial => self.failed_chunks > 0 || self.failed_blocks > 0,
         };
-        chunks_are_consistent && blocks_are_consistent && status_is_consistent
+        let diagnostic_failures = self
+            .timeout_chunks
+            .checked_add(self.invalid_output_chunks)
+            .and_then(|value| value.checked_add(self.inference_error_chunks));
+        let diagnostics_are_consistent =
+            diagnostic_failures == Some(0) || diagnostic_failures == Some(self.failed_chunks);
+        chunks_are_consistent
+            && blocks_are_consistent
+            && status_is_consistent
+            && diagnostics_are_consistent
+            && self.recovered_chunks <= self.retried_chunks
     }
 }
 
@@ -1333,6 +1353,11 @@ mod tests {
             total_blocks: 20,
             reviewed_blocks: 16,
             failed_blocks: 4,
+            timeout_chunks: 0,
+            invalid_output_chunks: 0,
+            inference_error_chunks: 0,
+            retried_chunks: 0,
+            recovered_chunks: 0,
         }
     }
 
