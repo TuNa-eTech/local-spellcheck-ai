@@ -21,3 +21,4 @@ apps/desktop/src-tauri/resources/engine/*
 *.db-wal
 *.gguf
 data-test/
+.tools
