@@ -145,6 +145,22 @@ const fixedReviewRules: { id: keyof RuleOptions; name: string; description: stri
   { id: "administrative_capitalization", name: "Viết hoa hành chính", description: "Kiểm tra quy tắc viết hoa theo Nghị định 30/2020, Phụ lục II." },
 ];
 const customRulePromptLimit = 4000;
+const genericProcessingError = "Không xử lý được tệp. Hãy kiểm tra tệp rồi thử lại; tệp gốc chưa bị thay đổi.";
+const processingErrorMessages: Record<string, string> = {
+  CUSTOM_PROMPT_CONTEXT_EXCEEDED: "Quy tắc riêng quá dài so với dung lượng ngữ cảnh đang dùng. Hãy rút gọn quy tắc hoặc chọn model có context lớn hơn. Tệp gốc chưa bị thay đổi.",
+  MODEL_REVIEW_CONTEXT_TOO_SMALL: "Dung lượng ngữ cảnh của model quá nhỏ để rà soát sâu. Hãy chọn model có context lớn hơn. Tệp gốc chưa bị thay đổi.",
+};
+
+function processingErrorMessage(error: unknown): string {
+  const code = typeof error === "string"
+    ? error
+    : error instanceof Error
+      ? error.message
+      : typeof error === "object" && error !== null && "code" in error && typeof error.code === "string"
+        ? error.code
+        : "";
+  return processingErrorMessages[code] ?? genericProcessingError;
+}
 
 function loadModelPreference(): boolean { try { return localStorage.getItem("soatvan.use-model.v1") !== "false"; } catch { return true; } }
 function saveModelPreference(enabled: boolean): void { try { localStorage.setItem("soatvan.use-model.v1", String(enabled)); } catch { /* Storage can be unavailable in hardened WebViews. */ } }
@@ -637,13 +653,13 @@ async function start(): Promise<void> {
       state.step = result.status === "no_findings" && result.review?.status !== "partial" ? "no-findings" : "result";
       render();
     }
-  } catch {
+  } catch (error) {
     if (state.jobId === currentJobId && state.step === "processing") {
       const cancellationWasPending = state.cancelPending;
       state.jobId = "";
       state.cancelPending = false;
       state.step = "rules";
-      state.error = cancellationWasPending ? "" : "Không xử lý được tệp. Hãy kiểm tra tệp rồi thử lại; tệp gốc chưa bị thay đổi.";
+      state.error = cancellationWasPending ? "" : processingErrorMessage(error);
       render(cancellationWasPending ? "#start" : undefined);
     }
   } finally {

@@ -22,7 +22,9 @@ Settings là một trang trong ứng dụng, không phải modal/dialog, với b
 
 Khi mở Settings hoặc chuyển mục, focus đi tới heading của trang/mục mới; nút quay lại khôi phục focus cho đúng control đã mở Settings. `Ctrl+O` chỉ hoạt động trong view rà soát và bị bỏ qua trong Settings; Settings không có hành vi đóng bằng `Esc` như dialog.
 
-Full review không đưa file DOCX nhị phân hoặc toàn bộ nội dung vào một prompt. Engine giữ anchor OOXML, gửi tuần tự các chunk văn bản có giới hạn context và chỉ chấp nhận finding khớp chính xác `paragraph_id + source_text + occurrence_index`. Trước khi xuất, quality gate loại đề xuất no-op, câu/đoạn bị dùng làm replacement cho một lỗi ngắn và các rewrite không thể thu về một edit cục bộ an toàn; bản sửa có context trùng khớp được thu về đúng từ/cụm từ sai. Runtime tự dùng GPU offload khi backend hỗ trợ và tự fallback CPU; model local chờ tối đa 300 giây cho mỗi lần gọi. Chunk lỗi được chia đôi và thử lại tuần tự tối đa hai cấp. Kết quả kèm coverage cùng số timeout/JSON lỗi/retry; nếu vẫn còn phần lỗi thì trạng thái là `partial`, còn nếu không phần nào rà thành công thì job thất bại. Cả hai trường hợp đều không được diễn giải thành “không có lỗi”. Phạm vi hiện tại vẫn là main body và bảng; header/footer/textbox/footnote được giữ nguyên nhưng chưa được soát.
+Full review không đưa file DOCX nhị phân hoặc toàn bộ nội dung vào một prompt. Engine giữ anchor OOXML, gửi tuần tự các chunk văn bản có giới hạn context và chỉ chấp nhận finding khớp chính xác `paragraph_id + source_text + occurrence_index`. `review_chunk_tokens` chỉ giới hạn text đích của tài liệu; system/chat template, quy tắc riêng, output reserve và safety margin được tính thành các ngân sách riêng trước khi chia chunk. Nếu riêng prompt đã không còn đủ chỗ cho một chunk hữu dụng, engine dừng sớm với lỗi prompt/context cụ thể thay vì tiếp tục chia đến từng ký tự. GGUF Gemma 4 nhập cục bộ dùng context 4.096 token; mức này nhỏ hơn rất nhiều so với context tối đa của model để giữ mức RAM thực tế trên máy yếu. Context 4K dành tối đa 2.048 token cho JSON discovery để các chunk có nhiều lỗi không bị cắt output; context 2K cũ vẫn giữ mức 768 token. Trước khi xuất, quality gate loại đề xuất no-op, câu/đoạn bị dùng làm replacement cho một lỗi ngắn và các rewrite không thể thu về một edit cục bộ an toàn; bản sửa có context trùng khớp được thu về đúng từ/cụm từ sai. Runtime tự dùng GPU offload khi backend hỗ trợ và tự fallback CPU; model local chờ tối đa 600 giây cho mỗi lần gọi. Chunk lỗi được chia đôi và thử lại tuần tự tối đa hai cấp. Kết quả kèm coverage cùng số timeout/JSON lỗi/retry; nếu vẫn còn phần lỗi thì trạng thái là `partial`, còn nếu không phần nào rà thành công thì job thất bại. Cả hai trường hợp đều không được diễn giải thành “không có lỗi”. Phạm vi hiện tại vẫn là main body và bảng; header/footer/textbox/footnote được giữ nguyên nhưng chưa được soát.
+
+Trước mỗi lần gọi hoặc retry, engine phát lại tín hiệu hoạt động mà không tăng coverage giả. Watchdog desktop chờ 1.020 giây không có hoạt động, lớn hơn timeout tối đa 900 giây/lần gọi mà manifest cho phép, nên máy yếu có thể hoàn tất hoặc chuyển sang retry tuần tự trước khi host can thiệp.
 
 ## Cấu trúc
 
@@ -44,6 +46,8 @@ npm run tauri -- dev
 ```
 
 Trong browser-only mode (`npm run dev` hoặc mở trực tiếp `http://localhost:1420`), UI dùng dữ liệu demo. Khi chạy `npm run tauri -- dev`, hãy thao tác trong cửa sổ desktop **SoátVăn** do Tauri tự mở, không mở URL Vite trong trình duyệt. Cửa sổ Tauri dùng Rust host để khởi động Python sidecar thường trú bằng `uv` và handshake protocol v1.
+
+Ở dev build, terminal hiển thị lỗi Rust host với prefix `[soatvan-host]` và chuyển tiếp `stderr` của Python/model với prefix `[soatvan-sidecar]`. Sidecar ghi mã lỗi, loại exception và traceback khi job thất bại. Release build không bật các log chẩn đoán này; `stdout` của sidecar vẫn chỉ dành cho NDJSON protocol.
 
 ## Kiểm tra
 

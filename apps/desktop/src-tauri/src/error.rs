@@ -41,6 +41,22 @@ impl serde::Serialize for AppError {
     where
         S: serde::Serializer,
     {
+        #[cfg(debug_assertions)]
+        eprintln!("[soatvan-host] command failed: {self:?}");
         serializer.serialize_str(&self.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn engine_error_code_is_preserved_for_the_frontend() {
+        let error = AppError::Engine("CUSTOM_PROMPT_CONTEXT_EXCEEDED".into());
+        assert_eq!(
+            serde_json::to_string(&error).unwrap(),
+            "\"CUSTOM_PROMPT_CONTEXT_EXCEEDED\""
+        );
     }
 }

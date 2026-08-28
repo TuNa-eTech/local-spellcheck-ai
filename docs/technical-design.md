@@ -463,6 +463,10 @@ Manifest tối thiểu:
 
 `quality_gate` phải có evidence phù hợp với capability được ký. Package phát hành chỉ được coi là đã phê duyệt full review khi manifest schema v2 có `trust="release_signed"` và `capabilities.full_review=true`. GGUF nhập trực tiếp mang `trust="local_unverified"`, có thể khai báo `full_review=true` để đánh giá thử nghiệm trên máy nhưng không có `quality_gate` hoặc chữ ký. Việc ký capability chỉ hợp lệ sau benchmark riêng trên hai profile RAM; không được tái sử dụng report filter để phê duyệt discovery.
 
+`review_chunk_tokens` là trần token cho text đích của tài liệu, không phải trần cho toàn bộ JSON request. Adapter model giữ riêng ngân sách system/chat template, custom rule, output và safety margin; planner co phần text theo context thực tế nhưng không giảm output reserve. GGUF Gemma 4 nhập trực tiếp mặc định dùng `context_size=4096`, output reserve tối đa 2.048 token và timeout 600 giây/chunk; package phát hành tiếp tục dùng đúng context/timeout đã benchmark và ký trong manifest.
+
+Mỗi attempt/retry phát `job.progress` với coverage chưa tăng để reset inactivity timer. Host dùng watchdog 1.020 giây, luôn lớn hơn timeout manifest tối đa 900 giây cho một attempt; vì vậy cây retry tuần tự không bị cộng dồn vào cùng một idle deadline, trong khi runtime treo vẫn bị host hủy sau khoảng grace hữu hạn.
+
 ### 11.4. Download/import/activate
 
 1. Kiểm tra dung lượng trống trước khi bắt đầu.

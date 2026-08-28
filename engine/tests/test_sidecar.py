@@ -16,6 +16,7 @@ from soatvan.entrypoints.sidecar import (
     _boolean_param,
     _custom_prompt,
     _ignored_words,
+    _log_dev_exception,
     safe_message,
     validate_request,
 )
@@ -108,6 +109,25 @@ def test_custom_prompt_transport_limit_and_new_errors_have_safe_messages() -> No
     assert safe_message("INCLUDE_RULE_FINDINGS_REQUIRES_FULL_REVIEW") == (
         "Quy tắc tự động chỉ có thể được bổ sung khi bật AI rà soát toàn văn."
     )
+    assert safe_message("CUSTOM_PROMPT_CONTEXT_EXCEEDED") == (
+        "Quy tắc riêng quá dài so với cửa sổ ngữ cảnh đang dùng."
+    )
+
+
+def test_exception_details_are_logged_only_when_dev_logging_is_enabled(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    error = ValueError("MODEL_FULL_REVIEW_FAILED")
+    monkeypatch.delenv("SOATVAN_DEV_LOG", raising=False)
+    _log_dev_exception("job id=job-1", error, "MODEL_FULL_REVIEW_FAILED")
+    assert capsys.readouterr().err == ""
+
+    monkeypatch.setenv("SOATVAN_DEV_LOG", "1")
+    _log_dev_exception("job id=job-1", error, "MODEL_FULL_REVIEW_FAILED")
+    logged = capsys.readouterr().err
+    assert "[engine-error] job id=job-1 failed" in logged
+    assert "code=MODEL_FULL_REVIEW_FAILED type=ValueError" in logged
+    assert "ValueError: MODEL_FULL_REVIEW_FAILED" in logged
 
 
 @pytest.mark.parametrize("name", ["use_model", "full_review", "include_rule_findings"])

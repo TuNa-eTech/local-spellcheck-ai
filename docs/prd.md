@@ -222,7 +222,7 @@ Kiến trúc lai: **LLM offline** có thể tắt, chỉ lọc candidate hoặc 
 | Rủi ro | Mức | Cách giảm |
 |---|---|---|
 | LLM offline không đủ tốt với tiếng Việt | **Cao** | PoC 2 tuần đo trước. Kiến trúc để tầng luật đứng độc lập, tắt LLM vẫn còn sản phẩm |
-| Full review chậm, thiếu chunk hoặc sinh lỗi ngoài anchor | **Cao** | Chạy tuần tự; timeout local 300 giây/chunk; retry chia đôi tối đa hai cấp; GPU offload có CPU fallback; exact-anchor validation và benchmark riêng trước phát hành |
+| Full review chậm, thiếu chunk hoặc sinh lỗi ngoài anchor | **Cao** | Chạy tuần tự; timeout local 600 giây/chunk; phát activity trước mỗi retry; watchdog host 1.020 giây lớn hơn timeout manifest tối đa 900 giây; GPU offload có CPU fallback; exact-anchor validation và benchmark riêng trước phát hành |
 | Annotation OOXML làm hỏng định dạng hoặc không neo được finding | Cao | Clone-and-patch, exact-anchor revalidation, partial/error rõ ràng và golden corpus mở bằng Word |
 | Tách run làm hỏng định dạng | Trung bình | Bộ test hồi quy trên 20 file, so sánh XML trước/sau |
 | Tỷ lệ tài liệu dùng phông chữ cũ cao hơn dự kiến | Trung bình | Đã đưa vào P2 và ghi rõ là hạng mục tính phí riêng |

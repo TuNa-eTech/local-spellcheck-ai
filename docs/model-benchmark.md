@@ -27,6 +27,8 @@ File này chỉ cấu hình runtime cho benchmark; nó chưa phải signed packa
 }
 ```
 
+`review_chunk_tokens` chỉ giới hạn text đích. Khi chạy benchmark, phải ghi nhận cả token của chat template, system prompt và custom rule; output reserve và safety margin không được lấy bớt để làm chunk lớn hơn.
+
 ## Corpus cho AI filter
 
 Corpus filter là JSON array. Mỗi case chứa candidates đúng boundary của classifier và danh sách candidate ID phải được giữ:

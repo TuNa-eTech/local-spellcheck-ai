@@ -20,17 +20,20 @@ from soatvan.workflow.ports import (
 
 from .review import (
     LLM_ONLY_REVIEW_SCHEMA,
-    LLM_ONLY_REVIEW_SYSTEM_PROMPT,
     REVIEW_SCHEMA,
-    REVIEW_SYSTEM_PROMPT,
     ReviewChunk,
     parse_review_content,
     plan_review_chunks,
+    review_messages,
     split_llm_only_chunk,
 )
+from .review_budget import MIN_REVIEW_DOCUMENT_TOKENS, ReviewBudget
 
-LLM_ONLY_MAX_TOKENS = 768
+LLM_ONLY_2K_MAX_TOKENS = 768
+LLM_ONLY_4K_MAX_TOKENS = 2048
 LLM_ONLY_MAX_SPLIT_DEPTH = 2
+REVIEW_SAFETY_TOKENS = 256
+CHAT_FALLBACK_OVERHEAD_TOKENS = 32
 
 
 class ModelRuntimeUnavailable(RuntimeError):
@@ -73,6 +76,56 @@ VERDICT_SCHEMA = {
 }
 
 
+def classification_messages(
+    candidates: tuple[ClassificationCandidate, ...], custom_prompt: str
+) -> list[dict[str, str]]:
+    return [
+        {
+            "role": "system",
+            "content": (
+                "Bạn là bộ phân loại lỗi tiếng Việt chạy cục bộ. "
+                "Chỉ đánh giá candidate đã cho. Trả JSON duy nhất dạng "
+                '{"verdicts":[{"candidate_id":"...","verdict":"keep|drop",'
+                '"confidence":0.0}]}. Không thêm candidate và không sửa văn bản.'
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(
+                {
+                    "custom_rule": custom_prompt,
+                    "candidates": [
+                        {
+                            "candidate_id": item.candidate_id,
+                            "paragraph_id": item.paragraph_id,
+                            "source_text": item.source_text,
+                            "suggestion": item.suggestion,
+                            "reason_code": item.reason_code,
+                            "occurrence_index": item.occurrence_index,
+                            "context": item.context,
+                        }
+                        for item in candidates
+                    ],
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        },
+    ]
+
+
+def _attempt_activity(
+    progress: Callable[[int, int], None] | None, processed: int, total: int
+) -> Callable[[], None] | None:
+    if progress is None:
+        return None
+
+    def activity() -> None:
+        progress(processed, total)
+
+    return activity
+
+
 def runtime_available() -> bool:
     try:
         import_module("llama_cpp")
@@ -86,14 +139,11 @@ class _NativeLlamaRuntime:
         self._runtime = runtime
         self._module = module
         self._abort_callback: Any = None
+        self._chat_formatter = _metadata_chat_formatter(runtime, module)
 
     def set_abort_predicate(self, predicate: Callable[[], bool]) -> None:
-        self._abort_callback = self._module.ggml_abort_callback(
-            lambda _data: bool(predicate())
-        )
-        self._module.llama_set_abort_callback(
-            self._runtime.ctx, self._abort_callback, None
-        )
+        self._abort_callback = self._module.ggml_abort_callback(lambda _data: bool(predicate()))
+        self._module.llama_set_abort_callback(self._runtime.ctx, self._abort_callback, None)
 
     def create_chat_completion(self, **kwargs: Any) -> Any:
         return self._runtime.create_chat_completion(**kwargs)
@@ -101,11 +151,58 @@ class _NativeLlamaRuntime:
     def count_tokens(self, value: str) -> int:
         return len(self._runtime.tokenize(value.encode("utf-8"), add_bos=False, special=False))
 
+    def count_chat_tokens(self, messages: list[dict[str, str]]) -> int:
+        if self._chat_formatter is not None:
+            try:
+                formatted = self._chat_formatter(messages=messages)
+                return len(
+                    self._runtime.tokenize(
+                        formatted.prompt.encode("utf-8"),
+                        add_bos=not formatted.added_special,
+                        special=True,
+                    )
+                )
+            except (AttributeError, TypeError, ValueError):
+                pass
+        return (
+            sum(self.count_tokens(message["content"]) for message in messages)
+            + CHAT_FALLBACK_OVERHEAD_TOKENS
+        )
+
     def reset_after_abort(self) -> None:
         self._runtime.reset()
 
     def close(self) -> None:
         self._runtime.close()
+
+
+def _metadata_chat_formatter(runtime: Any, module: Any) -> Any | None:
+    if getattr(runtime, "chat_handler", None) is not None:
+        return None
+    metadata = getattr(runtime, "metadata", None)
+    chat_format = getattr(runtime, "chat_format", None)
+    if not isinstance(metadata, dict) or not isinstance(chat_format, str):
+        return None
+    template: object | None = None
+    if chat_format == "chat_template.default":
+        template = metadata.get("tokenizer.chat_template")
+    elif chat_format.startswith("chat_template."):
+        template = metadata.get(f"tokenizer.{chat_format}")
+    if not isinstance(template, str) or not template:
+        return None
+    try:
+        eos_token_id = runtime.token_eos()
+        bos_token_id = runtime.token_bos()
+        eos_token = runtime._model.token_get_text(eos_token_id) if eos_token_id != -1 else ""
+        bos_token = runtime._model.token_get_text(bos_token_id) if bos_token_id != -1 else ""
+        return module.llama_chat_format.Jinja2ChatFormatter(
+            template=template,
+            eos_token=eos_token,
+            bos_token=bos_token,
+            stop_token_ids=[eos_token_id],
+        )
+    except (AttributeError, TypeError, ValueError):
+        return None
 
 
 def _default_runtime_factory(model_path: Path, context_size: int, seed: int) -> CompletionRuntime:
@@ -165,26 +262,32 @@ class LlamaCppClassifier:
         self._version = f"model-{manifest['model_id']}@{manifest['version']}"
         self._minimum_confidence = float(manifest.get("minimum_confidence", 0.5))
         self._batch_size = int(manifest.get("batch_size", 8))
-        self._max_tokens = int(manifest.get("max_tokens", 512))
+        self._filter_output_tokens = int(manifest.get("max_tokens", 512))
         self._review_candidate_limit = max(
-            1, min(self._batch_size, self._max_tokens // 80)
+            1, min(self._batch_size, self._filter_output_tokens // 80)
         )
         self._timeout_seconds = int(manifest.get("timeout_seconds", 300))
         self._seed = int(manifest.get("seed", 42))
         self._context_size = int(manifest.get("context_size", 2048))
-        available_review_tokens = self._context_size - self._max_tokens - 256
-        if available_review_tokens < 64:
-            raise ValueError("MODEL_REVIEW_CONTEXT_TOO_SMALL")
-        requested_review_tokens = int(manifest.get("review_chunk_tokens", 1200))
-        if "review_chunk_tokens" in manifest and requested_review_tokens > available_review_tokens:
-            raise ValueError("MODEL_REVIEW_CONTEXT_TOO_SMALL")
-        self._review_chunk_tokens = min(requested_review_tokens, available_review_tokens)
-        self._llm_only_max_tokens = max(
+        review_output_limit = (
+            LLM_ONLY_4K_MAX_TOKENS if self._context_size >= 4096 else LLM_ONLY_2K_MAX_TOKENS
+        )
+        self._review_output_tokens = max(
             32,
             min(
-                LLM_ONLY_MAX_TOKENS,
-                self._context_size - self._review_chunk_tokens - 256,
+                review_output_limit,
+                self._context_size - REVIEW_SAFETY_TOKENS - MIN_REVIEW_DOCUMENT_TOKENS,
             ),
+        )
+        response_tokens = max(
+            self._filter_output_tokens,
+            self._review_output_tokens,
+        )
+        self._review_budget = ReviewBudget(
+            context_tokens=self._context_size,
+            response_tokens=response_tokens,
+            safety_tokens=REVIEW_SAFETY_TOKENS,
+            document_tokens=int(manifest.get("review_chunk_tokens", 1200)),
         )
         self._runtime = runtime_factory(model_path, self._context_size, self._seed)
         self._lock = threading.Lock()
@@ -233,46 +336,16 @@ class LlamaCppClassifier:
             for offset in range(0, len(candidates), self._batch_size):
                 cancellation.raise_if_cancelled()
                 batch = candidates[offset : offset + self._batch_size]
+                messages = classification_messages(batch, custom_prompt)
+                self._ensure_classification_request_fits(batch, custom_prompt, messages)
                 try:
                     completion = self._runtime.create_chat_completion(
-                    messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "Bạn là bộ phân loại lỗi tiếng Việt chạy cục bộ. "
-                            "Chỉ đánh giá candidate đã cho. Trả JSON duy nhất dạng "
-                            '{"verdicts":[{"candidate_id":"...","verdict":"keep|drop",'
-                            '"confidence":0.0}]}. Không thêm candidate và không sửa văn bản.'
-                        ),
-                    },
-                    {
-                        "role": "user",
-                        "content": json.dumps(
-                            {
-                                "custom_rule": custom_prompt,
-                                "candidates": [
-                                    {
-                                        "candidate_id": item.candidate_id,
-                                        "paragraph_id": item.paragraph_id,
-                                        "source_text": item.source_text,
-                                        "suggestion": item.suggestion,
-                                        "reason_code": item.reason_code,
-                                        "occurrence_index": item.occurrence_index,
-                                        "context": item.context,
-                                    }
-                                    for item in batch
-                                ],
-                            },
-                            ensure_ascii=False,
-                            separators=(",", ":"),
-                        ),
-                    },
-                    ],
-                    temperature=0,
-                    seed=self._seed,
-                    max_tokens=self._max_tokens,
-                    stream=True,
-                    response_format={"type": "json_object", "schema": VERDICT_SCHEMA},
+                        messages=messages,
+                        temperature=0,
+                        seed=self._seed,
+                        max_tokens=self._filter_output_tokens,
+                        stream=True,
+                        response_format={"type": "json_object", "schema": VERDICT_SCHEMA},
                     )
                     raw = _collect_stream(completion, cancellation, deadline)
                 except Exception as error:
@@ -315,13 +388,15 @@ class LlamaCppClassifier:
                 blocks,
                 candidates,
                 custom_prompt,
-                self._review_chunk_tokens,
+                self._review_budget,
                 self._count_tokens,
+                self._count_review_request_tokens,
                 self._review_candidate_limit,
                 cancellation.raise_if_cancelled,
             )
             if not chunks:
                 return FullReviewResult((), (), 0, 0)
+            total_chunks = len(chunks)
             for processed_chunks, chunk in enumerate(chunks, start=1):
                 cancellation.raise_if_cancelled()
                 (
@@ -330,7 +405,11 @@ class LlamaCppClassifier:
                     chunk_failures,
                     chunk_retries,
                     chunk_successes,
-                ) = self._review_chunk_with_retries(chunk, cancellation)
+                ) = self._review_chunk_with_retries(
+                    chunk,
+                    cancellation,
+                    _attempt_activity(progress, processed_chunks - 1, total_chunks),
+                )
                 verdicts.extend(chunk_verdicts)
                 discoveries.extend(chunk_discoveries)
                 retried_chunks += chunk_retries
@@ -345,7 +424,7 @@ class LlamaCppClassifier:
                         failed_blocks.update(block_ids)
                     failure_counts[chunk_failures[0][0]] += 1
                 if progress:
-                    progress(processed_chunks, len(chunks))
+                    progress(processed_chunks, total_chunks)
         if chunks and successful_attempts == 0:
             raise ValueError("MODEL_FULL_REVIEW_FAILED")
         return FullReviewResult(
@@ -366,6 +445,7 @@ class LlamaCppClassifier:
         self,
         chunk: ReviewChunk,
         cancellation: CancellationToken,
+        activity: Callable[[], None] | None = None,
         depth: int = 0,
     ) -> tuple[
         list[ClassifierVerdict],
@@ -374,6 +454,8 @@ class LlamaCppClassifier:
         int,
         int,
     ]:
+        if activity:
+            activity()
         parsed, failure = self._review_chunk(chunk, cancellation)
         if parsed is not None:
             parsed_verdicts, parsed_discoveries = parsed
@@ -396,7 +478,7 @@ class LlamaCppClassifier:
                 retry_failures,
                 nested_retries,
                 retry_successes,
-            ) = self._review_chunk_with_retries(retry, cancellation, depth + 1)
+            ) = self._review_chunk_with_retries(retry, cancellation, activity, depth + 1)
             verdicts.extend(retry_verdicts)
             discoveries.extend(retry_discoveries)
             failures.extend(retry_failures)
@@ -419,23 +501,10 @@ class LlamaCppClassifier:
         llm_only = not chunk.candidates
         try:
             completion = self._runtime.create_chat_completion(
-                messages=[
-                    {
-                        "role": "system",
-                        "content": LLM_ONLY_REVIEW_SYSTEM_PROMPT
-                        if llm_only
-                        else REVIEW_SYSTEM_PROMPT,
-                    },
-                    {
-                        "role": "user",
-                        "content": json.dumps(
-                            chunk.payload(), ensure_ascii=False, separators=(",", ":")
-                        ),
-                    },
-                ],
+                messages=review_messages(chunk),
                 temperature=0,
                 seed=self._seed,
-                max_tokens=self._llm_only_max_tokens if llm_only else self._max_tokens,
+                max_tokens=self._review_output_tokens,
                 stream=True,
                 response_format={
                     "type": "json_object",
@@ -477,6 +546,39 @@ class LlamaCppClassifier:
             except (TypeError, ValueError):
                 pass
         return max(1, (len(value.encode("utf-8")) + 2) // 3)
+
+    def _count_chat_tokens(self, messages: list[dict[str, str]]) -> int:
+        counter = getattr(self._runtime, "count_chat_tokens", None)
+        if callable(counter):
+            try:
+                count = counter(messages)
+                if not isinstance(count, bool) and isinstance(count, int) and count >= 0:
+                    return int(count)
+            except (TypeError, ValueError, RuntimeError):
+                pass
+        return (
+            sum(self._count_tokens(message["content"]) for message in messages)
+            + CHAT_FALLBACK_OVERHEAD_TOKENS
+        )
+
+    def _count_review_request_tokens(self, chunk: ReviewChunk) -> int:
+        return self._count_chat_tokens(review_messages(chunk))
+
+    def _ensure_classification_request_fits(
+        self,
+        batch: tuple[ClassificationCandidate, ...],
+        custom_prompt: str,
+        messages: list[dict[str, str]],
+    ) -> None:
+        input_tokens = self._context_size - self._filter_output_tokens - REVIEW_SAFETY_TOKENS
+        if self._count_chat_tokens(messages) <= input_tokens:
+            return
+        if (
+            custom_prompt
+            and self._count_chat_tokens(classification_messages(batch, "")) <= input_tokens
+        ):
+            raise ValueError("CUSTOM_PROMPT_CONTEXT_EXCEEDED")
+        raise ValueError("MODEL_REVIEW_CONTEXT_TOO_SMALL")
 
 
 def _collect_stream(

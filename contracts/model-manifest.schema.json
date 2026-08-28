@@ -68,11 +68,6 @@
     {
       "if": {"properties": {"trust": {"const": "local_unverified"}}},
       "then": {
-        "properties": {
-          "capabilities": {
-            "properties": {"full_review": {"const": false}}
-          }
-        },
         "not": {
           "anyOf": [
             {"required": ["quality_gate"]},

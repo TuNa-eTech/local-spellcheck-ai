@@ -252,6 +252,33 @@ describe("four-step desktop workflow", () => {
     expect(api.startJob).not.toHaveBeenCalled();
   });
 
+  it("shows an actionable error when custom rules exceed model context", async () => {
+    await loadApp({
+      start: () => Promise.reject("CUSTOM_PROMPT_CONTEXT_EXCEEDED"),
+    });
+    await chooseDocument();
+    document.querySelector<HTMLButtonElement>("#start")!.click();
+
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain(
+        "Quy tắc riêng quá dài so với dung lượng ngữ cảnh đang dùng",
+      ),
+    );
+    expect(document.body.textContent).toContain("Tệp gốc chưa bị thay đổi");
+    expect(document.querySelector("#start")).not.toBeNull();
+  });
+
+  it("keeps the generic processing message for unknown backend errors", async () => {
+    await loadApp({ start: () => Promise.reject(new Error("UNKNOWN_ENGINE_ERROR")) });
+    await chooseDocument();
+    document.querySelector<HTMLButtonElement>("#start")!.click();
+
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain("Không xử lý được tệp"),
+    );
+    expect(document.body.textContent).not.toContain("UNKNOWN_ENGINE_ERROR");
+  });
+
   it("keeps running and re-enables cancel when the backend declines cancellation", async () => {
     const job = deferred<JobResult>();
     const cancelAttempt = deferred<boolean>();

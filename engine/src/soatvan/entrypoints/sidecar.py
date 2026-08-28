@@ -180,8 +180,7 @@ class Sidecar:
         except Exception as error:
             temporary_output.unlink(missing_ok=True)
             code = error_code(error)
-            if code == "ENGINE_INTERNAL_ERROR":
-                traceback.print_exc(file=sys.stderr)
+            _log_dev_exception(f"job id={job_id}", error, code)
             emit(
                 {
                     "v": 1,
@@ -305,6 +304,18 @@ def error_code(error: Exception) -> str:
     return "ENGINE_INTERNAL_ERROR"
 
 
+def _log_dev_exception(context: str, error: Exception, code: str) -> None:
+    if os.environ.get("SOATVAN_DEV_LOG") != "1":
+        return
+    print(
+        f"[engine-error] {context} failed code={code} "
+        f"type={type(error).__name__}",
+        file=sys.stderr,
+        flush=True,
+    )
+    traceback.print_exception(type(error), error, error.__traceback__, file=sys.stderr)
+
+
 def main() -> None:
     sidecar = Sidecar()
     while True:
@@ -321,8 +332,7 @@ def main() -> None:
             emit({"v": 1, "id": request_id, "ok": True, "result": result})
         except Exception as error:  # protocol boundary intentionally catches all failures
             code = error_code(error)
-            if code == "ENGINE_INTERNAL_ERROR":
-                traceback.print_exc(file=sys.stderr)
+            _log_dev_exception(f"request id={request_id or '<unknown>'}", error, code)
             emit(
                 {
                     "v": 1,
@@ -354,6 +364,9 @@ def safe_message(code: str) -> str:
         "MODEL_FULL_REVIEW_UNSUPPORTED": "Model AI không hỗ trợ rà soát toàn văn.",
         "MODEL_FULL_REVIEW_FAILED": "Model AI không rà soát được nội dung tài liệu.",
         "MODEL_REVIEW_CONTEXT_TOO_SMALL": "Cửa sổ ngữ cảnh của model quá nhỏ để rà soát toàn văn.",
+        "CUSTOM_PROMPT_CONTEXT_EXCEEDED": (
+            "Quy tắc riêng quá dài so với cửa sổ ngữ cảnh đang dùng."
+        ),
         "CUSTOM_PROMPT_REQUIRES_MODEL": "Prompt riêng yêu cầu bật model AI.",
         "FULL_REVIEW_REQUIRES_MODEL": "Rà soát toàn văn yêu cầu bật model AI.",
         "INCLUDE_RULE_FINDINGS_REQUIRES_FULL_REVIEW": (

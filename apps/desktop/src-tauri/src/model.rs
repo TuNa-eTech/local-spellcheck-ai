@@ -10,6 +10,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
+const LOCAL_GEMMA_REVIEW_CONTEXT_TOKENS: u64 = 4096;
+const LOCAL_REVIEW_TIMEOUT_SECONDS: u64 = 600;
+pub(crate) const MAX_MODEL_TIMEOUT_SECONDS: u64 = 900;
+const _: () = assert!(LOCAL_REVIEW_TIMEOUT_SECONDS <= MAX_MODEL_TIMEOUT_SECONDS);
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelStatus {
     pub state: String,
@@ -133,13 +138,26 @@ impl ModelProvisioner {
         if eligible
             && manifest
                 .review_chunk_tokens
-                .is_none_or(|tokens| tokens > 500)
+                .map_or(true, |tokens| tokens > 500)
         {
             manifest.review_chunk_tokens = Some(500);
             changed = true;
         }
-        if eligible && manifest.timeout_seconds.is_none_or(|seconds| seconds < 300) {
-            manifest.timeout_seconds = Some(300);
+        if eligible
+            && manifest
+                .timeout_seconds
+                .map_or(true, |seconds| seconds < LOCAL_REVIEW_TIMEOUT_SECONDS)
+        {
+            manifest.timeout_seconds = Some(LOCAL_REVIEW_TIMEOUT_SECONDS);
+            changed = true;
+        }
+        let local_context_size = local_review_context_size(&manifest.model_id);
+        if eligible
+            && manifest
+                .context_size
+                .map_or(true, |tokens| tokens < local_context_size)
+        {
+            manifest.context_size = Some(local_context_size);
             changed = true;
         }
         if changed {
@@ -294,11 +312,7 @@ impl ModelProvisioner {
             || manifest
                 .review_chunk_tokens
                 .is_some_and(|value| !(64..=32_768).contains(&value))
-            || !valid_runtime_window(
-                manifest.context_size,
-                manifest.max_tokens,
-                manifest.review_chunk_tokens,
-            )
+            || !valid_runtime_window(manifest.context_size, manifest.max_tokens)
             || !valid_timeout_seconds(manifest.timeout_seconds)
             || manifest
                 .minimum_confidence
@@ -412,6 +426,7 @@ impl ModelProvisioner {
             b"Locally imported GGUF. No license or release approval was supplied.\n",
         )?;
 
+        let context_size = local_review_context_size(&model_id);
         let manifest = Manifest {
             schema_version: 2,
             model_id,
@@ -422,11 +437,11 @@ impl ModelProvisioner {
             sha256,
             license_file: license_name.to_string(),
             memory_mb: None,
-            context_size: Some(2048),
+            context_size: Some(context_size),
             batch_size: Some(8),
             max_tokens: Some(512),
             review_chunk_tokens: Some(500),
-            timeout_seconds: Some(300),
+            timeout_seconds: Some(LOCAL_REVIEW_TIMEOUT_SECONDS),
             seed: Some(42),
             minimum_confidence: Some(0.8),
             trust: ModelTrust::LocalUnverified,
@@ -657,7 +672,7 @@ fn valid_model_id(value: &str) -> bool {
 
 fn valid_timeout_seconds(value: Option<u64>) -> bool {
     match value {
-        Some(seconds) => (1..=900).contains(&seconds),
+        Some(seconds) => (1..=MAX_MODEL_TIMEOUT_SECONDS).contains(&seconds),
         None => true,
     }
 }
@@ -694,15 +709,19 @@ fn local_model_id(file_stem: &str) -> String {
     format!("local-{}", if slug.is_empty() { "gguf" } else { slug })
 }
 
-fn valid_runtime_window(
-    context_size: Option<u64>,
-    max_tokens: Option<u64>,
-    review_chunk_tokens: Option<u64>,
-) -> bool {
+fn valid_runtime_window(context_size: Option<u64>, max_tokens: Option<u64>) -> bool {
     let available = context_size
         .unwrap_or(2048)
         .saturating_sub(max_tokens.unwrap_or(512).saturating_add(256));
-    available >= 64 && review_chunk_tokens.map_or(true, |value| value <= available)
+    available >= 64
+}
+
+fn local_review_context_size(model_id: &str) -> u64 {
+    if model_id.starts_with("gemma-4-") {
+        LOCAL_GEMMA_REVIEW_CONTEXT_TOKENS
+    } else {
+        2048
+    }
 }
 
 fn valid_quality_gate(value: &QualityGate) -> bool {
@@ -821,11 +840,11 @@ mod tests {
         assert!(!valid_quality_gate(
             manifest.quality_gate.as_ref().expect("quality gate")
         ));
-        assert!(valid_timeout_seconds(Some(900)));
-        assert!(!valid_timeout_seconds(Some(901)));
-        assert!(valid_runtime_window(Some(2048), Some(512), Some(1200)));
-        assert!(!valid_runtime_window(Some(512), Some(512), None));
-        assert!(!valid_runtime_window(Some(1024), Some(512), Some(1200)));
+        assert!(valid_timeout_seconds(Some(MAX_MODEL_TIMEOUT_SECONDS)));
+        assert!(!valid_timeout_seconds(Some(MAX_MODEL_TIMEOUT_SECONDS + 1)));
+        assert!(valid_runtime_window(Some(2048), Some(512)));
+        assert!(!valid_runtime_window(Some(512), Some(512)));
+        assert!(valid_runtime_window(Some(1024), Some(512)));
         manifest.review_chunk_tokens = Some(63);
         assert!(manifest
             .review_chunk_tokens
@@ -944,6 +963,8 @@ mod tests {
         assert_eq!(manifest.model_id, "gemma-4-e2b");
         assert_eq!(manifest.version, "local");
         assert_eq!(manifest.trust, ModelTrust::LocalUnverified);
+        assert_eq!(manifest.context_size, Some(4096));
+        assert_eq!(manifest.timeout_seconds, Some(600));
         assert!(manifest.capabilities.candidate_filter);
         assert!(manifest.capabilities.full_review);
         assert!(manifest.quality_gate.is_none());
@@ -993,6 +1014,7 @@ mod tests {
         let root = folder.path().join("models");
         fs::create_dir_all(root.join("active")).unwrap();
         let mut manifest = manifest_for(b"model");
+        manifest.model_id = "gemma-4-e2b".into();
         manifest.trust = ModelTrust::LocalUnverified;
         manifest.capabilities.full_review = false;
         manifest.quality_gate = None;
@@ -1011,8 +1033,9 @@ mod tests {
             serde_json::from_slice(&fs::read(root.join("active/manifest.json")).unwrap()).unwrap();
         assert_eq!(migrated.trust, ModelTrust::LocalUnverified);
         assert!(migrated.capabilities.full_review);
+        assert_eq!(migrated.context_size, Some(4096));
         assert_eq!(migrated.review_chunk_tokens, Some(500));
-        assert_eq!(migrated.timeout_seconds, Some(300));
+        assert_eq!(migrated.timeout_seconds, Some(600));
         assert!(migrated.quality_gate.is_none());
         assert!(migrated.signature.is_none());
     }

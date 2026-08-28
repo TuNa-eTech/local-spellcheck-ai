@@ -36,14 +36,37 @@ impl EngineBroker {
         let mut command = engine_command(app, data_dir)?;
         #[cfg(windows)]
         command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        #[cfg(debug_assertions)]
+        command.stderr(Stdio::piped());
+        #[cfg(not(debug_assertions))]
+        command.stderr(Stdio::null());
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
             .spawn()?;
         let parent_job = attach_kill_on_parent(&child)?;
         let input = child.stdin.take().ok_or(AppError::EngineUnavailable)?;
         let output = child.stdout.take().ok_or(AppError::EngineUnavailable)?;
+        #[cfg(debug_assertions)]
+        if let Some(stderr) = child.stderr.take() {
+            if let Err(error) = thread::Builder::new()
+                .name("soatvan-engine-stderr".into())
+                .spawn(move || {
+                    for line in BufReader::new(stderr).lines() {
+                        match line {
+                            Ok(line) => eprintln!("[soatvan-sidecar] {line}"),
+                            Err(error) => {
+                                eprintln!("[soatvan-sidecar] stderr read failed: {error}");
+                                break;
+                            }
+                        }
+                    }
+                })
+            {
+                let _ = child.kill();
+                return Err(error.into());
+            }
+        }
         let waiters: Waiters = Arc::new(Mutex::new(HashMap::new()));
         let jobs: JobWaiters = Arc::new(Mutex::new(HashMap::new()));
         let reader_waiters = Arc::clone(&waiters);
@@ -219,6 +242,7 @@ fn engine_command(app: &AppHandle, data_dir: &std::path::Path) -> AppResult<Comm
             "soatvan.entrypoints.sidecar",
         ]);
         command.env("SOATVAN_DATA_DIR", data_dir);
+        command.env("SOATVAN_DEV_LOG", "1");
         command.env("PYTHONUNBUFFERED", "1");
         command.env("PYTHONIOENCODING", "utf-8");
         if let Some(public_key) = option_env!("SOATVAN_MODEL_PUBLIC_KEY") {

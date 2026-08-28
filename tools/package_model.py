@@ -149,7 +149,7 @@ def package_model(
         or not 1 <= batch_size <= 64
         or not 32 <= max_tokens <= 4096
         or not 64 <= review_chunk_tokens <= 32768
-        or context_size - max_tokens - 256 < review_chunk_tokens
+        or context_size - max_tokens - 256 < 64
         or not 1 <= timeout_seconds <= 900
         or not math.isfinite(minimum_confidence)
         or not 0 <= minimum_confidence <= 1

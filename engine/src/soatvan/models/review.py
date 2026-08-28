@@ -7,6 +7,10 @@ from dataclasses import dataclass
 
 from soatvan.checking.domain import Block
 from soatvan.checking.localization import localize_llm_edit
+from soatvan.models.review_budget import (
+    MIN_REVIEW_DOCUMENT_TOKENS,
+    ReviewBudget,
+)
 from soatvan.workflow.ports import (
     ClassifierVerdict,
     DiscoveryProposal,
@@ -43,7 +47,7 @@ LLM_ONLY_REVIEW_SYSTEM_PROMPT = (
     "suggestion là cách sửa ngắn gọn. occurrence_index là số lần xuất hiện tính từ 0 trong "
     "đúng segment target. Không báo lỗi ở context, không sửa toàn đoạn, không tự bịa "
     "segment_id và không dùng offset. Chỉ trả JSON theo schema với trường discoveries. "
-    "Nếu không có lỗi, trả {\"discoveries\":[]}. Dùng category=technical cho lỗi khoảng "
+    'Nếu không có lỗi, trả {"discoveries":[]}. Dùng category=technical cho lỗi khoảng '
     "trắng, dấu câu hoặc lặp từ."
 )
 
@@ -192,18 +196,32 @@ class ReviewChunk:
         }
         if self.candidates:
             payload["candidates"] = [
-                _candidate_payload(item, self.targets)
-                for item in self.candidates
+                _candidate_payload(item, self.targets) for item in self.candidates
             ]
         return payload
+
+
+def review_messages(chunk: ReviewChunk) -> list[dict[str, str]]:
+    llm_only = not chunk.candidates
+    return [
+        {
+            "role": "system",
+            "content": (LLM_ONLY_REVIEW_SYSTEM_PROMPT if llm_only else REVIEW_SYSTEM_PROMPT),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(chunk.payload(), ensure_ascii=False, separators=(",", ":")),
+        },
+    ]
 
 
 def plan_review_chunks(
     blocks: tuple[Block, ...],
     candidates: tuple[ReviewCandidate, ...],
     custom_prompt: str,
-    max_tokens: int,
+    budget: ReviewBudget,
     count_tokens: Callable[[str], int],
+    count_request_tokens: Callable[[ReviewChunk], int],
     max_candidates: int = MAX_REVIEW_CANDIDATES,
     cancellation: Callable[[], None] | None = None,
 ) -> tuple[ReviewChunk, ...]:
@@ -211,13 +229,11 @@ def plan_review_chunks(
         cancellation()
     if not blocks:
         return ()
-    if max_tokens < 1 or max_candidates < 1:
+    if max_candidates < 1:
         raise ValueError("MODEL_REVIEW_CONTEXT_TOO_SMALL")
-    empty_payload: dict[str, object] = {"custom_rule": custom_prompt, "segments": []}
-    if candidates:
-        empty_payload["candidates"] = []
-    base_payload = json.dumps(empty_payload, ensure_ascii=False, separators=(",", ":"))
-    segment_budget = max(1, max_tokens - count_tokens(base_payload) - 32)
+    segment_budget = _effective_document_budget(
+        blocks[0], custom_prompt, budget, count_request_tokens
+    )
     candidates_by_block: dict[str, list[ReviewCandidate]] = {}
     for candidate in candidates:
         if cancellation:
@@ -242,9 +258,11 @@ def plan_review_chunks(
                     segment,
                     candidates,
                     custom_prompt,
-                    max_tokens,
+                    budget,
+                    segment_budget,
                     max_candidates,
                     count_tokens,
+                    count_request_tokens,
                     cancellation,
                 )
             )
@@ -258,10 +276,15 @@ def plan_review_chunks(
         proposed_candidates = _candidates_for_segments(proposed, candidates)
         if current and (
             len(proposed_candidates) > max_candidates
-            or _payload_tokens(
-                proposed, (), proposed_candidates, custom_prompt, count_tokens
+            or _document_tokens(proposed, count_tokens) > segment_budget
+            or _request_tokens(
+                proposed,
+                (),
+                proposed_candidates,
+                custom_prompt,
+                count_request_tokens,
             )
-            > max_tokens
+            > budget.input_tokens
         ):
             groups.append(current)
             current = [segment]
@@ -285,9 +308,17 @@ def plan_review_chunks(
                 if neighbor.segment_id not in target_ids:
                     context.append(neighbor)
         chunk_candidates = _candidates_for_segments(targets, candidates)
-        while context and _payload_tokens(
-            targets, context, chunk_candidates, custom_prompt, count_tokens
-        ) > max_tokens:
+        while (
+            context
+            and _request_tokens(
+                targets,
+                context,
+                chunk_candidates,
+                custom_prompt,
+                count_request_tokens,
+            )
+            > budget.input_tokens
+        ):
             context.pop()
         chunks.append(
             ReviewChunk(
@@ -556,9 +587,7 @@ def _split_block(
             end = min(len(block.text), start + 1)
         text = block.text[start:end]
         segments.append(
-            ReviewSegment(
-                f"{block.id}@{start}:{end}", block.id, order, start, text, block.kind
-            )
+            ReviewSegment(f"{block.id}@{start}:{end}", block.id, order, start, text, block.kind)
         )
         start = end
     return segments
@@ -568,27 +597,34 @@ def _fit_segment(
     segment: ReviewSegment,
     candidates: tuple[ReviewCandidate, ...],
     custom_prompt: str,
-    max_tokens: int,
+    budget: ReviewBudget,
+    document_tokens: int,
     max_candidates: int,
     count_tokens: Callable[[str], int],
+    count_request_tokens: Callable[[ReviewChunk], int],
     cancellation: Callable[[], None] | None = None,
 ) -> list[ReviewSegment]:
     if cancellation:
         cancellation()
-    block_candidates = tuple(
-        item for item in candidates if item.block_id == segment.block_id
-    )
+    block_candidates = tuple(item for item in candidates if item.block_id == segment.block_id)
     segment_candidates = _candidates_for_segments((segment,), block_candidates)
     if (
         len(segment_candidates) <= max_candidates
-        and _payload_tokens(
-            (segment,), (), segment_candidates, custom_prompt, count_tokens
+        and count_tokens(segment.text) <= document_tokens
+        and _request_tokens(
+            (segment,),
+            (),
+            segment_candidates,
+            custom_prompt,
+            count_request_tokens,
         )
-        <= max_tokens
+        <= budget.input_tokens
     ):
         return [segment]
     if len(segment.text) <= 1:
-        raise ValueError("MODEL_REVIEW_CONTEXT_TOO_SMALL")
+        raise _request_context_error(
+            (segment,), segment_candidates, custom_prompt, budget, count_request_tokens
+        )
 
     local_end = _preferred_boundary(segment.text, 0, max(1, len(segment.text) // 2))
     split = _safe_split_boundary(
@@ -621,18 +657,22 @@ def _fit_segment(
             left,
             block_candidates,
             custom_prompt,
-            max_tokens,
+            budget,
+            document_tokens,
             max_candidates,
             count_tokens,
+            count_request_tokens,
             cancellation,
         ),
         *_fit_segment(
             right,
             block_candidates,
             custom_prompt,
-            max_tokens,
+            budget,
+            document_tokens,
             max_candidates,
             count_tokens,
+            count_request_tokens,
             cancellation,
         ),
     ]
@@ -717,23 +757,69 @@ def _candidates_for_segments(
     return selected
 
 
-def _payload_tokens(
+def _request_tokens(
     targets: list[ReviewSegment] | tuple[ReviewSegment, ...],
     context: list[ReviewSegment] | tuple[ReviewSegment, ...],
     candidates: list[ReviewCandidate] | tuple[ReviewCandidate, ...],
     custom_prompt: str,
-    count_tokens: Callable[[str], int],
+    count_request_tokens: Callable[[ReviewChunk], int],
 ) -> int:
     chunk = ReviewChunk("measure", tuple(targets), tuple(context), tuple(candidates), custom_prompt)
-    serialized = json.dumps(chunk.payload(), ensure_ascii=False, separators=(",", ":"))
-    return count_tokens(serialized)
+    return count_request_tokens(chunk)
+
+
+def _document_tokens(
+    segments: list[ReviewSegment] | tuple[ReviewSegment, ...],
+    count_tokens: Callable[[str], int],
+) -> int:
+    return sum(count_tokens(item.text) for item in segments)
+
+
+def _effective_document_budget(
+    block: Block,
+    custom_prompt: str,
+    budget: ReviewBudget,
+    count_request_tokens: Callable[[ReviewChunk], int],
+) -> int:
+    probe = ReviewSegment(
+        f"{block.id}@0:0",
+        block.id,
+        0,
+        0,
+        "",
+        block.kind,
+    )
+    base_chunk = ReviewChunk("budget-probe", (probe,), (), (), "")
+    base_limit = budget.document_limit(count_request_tokens(base_chunk))
+    if base_limit < MIN_REVIEW_DOCUMENT_TOKENS:
+        raise ValueError("MODEL_REVIEW_CONTEXT_TOO_SMALL")
+    if not custom_prompt:
+        return base_limit
+    custom_chunk = ReviewChunk("budget-probe", (probe,), (), (), custom_prompt)
+    custom_limit = budget.document_limit(count_request_tokens(custom_chunk))
+    if custom_limit < MIN_REVIEW_DOCUMENT_TOKENS:
+        raise ValueError("CUSTOM_PROMPT_CONTEXT_EXCEEDED")
+    return custom_limit
+
+
+def _request_context_error(
+    targets: tuple[ReviewSegment, ...],
+    candidates: list[ReviewCandidate],
+    custom_prompt: str,
+    budget: ReviewBudget,
+    count_request_tokens: Callable[[ReviewChunk], int],
+) -> ValueError:
+    base_tokens = _request_tokens(targets, (), candidates, "", count_request_tokens)
+    if base_tokens > budget.input_tokens:
+        return ValueError("MODEL_REVIEW_CONTEXT_TOO_SMALL")
+    if custom_prompt:
+        return ValueError("CUSTOM_PROMPT_CONTEXT_EXCEEDED")
+    return ValueError("MODEL_REVIEW_CONTEXT_TOO_SMALL")
 
 
 def _valid_confidence(value: object) -> bool:
     return (
-        not isinstance(value, bool)
-        and isinstance(value, (int, float))
-        and 0 <= float(value) <= 1
+        not isinstance(value, bool) and isinstance(value, (int, float)) and 0 <= float(value) <= 1
     )
 
 

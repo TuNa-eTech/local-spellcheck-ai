@@ -265,9 +265,6 @@ def _runtime_config_approved(manifest: dict[str, Any]) -> bool:
     available_review_tokens = context_size - max_tokens - 256
     if available_review_tokens < 64:
         return False
-    review_chunk_tokens = manifest.get("review_chunk_tokens")
-    if review_chunk_tokens is not None and review_chunk_tokens > available_review_tokens:
-        return False
     seed = manifest.get("seed")
     if seed is not None and (isinstance(seed, bool) or not isinstance(seed, int)):
         return False

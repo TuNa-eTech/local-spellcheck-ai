@@ -11,7 +11,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from soatvan.models import LlamaCppClassifier, ModelInferenceTimeout, ModelRegistry
-from soatvan.models.classifier import _preferred_gpu_layers
+from soatvan.models.classifier import _NativeLlamaRuntime, _preferred_gpu_layers
 from soatvan.workflow.ports import ClassificationCandidate
 
 
@@ -32,6 +32,55 @@ class Runtime:
 
     def close(self) -> None:
         self.closed = True
+
+
+def test_native_runtime_counts_the_same_rendered_chat_template_used_for_inference() -> None:
+    class Formatted:
+        prompt = "<bos>rendered chat<assistant>"
+        added_special = True
+
+    class Formatter:
+        def __init__(self, **_: Any) -> None:
+            pass
+
+        def __call__(self, **_: Any) -> Formatted:
+            return Formatted()
+
+    class Model:
+        def token_get_text(self, token_id: int) -> str:
+            return {1: "<eos>", 2: "<bos>"}[token_id]
+
+    class Native:
+        chat_handler = None
+        chat_format = "chat_template.default"
+        metadata = {"tokenizer.chat_template": "unused test template"}
+        _model = Model()
+
+        def __init__(self) -> None:
+            self.tokenize_calls: list[tuple[bytes, bool, bool]] = []
+
+        def token_eos(self) -> int:
+            return 1
+
+        def token_bos(self) -> int:
+            return 2
+
+        def tokenize(self, value: bytes, add_bos: bool, special: bool) -> list[int]:
+            self.tokenize_calls.append((value, add_bos, special))
+            return [10, 11, 12]
+
+    class ChatFormatModule:
+        Jinja2ChatFormatter = Formatter
+
+    class Module:
+        llama_chat_format = ChatFormatModule()
+
+    native = Native()
+    runtime = _NativeLlamaRuntime(native, Module())
+    messages = [{"role": "user", "content": "Nội dung"}]
+
+    assert runtime.count_chat_tokens(messages) == 3
+    assert native.tokenize_calls == [(b"<bos>rendered chat<assistant>", False, True)]
 
 
 def test_runtime_enables_gpu_layers_only_when_backend_supports_offload() -> None:
@@ -88,6 +137,31 @@ def test_llama_classifier_accepts_only_schema_constrained_known_candidates(tmp_p
     assert prompt["candidates"][0]["source_text"] == "sát nhập"
 
 
+def test_classifier_rejects_custom_prompt_that_exceeds_input_context(
+    tmp_path: Path,
+) -> None:
+    class CountingRuntime(Runtime):
+        def count_chat_tokens(self, messages: list[dict[str, str]]) -> int:
+            return 1400 if '"custom_rule":""' not in messages[1]["content"] else 200
+
+    runtime = CountingRuntime('{"verdicts":[]}')
+    classifier = LlamaCppClassifier(
+        tmp_path / "model.gguf",
+        {
+            "model_id": "test",
+            "version": "1",
+            "context_size": 2048,
+            "max_tokens": 512,
+        },
+        lambda *_: runtime,
+    )
+
+    with pytest.raises(ValueError, match="CUSTOM_PROMPT_CONTEXT_EXCEEDED"):
+        classifier.classify((candidate(),), "quy tắc dài", Token())
+
+    assert runtime.calls == []
+
+
 def test_malformed_classifier_output_fails_closed(tmp_path: Path) -> None:
     classifier = LlamaCppClassifier(
         tmp_path / "model.gguf",
@@ -100,11 +174,7 @@ def test_malformed_classifier_output_fails_closed(tmp_path: Path) -> None:
 def test_classifier_rejects_an_incomplete_batch_of_verdicts(tmp_path: Path) -> None:
     runtime = Runtime(
         json.dumps(
-            {
-                "verdicts": [
-                    {"candidate_id": "candidate-1", "verdict": "drop", "confidence": 1}
-                ]
-            }
+            {"verdicts": [{"candidate_id": "candidate-1", "verdict": "drop", "confidence": 1}]}
         )
     )
     classifier = LlamaCppClassifier(
@@ -119,10 +189,11 @@ def test_classifier_rejects_an_incomplete_batch_of_verdicts(tmp_path: Path) -> N
 def test_streaming_classifier_collects_json_and_enforces_deadline(tmp_path: Path) -> None:
     class StreamingRuntime:
         def create_chat_completion(self, **_: Any):
-            content = '{"verdicts":[{"candidate_id":"candidate-1","verdict":"keep","confidence":1}]}'
+            content = (
+                '{"verdicts":[{"candidate_id":"candidate-1","verdict":"keep","confidence":1}]}'
+            )
             return iter(
-                {"choices": [{"delta": {"content": part}}]}
-                for part in (content[:20], content[20:])
+                {"choices": [{"delta": {"content": part}}]} for part in (content[:20], content[20:])
             )
 
     classifier = LlamaCppClassifier(
@@ -260,12 +331,17 @@ def test_registry_only_reports_ready_after_integrity_and_smoke_load(tmp_path: Pa
     manifest.pop("timeout_seconds")
     write_signed()
     assert registry.status()["state"] == "ready"
-    manifest["context_size"] = 512
+    manifest["context_size"] = 1024
     manifest["max_tokens"] = 512
+    manifest["review_chunk_tokens"] = 1200
+    write_signed()
+    assert registry.status()["state"] == "ready"
+    manifest["context_size"] = 512
     write_signed()
     assert registry.status() == {"state": "invalid", "code": "MODEL_MANIFEST_INVALID"}
     manifest.pop("context_size")
     manifest.pop("max_tokens")
+    manifest.pop("review_chunk_tokens")
     write_signed()
     assert registry.status(activate=False)["state"] == "installed"
     assert runtime.closed is True

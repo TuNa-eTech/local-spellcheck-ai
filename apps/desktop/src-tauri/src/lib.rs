@@ -4,7 +4,7 @@ mod sidecar;
 
 use crate::{
     error::{AppError, AppResult},
-    model::{ModelProvisioner, ModelStatus},
+    model::{ModelProvisioner, ModelStatus, MAX_MODEL_TIMEOUT_SECONDS},
     sidecar::EngineBroker,
 };
 use serde::{Deserialize, Serialize};
@@ -27,6 +27,12 @@ use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 use tokio::sync::Mutex as AsyncMutex;
+
+const MODEL_JOB_IDLE_GRACE_SECONDS: u64 = 120;
+
+fn model_job_idle_timeout() -> Duration {
+    Duration::from_secs(MAX_MODEL_TIMEOUT_SECONDS + MODEL_JOB_IDLE_GRACE_SECONDS)
+}
 
 struct AppState {
     engine: EngineBroker,
@@ -266,8 +272,10 @@ async fn start_job(request: StartJobRequest, state: State<'_, AppState>) -> AppR
             rule_config: &rule_options,
             ignored_words: &ignored_words,
         })?,
-        // EngineBroker resets this inactivity deadline on every job.progress event.
-        Duration::from_secs(10 * 60),
+        // Every model attempt emits job.progress before it starts. Keep this
+        // watchdog above the largest allowed per-attempt deadline so slow
+        // machines can reach the next sequential retry without a host race.
+        model_job_idle_timeout(),
     );
     let response = match response {
         Ok(value) => value,
@@ -1243,6 +1251,11 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_job_watchdog_exceeds_every_valid_attempt_timeout() {
+        assert!(model_job_idle_timeout() > Duration::from_secs(MAX_MODEL_TIMEOUT_SECONDS));
+    }
 
     fn write_test_docx(path: &Path) {
         let file = fs::File::create(path).expect("create DOCX");
