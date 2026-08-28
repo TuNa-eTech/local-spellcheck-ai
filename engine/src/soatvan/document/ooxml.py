@@ -23,6 +23,11 @@ MAX_ARCHIVE_BYTES = 128 * 1024 * 1024
 MAX_UNCOMPRESSED = 256 * 1024 * 1024
 MAX_RATIO = 200
 REQUIRED_PARTS = frozenset({"[Content_Types].xml", "_rels/.rels", "word/document.xml"})
+CERTAIN_CONFIDENCE_THRESHOLD = 0.9
+
+
+def _highlight_color(finding: Finding) -> str:
+    return "red" if finding.confidence >= CERTAIN_CONFIDENCE_THRESHOLD else "yellow"
 
 
 def _projected_paragraph_text(paragraph: etree._Element) -> str:
@@ -265,7 +270,7 @@ class DocxPackage:
             highlight = props.find(f"{{{W}}}highlight")
             if highlight is None:
                 highlight = etree.SubElement(props, f"{{{W}}}highlight")
-            highlight.set(f"{{{W}}}val", "yellow")
+            highlight.set(f"{{{W}}}val", _highlight_color(finding))
         first, last = selected[0], selected[-1]
         start_marker = etree.Element(f"{{{W}}}commentRangeStart")
         start_marker.set(f"{{{W}}}id", str(comment_id))

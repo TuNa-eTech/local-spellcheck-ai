@@ -88,8 +88,36 @@ def test_split_run_annotation_preserves_source_and_unrelated_parts(
         assert (
             "".join(document.xpath("//w:t/text()", namespaces=NS)) == "Văn bản sát nhập  nội dung."
         )
-        assert len(document.xpath("//w:highlight[@w:val='yellow']", namespaces=NS)) == 3
+        assert len(document.xpath("//w:highlight[@w:val='red']", namespaces=NS)) == 3
         assert len(comments.xpath("//w:comment", namespaces=NS)) == 2
+
+
+def test_highlight_color_reflects_finding_confidence(make_docx, tmp_path: Path) -> None:
+    source = make_docx([["sát nhập và xử lí"]])
+    original = source.read_bytes()
+    package = DocxPackage()
+    findings = RuleEngine().check(package.read_blocks(source), Preset.STANDARD)
+    certain = replace(
+        next(item for item in findings if item.source_text == "sát nhập"),
+        confidence=0.9,
+    )
+    uncertain = replace(
+        next(item for item in findings if item.source_text == "xử lí"),
+        confidence=0.89,
+    )
+    output = tmp_path / "confidence-colors.docx"
+
+    assert package.write_annotations(source, output, [certain, uncertain]).count == 2
+    assert source.read_bytes() == original
+    with zipfile.ZipFile(output) as archive:
+        document = etree.fromstring(archive.read("word/document.xml"))
+    highlighted = {
+        run.xpath("string(./w:t)", namespaces=NS): run.xpath(
+            "string(./w:rPr/w:highlight/@w:val)", namespaces=NS
+        )
+        for run in document.xpath("//w:r[w:rPr/w:highlight]", namespaces=NS)
+    }
+    assert highlighted == {"sát nhập": "red", "xử lí": "yellow"}
 
 
 def test_flat_finding_is_annotated_in_a_paragraph_with_nested_ooxml(
@@ -128,7 +156,7 @@ def test_flat_finding_is_annotated_in_a_paragraph_with_nested_ooxml(
     assert document.xpath("string(//w:hyperlink//w:t)", namespaces=NS) == "li\u00ean k\u1ebft "
     assert document.xpath("string(//w:ins//w:t)", namespaces=NS) == "theo d\u00f5i "
     assert document.xpath("string(//w:sdt//w:t)", namespaces=NS) == "n\u1ed9i dung"
-    assert len(document.xpath("//w:highlight[@w:val='yellow']", namespaces=NS)) == 1
+    assert len(document.xpath("//w:highlight[@w:val='red']", namespaces=NS)) == 1
     assert len(comments.xpath("//w:comment", namespaces=NS)) == 1
 
     crossing_text = "s\u00e1t nh\u1eadp li\u00ean"
