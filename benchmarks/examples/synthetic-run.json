@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "run_id": "synthetic-baseline-v1",
+  "corpus_id": "synthetic-example-v1",
+  "configuration": {
+    "prompt_id": "prompt-baseline",
+    "model_id": "synthetic-model",
+    "model_version": "1",
+    "quantization": "Q4_K_M"
+  },
+  "performance": {
+    "latency_seconds": 12.5,
+    "peak_rss_mb": 2048.0
+  },
+  "quality": {
+    "status": "complete",
+    "coverage_percent": 100.0,
+    "timeout_chunks": 0,
+    "invalid_output_chunks": 0,
+    "truncated_outputs": 0
+  },
+  "documents": [
+    {
+      "document_id": "synthetic-doc-01",
+      "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "findings": [
+        {
+          "id": "F001",
+          "category": "spelling",
+          "origin": "llm",
+          "detector_id": "synthetic.spelling",
+          "block_id": "document:p0",
+          "start": 0,
+          "end": 5,
+          "source_text": "xữ lý",
+          "suggestion": "xử lý",
+          "reason": "Lỗi chính tả.",
+          "rule_version": "synthetic-v1",
+          "confidence": 0.96
+        },
+        {
+          "id": "F002",
+          "category": "word_choice",
+          "origin": "llm",
+          "detector_id": "synthetic.word_choice",
+          "block_id": "document:p0",
+          "start": 7,
+          "end": 13,
+          "source_text": "kì hạn",
+          "suggestion": "kỳ hạn",
+          "reason": "Biến thể chính tả tùy chọn.",
+          "rule_version": "synthetic-v1",
+          "confidence": 0.89
+        },
+        {
+          "id": "F003",
+          "category": "word_choice",
+          "origin": "llm",
+          "detector_id": "synthetic.false_positive",
+          "block_id": "document:p0",
+          "start": 15,
+          "end": 21,
+          "source_text": "OpenAI",
+          "suggestion": "Open AI",
+          "reason": "Báo sai trên tên riêng.",
+          "rule_version": "synthetic-v1",
+          "confidence": 0.91
+        },
+        {
+          "id": "F004",
+          "category": "technical",
+          "origin": "llm",
+          "detector_id": "synthetic.wrong_anchor",
+          "block_id": "document:p1",
+          "start": 5,
+          "end": 9,
+          "source_text": "2026",
+          "suggestion": "2027",
+          "reason": "Không khớp chính xác anchor lỗi ngày.",
+          "rule_version": "synthetic-v1",
+          "confidence": 0.82
+        }
+      ]
+    }
+  ]
+}

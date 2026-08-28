@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "corpus_id": "synthetic-example-v1",
+  "provenance": "synthetic_example",
+  "documents": [
+    {
+      "document_id": "synthetic-doc-01",
+      "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "annotations": [
+        {
+          "id": "E001",
+          "disposition": "required",
+          "category": "spelling",
+          "block_id": "document:p0",
+          "start": 0,
+          "end": 5,
+          "source_text": "xữ lý",
+          "accepted_suggestions": ["xử lý"]
+        },
+        {
+          "id": "E002",
+          "disposition": "required",
+          "category": "date",
+          "block_id": "document:p1",
+          "start": 0,
+          "end": 9,
+          "source_text": "31-6-2026",
+          "accepted_suggestions": ["30-6-2026"]
+        },
+        {
+          "id": "O001",
+          "disposition": "optional",
+          "category": "word_choice",
+          "block_id": "document:p0",
+          "start": 7,
+          "end": 13,
+          "source_text": "kì hạn",
+          "accepted_suggestions": ["kỳ hạn"]
+        },
+        {
+          "id": "N001",
+          "disposition": "must_not_warn",
+          "category": "proper_name",
+          "block_id": "document:p0",
+          "start": 15,
+          "end": 21,
+          "source_text": "OpenAI",
+          "note": "Tên riêng đúng, không được tự ý chèn khoảng trắng."
+        }
+      ]
+    }
+  ]
+}

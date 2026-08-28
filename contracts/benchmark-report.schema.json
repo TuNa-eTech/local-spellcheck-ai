@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://soatvan.local/contracts/benchmark-report.schema.json",
+  "title": "SoatVan benchmark evaluation report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "corpus_id",
+    "run_id",
+    "corpus_sha256",
+    "run_sha256",
+    "configuration",
+    "performance",
+    "quality",
+    "confidence_threshold",
+    "totals",
+    "by_category",
+    "by_confidence",
+    "documents",
+    "outcomes"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "corpus_id": {"type": "string", "minLength": 1},
+    "run_id": {"type": "string", "minLength": 1},
+    "corpus_sha256": {"$ref": "#/$defs/sha256"},
+    "run_sha256": {"$ref": "#/$defs/sha256"},
+    "configuration": {"type": "object"},
+    "performance": {"type": "object"},
+    "quality": {"type": "object"},
+    "confidence_threshold": {"type": "number", "minimum": 0, "maximum": 1},
+    "totals": {"$ref": "#/$defs/score"},
+    "by_category": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/score"}
+    },
+    "by_confidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["certain", "uncertain"],
+      "properties": {
+        "certain": {"$ref": "#/$defs/prediction_score"},
+        "uncertain": {"$ref": "#/$defs/prediction_score"}
+      }
+    },
+    "documents": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["document_id", "score"],
+        "properties": {
+          "document_id": {"type": "string", "minLength": 1},
+          "score": {"$ref": "#/$defs/score"}
+        }
+      }
+    },
+    "outcomes": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/outcome"}
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "score": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ground_truth_required",
+        "ground_truth_optional",
+        "ground_truth_must_not_warn",
+        "findings",
+        "scored_findings",
+        "true_positive",
+        "false_positive",
+        "false_negative",
+        "optional_accepted",
+        "explicit_negative_hits",
+        "precision",
+        "recall",
+        "f1"
+      ],
+      "properties": {
+        "ground_truth_required": {"type": "integer", "minimum": 0},
+        "ground_truth_optional": {"type": "integer", "minimum": 0},
+        "ground_truth_must_not_warn": {"type": "integer", "minimum": 0},
+        "findings": {"type": "integer", "minimum": 0},
+        "scored_findings": {"type": "integer", "minimum": 0},
+        "true_positive": {"type": "integer", "minimum": 0},
+        "false_positive": {"type": "integer", "minimum": 0},
+        "false_negative": {"type": "integer", "minimum": 0},
+        "optional_accepted": {"type": "integer", "minimum": 0},
+        "explicit_negative_hits": {"type": "integer", "minimum": 0},
+        "precision": {"type": "number", "minimum": 0, "maximum": 1},
+        "recall": {"type": "number", "minimum": 0, "maximum": 1},
+        "f1": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    },
+    "prediction_score": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "findings",
+        "scored_findings",
+        "true_positive",
+        "false_positive",
+        "optional_accepted",
+        "explicit_negative_hits",
+        "precision"
+      ],
+      "properties": {
+        "findings": {"type": "integer", "minimum": 0},
+        "scored_findings": {"type": "integer", "minimum": 0},
+        "true_positive": {"type": "integer", "minimum": 0},
+        "false_positive": {"type": "integer", "minimum": 0},
+        "optional_accepted": {"type": "integer", "minimum": 0},
+        "explicit_negative_hits": {"type": "integer", "minimum": 0},
+        "precision": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "document_id",
+        "outcome",
+        "reason",
+        "category",
+        "ground_truth_id",
+        "finding_id"
+      ],
+      "properties": {
+        "document_id": {"type": "string", "minLength": 1},
+        "outcome": {"enum": ["tp", "fp", "fn", "optional"]},
+        "reason": {
+          "enum": [
+            "accepted_required",
+            "accepted_optional",
+            "suggestion_mismatch",
+            "explicit_negative",
+            "unmatched_prediction",
+            "duplicate_prediction",
+            "missed_required"
+          ]
+        },
+        "category": {"type": "string", "minLength": 1},
+        "ground_truth_id": {"type": ["string", "null"]},
+        "finding_id": {"type": ["string", "null"]}
+      }
+    }
+  }
+}
