@@ -12,7 +12,48 @@
         "id": {"type": "string", "minLength": 1},
         "method": {"enum": ["engine.hello", "document.inspect", "job.start", "job.cancel", "custom_rule.list", "custom_rule.upsert", "custom_rule.delete", "model.status", "model.download", "model.import", "model.cancel", "model.remove"]},
         "params": {"type": "object"}
-      }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"method": {"const": "job.start"}}},
+          "then": {
+            "properties": {
+              "params": {
+                "properties": {
+                  "use_model": {"type": "boolean"},
+                  "full_review": {"type": "boolean", "default": false},
+                  "include_rule_findings": {"type": "boolean", "default": false}
+                },
+                "allOf": [
+                  {
+                    "if": {
+                      "required": ["include_rule_findings"],
+                      "properties": {"include_rule_findings": {"const": true}}
+                    },
+                    "then": {
+                      "required": ["use_model", "full_review"],
+                      "properties": {
+                        "use_model": {"const": true},
+                        "full_review": {"const": true}
+                      }
+                    }
+                  },
+                  {
+                    "if": {
+                      "required": ["full_review"],
+                      "properties": {"full_review": {"const": true}}
+                    },
+                    "then": {
+                      "required": ["use_model"],
+                      "properties": {"use_model": {"const": true}}
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
     },
     {
       "type": "object",

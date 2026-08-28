@@ -1,5 +1,17 @@
 [
   {
+    "date": "2026-08-27",
+    "artifact": "apps/desktop",
+    "scope": "app",
+    "brief": "SoátVăn compact review workflow and in-app Settings CMS redesign",
+    "macrostructure": "Index-First application shell; Narrative Workflow review",
+    "theme": "Cobalt",
+    "tone": "utilitarian-technical",
+    "navigation": "N1b balanced two-destination header",
+    "footer": "Ft2 dense status strip",
+    "enrichment": "none"
+  },
+  {
     "date": "2026-08-24",
     "artifact": "apps/desktop",
     "brief": "SoátVăn comprehensive UI and UX optimization",

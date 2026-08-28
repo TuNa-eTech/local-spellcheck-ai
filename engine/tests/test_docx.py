@@ -143,6 +143,86 @@ def test_flat_finding_is_annotated_in_a_paragraph_with_nested_ooxml(
     assert not rejected_output.exists()
 
 
+def test_break_and_tab_projection_keeps_rule_and_writer_offsets_aligned(
+    make_docx, tmp_path: Path
+) -> None:
+    source = make_docx([["placeholder"]])
+    with zipfile.ZipFile(source) as archive:
+        parts = {
+            info.filename: (info, archive.read(info.filename))
+            for info in archive.infolist()
+        }
+    document_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:r><w:t>Trước</w:t><w:br/></w:r>
+      <w:r><w:t>sát nhập</w:t></w:r>
+      <w:r><w:tab/></w:r>
+      <w:r><w:t>cuối</w:t></w:r>
+    </w:p>
+    <w:sectPr/>
+  </w:body>
+</w:document>""".encode()
+    with zipfile.ZipFile(source, "w") as archive:
+        for name, (info, data) in parts.items():
+            archive.writestr(info, document_xml if name == "word/document.xml" else data)
+
+    package = DocxPackage()
+    blocks = package.read_blocks(source)
+    assert [block.text for block in blocks] == ["Trước\nsát nhập\tcuối"]
+    prefix = replace(
+        RuleEngine().check(blocks, Preset.STANDARD)[0],
+        id="prefix-before-break",
+        start=0,
+        end=len("Trước"),
+        source_text="Trước",
+        suggestion="Trước đây",
+    )
+    prefix_output = tmp_path / "prefix-before-break.docx"
+    assert package.write_annotations(source, prefix_output, [prefix]).written_ids == (
+        prefix.id,
+    )
+    assert package.read_blocks(prefix_output)[0].text == blocks[0].text
+
+    finding = RuleEngine().check(blocks, Preset.STANDARD)[0]
+    assert (finding.start, finding.source_text) == (len("Trước\n"), "sát nhập")
+
+    output = tmp_path / "break-tab-output.docx"
+    assert package.write_annotations(source, output, [finding]).written_ids == (finding.id,)
+    assert package.read_blocks(output)[0].text == blocks[0].text
+
+    crossing = replace(
+        finding,
+        id="crossing-break",
+        start=0,
+        end=len("Trước\nsát"),
+        source_text="Trước\nsát",
+    )
+    rejected_output = tmp_path / "crossing-break.docx"
+    assert package.write_annotations(source, rejected_output, [crossing]).count == 0
+    assert not rejected_output.exists()
+
+
+def test_generated_comment_shows_original_and_suggestion_without_double_periods(
+    make_docx, tmp_path: Path
+) -> None:
+    source = make_docx([["sát nhập"]])
+    package = DocxPackage()
+    finding = RuleEngine().check(package.read_blocks(source), Preset.STANDARD)[0]
+    finding = replace(finding, suggestion="sáp nhập.", reason="Lý do thử nghiệm..")
+    output = tmp_path / "comment-output.docx"
+
+    assert package.write_annotations(source, output, [finding]).count == 1
+    with zipfile.ZipFile(output) as archive:
+        comments = etree.fromstring(archive.read("word/comments.xml"))
+    comment = comments.xpath("string(//w:comment//w:t)", namespaces=NS)
+
+    assert "Sai: “sát nhập” → Đề xuất: “sáp nhập.”" in comment
+    assert "Lý do: Lý do thử nghiệm." in comment
+    assert ".." not in comment
+
+
 def test_no_findings_creates_no_output(make_docx, tmp_path: Path) -> None:
     source = make_docx([["Văn bản hợp lệ."]])
     output = tmp_path / "output.docx"

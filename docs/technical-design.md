@@ -61,21 +61,22 @@ Mặc định an toàn cho output one-pass:
 
 Nếu muốn tự động thay text, cần một mode riêng và acceptance riêng; không âm thầm auto-correct trong workflow không có bước review.
 
-### 3.3. Ba chế độ AI và quy tắc riêng
+### 3.3. Ba chế độ và lớp rule bổ sung
 
-Workflow suy ra chế độ từ `use_model` và `full_review` để giữ tương thích IPC:
+Workflow suy ra chế độ từ `use_model`, `full_review` và `include_rule_findings` để giữ tương thích IPC:
 
 | Chế độ | Cấu hình | Phạm vi LLM |
 |---|---|---|
 | `rule-only` | `use_model=false` | Không nạp/gọi model; finding đến từ rule engine |
 | `filter` | `use_model=true`, `full_review=false` | Chỉ verdict các candidate đã tồn tại; không được sinh finding mới |
-| `full` | `use_model=true`, `full_review=true` | LLM-only mặc định: không chạy rule engine, mọi block được hỗ trợ là target đúng một lần và mỗi chunk chỉ trả discovery mới |
+| `full` | `use_model=true`, `full_review=true`, `include_rule_findings=false` | LLM-only mặc định: không chạy rule engine, mọi block được hỗ trợ là target đúng một lần và mỗi chunk chỉ trả discovery mới |
+| `full+rules` | `use_model=true`, `full_review=true`, `include_rule_findings=true` | LLM vẫn rà mọi target như `full`; rule engine tạo candidate bổ sung để AI giữ/loại rồi hợp nhất với discovery |
 
-`full_review=true` không có hiệu lực nếu `use_model=false`. UI chọn full review mặc định khi model hỗ trợ; capability chỉ được coi là sẵn sàng phát hành sau benchmark riêng, còn model local-unverified là chế độ thử nghiệm.
+`full_review=true` không có hiệu lực nếu `use_model=false`; `include_rule_findings=true` chỉ hợp lệ cùng `use_model=true` và `full_review=true`. UI chọn full review mặc định khi model hỗ trợ nhưng để tùy chọn rule bổ sung ở trạng thái tắt; capability chỉ được coi là sẵn sàng phát hành sau benchmark riêng, còn model local-unverified là chế độ thử nghiệm.
 
-Settings lưu một danh sách `CustomRule`; mỗi record chỉ có `id`, prompt text và timestamp. Tổng text tối đa 4.000 ký tự. Frontend nối các prompt theo thứ tự bằng `\n\n` thành một context chung; IPC chừa tối đa 4.200 ký tự để chứa separator. Context không được gửi khi model chưa `ready` hoặc AI tắt. Ở filter, context chỉ ảnh hưởng candidate đã được hệ thống tìm thấy. Ở full, context có thể hướng dẫn discovery, gồm cả finding `grammar` và `word_choice`, nhưng không cho phép viết lại/chấm điểm văn phong toàn đoạn và vẫn chịu toàn bộ giới hạn schema/anchor.
+Mục `Prompt` của trang Settings lưu một danh sách `CustomRule`; mỗi record chỉ có `id`, prompt text và timestamp. UI trình bày danh sách và editor theo bố cục master-detail nhưng không thêm title, folder, trạng thái enable hoặc thứ tự do người dùng cấu hình. Tổng text tối đa 4.000 ký tự. Frontend nối các prompt theo thứ tự bằng `\n\n` thành một context chung; IPC chừa tối đa 4.200 ký tự để chứa separator. Context không được gửi khi model chưa `ready` hoặc AI tắt. Ở filter, context chỉ ảnh hưởng candidate đã được hệ thống tìm thấy. Ở full, context có thể hướng dẫn discovery, gồm cả finding `grammar` và `word_choice`, nhưng không được thay đổi schema/định dạng output, yêu cầu trả cả câu/đoạn làm `source_text`, viết lại hoặc chấm điểm văn phong toàn đoạn; system prompt và adapter luôn giữ quyền áp các giới hạn này.
 
-Bộ kiểm tra cơ bản luôn dùng cấu hình cố định. Không có preset, checkbox detector, từ điển người dùng hoặc session ignore trong UI. Các field cũ trong IPC chỉ được host gửi giá trị mặc định/rỗng để tương thích; dữ liệu từ điển SQLite legacy không còn ảnh hưởng workflow.
+Bộ kiểm tra cơ bản luôn dùng cấu hình cố định. Mục `Quy tắc rà soát` của Settings chỉ render inventory read-only mô tả các nhóm rule hiện hành; nó không ghi cấu hình xuống state, local storage hoặc IPC. Không có preset, checkbox detector, từ điển người dùng hoặc session ignore trong UI. Tùy chọn `include_rule_findings` vẫn nằm ở bước `Chuẩn bị rà soát` vì đây là lựa chọn cho lượt xử lý, không phải cấu hình detector. Các field cũ trong IPC chỉ được host gửi giá trị mặc định/rỗng để tương thích; dữ liệu từ điển SQLite legacy không còn ảnh hưởng workflow.
 
 Quality report phải đo riêng:
 
@@ -379,8 +380,8 @@ Candidate chứa reason code/template, không chứa UI copy đã format. Export
 ### 10.2. Arbitration
 
 - Candidate trùng `anchor + suggestion` được merge, giữ provenance.
-- Discovery trùng candidate đã giữ được merge; provenance rule không bị mất.
-- Candidate chồng lấn khác suggestion phải chọn một winner theo policy hoặc bỏ cả overlap set; không tạo comment/highlight lồng nhau.
+- Discovery trùng chính xác candidate đã giữ được merge và provenance rule không bị mất. Verdict `drop` đủ confidence loại candidate; verdict thiếu, thấp confidence hoặc block review lỗi không được dùng làm bằng chứng để loại rule.
+- Candidate chồng lấn khác suggestion chọn span ngắn hơn; nếu span bằng nhau thì discovery AI được ưu tiên vì AI là lớp rà chính. Không tạo comment/highlight lồng nhau; quota xuất kết quả cũng ưu tiên discovery AI.
 - Priority và confidence policy phải versioned, deterministic và có test.
 
 ### 10.3. Hiệu năng
@@ -388,7 +389,7 @@ Candidate chứa reason code/template, không chứa UI copy đã format. Export
 - Khởi động sidecar lúc app launch để không tính Python cold start vào click “Soát”.
 - Nạp tài nguyên ngôn ngữ cố định một lần và giữ read-only trong memory.
 - Rules chạy theo block; emit progress theo stage, không theo từng token.
-- Ở filter, LLM chạy sau tầng luật và batch theo candidate. Ở full review LLM-only, tầng luật bị bỏ qua và model nhận chunk theo token budget thực, không theo số đoạn cố định. Model được nạp một lần cho toàn job.
+- Ở filter, LLM chạy sau tầng luật và batch theo candidate. Ở full review, model luôn nhận chunk theo token budget thực, không theo số đoạn cố định; tầng luật chỉ chạy khi `include_rule_findings=true`. Model được nạp một lần cho toàn job.
 - Mỗi supported block là target đúng một lần. Block trước/sau có thể lặp như context-only để giữ nghĩa nhưng discovery tại đó bị từ chối, tránh duplicate do overlap.
 - Đo token bằng tokenizer của GGUF. Ngân sách input phải trừ system/custom prompt, output tối đa và safety margin; paragraph quá dài được tách ở biên câu/từ nhưng vẫn giữ anchor về paragraph gốc.
 - Full review xử lý tuần tự với timeout từng chunk. Chunk timeout/malformed/inference lỗi được chia đôi theo boundary an toàn và retry tuần tự tối đa hai cấp; finding hợp lệ từ phần retry thành công vẫn được giữ. Coverage chỉ `complete` khi toàn bộ chunk gốc hoặc mọi phần retry hoàn tất.
@@ -410,12 +411,12 @@ Không gọi `from_pretrained` hoặc API tự tải trong Python engine. Python
 - Temperature 0, seed cố định khi runtime hỗ trợ.
 - Không bao giờ gửi DOCX nhị phân, XML package hoặc toàn bộ nội dung tài liệu trong một prompt.
 - Filter chỉ nhận candidate và context tối thiểu.
-- Full review LLM-only nhận từng chunk chỉ gồm target/context block; không có candidate. Chunker dùng tokenizer/context size của chính model và mỗi target chỉ xuất hiện đúng một lần.
+- Full review nhận từng chunk gồm target/context block. Ở LLM-only không có candidate; khi bật rule bổ sung, candidate xác định bằng code được gửi kèm để model đánh giá nhưng vẫn không thay thế discovery toàn văn. Chunker dùng tokenizer/context size của chính model và mỗi target chỉ xuất hiện đúng một lần.
 - Output bị constrain theo JSON schema/grammar.
-- Filter trả `candidate_id`, `verdict`, `confidence`. Full review LLM-only chỉ trả collection `discoveries` có `segment_id`, `source_text`, `occurrence_index`, suggestion/category/`reason_code`/confidence giới hạn; adapter tự ánh xạ về paragraph/offset nội bộ.
+- Filter trả `candidate_id`, `verdict`, `confidence`. Full review luôn trả collection `discoveries` có `segment_id`, `source_text`, `occurrence_index`, suggestion/category/`reason_code`/confidence giới hạn; khi có candidate rule bổ sung, response còn có `verdicts`. Adapter tự ánh xạ discovery về paragraph/offset nội bộ.
 - Lý do người dùng ưu tiên template/reason code; không dùng văn xuôi tự do không kiểm soát hoặc toàn bộ đoạn đã viết lại.
 - Timeout, batch/chunk size và token budget bị giới hạn bởi cấu hình runtime/manifest. Full review áp timeout riêng theo chunk thay vì một deadline duy nhất làm mất mọi kết quả trước đó.
-- Candidate lạ, discovery ngoài target, mismatch source/occurrence và output malformed đều bị drop. Chunk malformed/timeout làm tăng `failed_chunks` và kết quả là `partial`.
+- Candidate lạ, discovery ngoài target, mismatch source/occurrence, no-op, rewrite rộng không thể thu về edit cục bộ an toàn và output malformed đều bị drop. Với bản sửa có đủ context trùng khớp, adapter thu anchor về đúng từ/cụm từ thay đổi trước khi tạo finding. Chunk malformed/timeout làm tăng `failed_chunks` và kết quả là `partial`.
 - Tắt AI đóng runtime để giải phóng RAM nhưng giữ package đã cài.
 
 ### 11.3. Model package
@@ -472,7 +473,7 @@ Manifest tối thiểu:
 6. Rename atomically vào thư mục versioned và cập nhật registry.
 7. Không xoá version đang hoạt động cho tới khi version mới load thành công.
 
-Trạng thái UI: `not_installed → downloading/importing → verifying → installed → ready`, với nhánh `cancelled/error/incompatible`. Gói thiếu quality gate bị từ chối ngay; `installed` nghĩa là gói đã qua integrity/signature/quality nhưng runtime chưa khả dụng, còn `ready` yêu cầu smoke-load thành công. Quy tắc riêng vẫn chỉnh sửa được khi AI tắt nhưng chỉ được ghép/gửi khi model `ready`. Chưa có model không phải lỗi của luồng kiểm tra cơ bản.
+Trạng thái UI trong mục Settings `AI cục bộ`: `not_installed → downloading/importing → verifying → installed → ready`, với nhánh `cancelled/error/incompatible`. Mục này giữ toàn bộ lifecycle chọn, tải/nhập, tiến độ, huỷ, kích hoạt/tắt runtime và gỡ model; availability của tải qua mạng vẫn do release profile quyết định. Gói thiếu quality gate bị từ chối ngay; `installed` nghĩa là gói đã qua integrity/signature/quality nhưng runtime chưa khả dụng, còn `ready` yêu cầu smoke-load thành công. Prompt riêng vẫn chỉnh sửa được khi AI tắt nhưng chỉ được ghép/gửi khi model `ready`. Chưa có model không phải lỗi của luồng kiểm tra cơ bản.
 
 ## 12. Local storage và data retention
 
@@ -557,12 +558,21 @@ Màn hình chính có đúng bốn step:
 3. `Xử lý`: stage, progress và cancel; khóa file/prompt trong lúc chạy.
 4. `Kết quả`: filename/path, số cảnh báo, `Mở file`, `Mở thư mục`, `Xử lý file khác`.
 
-Không có preview, editor, finding list hoặc review action. Settings chỉ có hai tab: `Quy tắc riêng` và `AI cục bộ`. Tab quy tắc riêng CRUD các prompt text; không có từ điển, preset hoặc checkbox nhóm detector.
+Không có preview, editor tài liệu, finding list hoặc review action. Settings là một page trong ứng dụng và thay thế view workflow khi đang mở; nó không phải modal/dialog, không dùng backdrop, background `inert` hoặc focus trap. State của tài liệu, step và các lựa chọn cho lượt rà soát vẫn được giữ để quay lại đúng ngữ cảnh.
+
+Settings có navigation ba mục, tại một thời điểm chỉ render nội dung của mục đang chọn:
+
+1. `Prompt`: master list các `CustomRule` theo thứ tự repository và detail editor cho mục đang chọn hoặc trạng thái tạo mới; hỗ trợ thêm, sửa, xoá và hoàn tác xoá bằng API hiện có.
+2. `Quy tắc rà soát`: inventory read-only của technical, repeated-word, confusion, syllable và administrative-capitalization rules cố định; không render preset, dictionary, ignore list hoặc detector toggle.
+3. `AI cục bộ`: trạng thái cùng lifecycle chọn, tải/nhập, huỷ, kích hoạt/tắt runtime và gỡ model.
+
+Navigation dùng semantics page/section với heading được gắn nhãn, không dùng `tablist`/`tab`/`tabpanel`. Mở Settings hoặc đổi mục đưa focus tới heading tương ứng; Back khôi phục focus cho đúng opener trong workflow.
 
 ### 15.2. Keyboard contract
 
-- `Ctrl+O`: mở file.
-- `Esc`: đóng dialog theo native behavior; không override khi focus ở input/textarea/select.
+- `Ctrl+O`: chỉ mở file khi view workflow rà soát đang active và workflow cho phép chọn file; bị bỏ qua trong Settings.
+- Settings không đăng ký handler toàn cục cho `Esc`; người dùng rời page bằng Back, còn control đang focus giữ hành vi bàn phím native của nó.
+- Mở Settings hoặc đổi mục focus heading của page/section mới; Back render lại view workflow và trả focus về đúng control đã mở Settings.
 - Sau mỗi chuyển step, focus tới heading/region mới; progress được thông báo bằng `aria-live="polite"`.
 
 ## 16. Test strategy
@@ -592,6 +602,7 @@ Không có preview, editor, finding list hoặc review action. Settings chỉ c�
 ### 16.3. Contract/integration
 
 - JSON Schema cho IPC, handshake version, progress, cancel, timeout, crash/restart.
+- DOM tests cho Settings full-page: duy nhất một `main`, navigation ba mục dùng `aria-current`, heading/opener focus, master-detail Prompt CRUD, inventory rule read-only, model lifecycle và cách ly `Ctrl+O`/file-drop khỏi Settings.
 - Windows standard user, không Python cài sẵn.
 - Unicode/space/long path, file locked/corrupt/oversized.
 - Model absent/corrupt/incompatible và disk-full giữa download/import.
@@ -621,8 +632,8 @@ Trên clean Windows VM:
 | PRD | Evidence kỹ thuật |
 |---|---|
 | F1 | DOCX validator fixtures + invalid file E2E + metadata best-effort |
-| F2 | Fixed-default boundary tests + rule corpus + deterministic benchmark ≤ 2 giây; UI không render control cấu hình cũ |
-| F3 | SQLite custom-rule CRUD/Unicode/concurrency + DOM/API tests + giới hạn 4.000/4.200 ký tự |
+| F2 | Fixed-default boundary tests + rule corpus + deterministic benchmark ≤ 2 giây; mục `Quy tắc rà soát` chỉ render inventory read-only và không có control cấu hình cũ |
+| F3 | SQLite custom-rule CRUD/Unicode/concurrency + DOM/API master-detail tests + Settings page navigation/focus + giới hạn 4.000/4.200 ký tự |
 | F4 | Ba mode E2E + schema-constrained filter/full output + signed capability gate + token-budget/coverage + anchor mismatch rejection |
 | F5 | Progress/cancel/crash cleanup + partial coverage UI tests |
 | F6 | Golden DOCX inventory/diff + comment/reason tests + Word VM open test + source≠target invariant |

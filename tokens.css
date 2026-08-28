@@ -1,7 +1,7 @@
-/* Hallmark · macrostructure: Guided Task · genre: modern-minimal · theme: Cobalt · tone: utilitarian · anchor hue: cobalt · nav: none · footer: Ft2
- * audience: cán bộ văn thư không rành kỹ thuật · use: mở DOCX, duyệt lỗi, xuất bản sao
- * knobs: containment=flat · dialog=native · compact-window=height-aware
- * pre-emit critique: P5 H5 E5 S5 R5 V4 · contrast: pass (40–41) · slop: pass (42–45)
+/* Hallmark · macrostructure: Index-First + Narrative Workflow · genre: modern-minimal · theme: Cobalt · tone: utilitarian-technical · anchor hue: cobalt · nav: N1b · footer: Ft2 · design-system: design.md · designed-as-app
+ * audience: nhân viên văn phòng và biên tập viên · use: rà soát DOCX nhanh; quản lý prompt, luật và model
+ * knobs: containment=flat · settings=in-app-cms · density=very-compact · footer-order=privacy,version · separator=middot
+ * pre-emit critique: P5 H5 E5 S5 R5 V5 · contrast: pass (40–41) · slop: pass (42–45)
  * honest: pass (46) · chrome: pass (47) · tokens: pass (48) · responsive: pass (49) · icons: pass (30)
  * mobile: pass (34, 49, 50–57)
  */
@@ -10,16 +10,20 @@
 
   --color-paper: oklch(98.5% 0.004 250);
   --color-paper-raised: oklch(99.3% 0.003 250);
-  --color-paper-soft: oklch(96% 0.009 250);
-  --color-paper-active: oklch(92.5% 0.028 250);
+  --color-paper-2: oklch(96% 0.009 250);
+  --color-paper-3: oklch(92.5% 0.028 250);
+  --color-paper-soft: var(--color-paper-2);
+  --color-paper-active: var(--color-paper-3);
   --color-paper-disabled: oklch(94% 0.008 250);
   --color-rail: oklch(22% 0.022 258);
   --color-rail-raised: oklch(28% 0.026 258);
   --color-ink: oklch(22% 0.022 258);
   --color-ink-2: oklch(34% 0.02 257);
+  --color-neutral: var(--color-ink-2);
   --color-muted: oklch(44% 0.018 257);
   --color-rule: oklch(82% 0.014 255);
   --color-rule-strong: oklch(58% 0.024 256);
+  --color-rule-2: var(--color-rule-strong);
   --color-accent: oklch(48% 0.19 256);
   --color-accent-soft: oklch(93% 0.035 256);
   --color-accent-ink: oklch(98.5% 0.004 250);
@@ -38,33 +42,34 @@
   --font-display: "Bahnschrift", "Segoe UI Variable Display", "Segoe UI", sans-serif;
   --font-body: "Segoe UI Variable Text", "Segoe UI", sans-serif;
   --font-mono: var(--font-display);
+  --font-outlier: var(--font-display);
   --font-document: "Times New Roman", "Liberation Serif", serif;
 
-  --space-3xs: 0.125rem;
-  --space-2xs: 0.25rem;
-  --space-xs: 0.5rem;
-  --space-sm: 0.75rem;
-  --space-md: 1rem;
-  --space-lg: 1.5rem;
-  --space-xl: 2.5rem;
+  --space-3xs: 0.25rem;
+  --space-2xs: 0.5rem;
+  --space-xs: 0.75rem;
+  --space-sm: 1rem;
+  --space-md: 1.5rem;
+  --space-lg: 2rem;
+  --space-xl: 3rem;
   --space-2xl: 4rem;
   --space-3xl: 6rem;
-  --space-4xl: 9rem;
+  --space-4xl: 8rem;
 
   --text-xs: 0.75rem;
-  --text-sm: 0.875rem;
-  --text-base: 1rem;
-  --text-md: 1.125rem;
-  --text-lg: 1.5rem;
-  --text-xl: 2rem;
-  --text-display: clamp(2rem, 3vw + 1rem, 3.25rem);
+  --text-sm: 0.8125rem;
+  --text-base: 0.9375rem;
+  --text-md: 1rem;
+  --text-lg: 1.25rem;
+  --text-xl: 1.625rem;
+  --text-display: clamp(1.625rem, 2vw + 1rem, 2rem);
 
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
   --dur-micro: 100ms;
   --dur-short: 180ms;
-  --dur-long: 300ms;
+  --dur-long: 280ms;
 
   --rule-thin: 1px;
   --rule-focus: 2px;
@@ -73,14 +78,27 @@
   --radius-sm: 0.375rem;
   --radius-md: 0.625rem;
   --radius-round: 999rem;
+  --radius-card: var(--radius-md);
+  --radius-pill: var(--radius-round);
+  --radius-input: var(--radius-sm);
 
-  --control-height: 2.75rem;
+  --control-height-compact: 2.25rem;
+  --control-height-touch: 2.75rem;
+  --control-height: var(--control-height-compact);
+  --panel-padding: var(--space-xs);
+  --section-gap: var(--space-xs);
+  --chrome-padding-block: var(--space-3xs);
+  --drop-zone-min-height: 7rem;
+  --progress-node-size: 1.5rem;
   --layout-rail-compact: 4.5rem;
-  --layout-rail-wide: 12rem;
+  --layout-rail-wide: 10.5rem;
   --layout-command: 4rem;
   --layout-status: 2rem;
   --layout-findings: 25rem;
   --layout-document: 46rem;
+  --layout-workflow-max: 58rem;
+  --layout-settings-max: 64rem;
+  --layout-prompt-index: 15rem;
 
   --z-base: 1;
   --z-raised: 10;
@@ -90,5 +108,6 @@
   --z-toast: 500;
   --z-tooltip: 600;
 
+  --shadow-card: none;
   --shadow-overlay: 0 1rem 3rem var(--color-shadow);
 }

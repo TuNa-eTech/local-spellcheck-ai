@@ -12,12 +12,12 @@ export const api = {
     return invoke("choose_document");
   },
   async inspectDropped(path: string): Promise<DocumentInfo> { return invoke("inspect_document", { path }); },
-  async startJob(jobId: string, sourcePath: string, preset: Preset, customPrompt: string, useModel: boolean, ruleOptions: RuleOptions, ignoredWords: string[], fullReview: boolean): Promise<JobResult> {
+  async startJob(jobId: string, sourcePath: string, preset: Preset, customPrompt: string, useModel: boolean, ruleOptions: RuleOptions, ignoredWords: string[], fullReview: boolean, includeRuleFindings = false): Promise<JobResult> {
     if (!isTauri()) {
       await new Promise(resolve => setTimeout(resolve, 1400));
       return { job_id: jobId, status: "completed", output_path: sourcePath.replace(/\.docx$/i, "-soat.docx"), finding_count: 5, counts: { category: { spelling: 2, technical: 3 }, origin: { rule: 5 } } };
     }
-    return invoke("start_job", { request: { jobId, sourcePath, preset, customPrompt, useModel, fullReview, ruleOptions, ignoredWords } });
+    return invoke("start_job", { request: { jobId, sourcePath, preset, customPrompt, useModel, fullReview, includeRuleFindings, ruleOptions, ignoredWords } });
   },
   cancelJob(jobId: string) { return isTauri() ? invoke("cancel_job", { jobId }) : Promise.resolve(false); },
   onProgress(handler: (event: ProgressEvent) => void, jobId?: string): Promise<UnlistenFn> {

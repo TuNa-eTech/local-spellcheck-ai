@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import cast
 
 from soatvan.checking.domain import Block, Finding, Preset, RuleConfig
+from soatvan.checking.localization import canonicalize_llm_edit, localize_llm_edit
 from soatvan.checking.rules import RuleEngine
 
 from .ports import (
@@ -25,6 +26,7 @@ from .ports import (
 # Stored rule text is capped at 4,000 characters. The transport also carries
 # up to 99 blank-line separators when those records are compiled for the model.
 MAX_CUSTOM_PROMPT_LENGTH = 4_200
+LLM_DISCOVERY_VERSION = "v2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +39,7 @@ class ProcessRequest:
     custom_prompt: str = ""
     ignored_words: frozenset[str] = frozenset()
     full_review: bool = False
+    include_rule_findings: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,18 +69,22 @@ class ProcessDocument:
         progress("reading", 10, "job.reading")
         blocks = self._documents.read_blocks(request.source)
         cancel.raise_if_cancelled()
+        if request.include_rule_findings and (
+            not request.use_model or not request.full_review
+        ):
+            raise ValueError("INCLUDE_RULE_FINDINGS_REQUIRES_FULL_REVIEW")
         if request.custom_prompt and not request.use_model:
             raise ValueError("CUSTOM_PROMPT_REQUIRES_MODEL")
         if request.full_review and not request.use_model:
             raise ValueError("FULL_REVIEW_REQUIRES_MODEL")
         if len(request.custom_prompt) > MAX_CUSTOM_PROMPT_LENGTH:
             raise ValueError("CUSTOM_PROMPT_TOO_LONG")
-        # Full review is intentionally LLM-only: deterministic rules would both
-        # bias the model and leak rule-origin findings into the final document.
-        # The legacy rule/filter path remains available when full_review is off.
+        # Full review always scans the complete document. Deterministic findings
+        # can optionally be supplied as candidates and merged into that review;
+        # the default remains the existing LLM-only behavior.
         ignored_words = request.ignored_words
         findings: list[Finding] = []
-        if not request.full_review:
+        if not request.full_review or request.include_rule_findings:
             progress("rules", 35, "job.applying_rules")
             findings = self._rules.check(
                 blocks,
@@ -238,22 +245,22 @@ def _apply_full_review(
     for finding in findings:
         verdict = verdicts.get(finding.id)
         if (
-            finding.block_id not in failed_blocks
-            and verdict is not None
-            and verdict.verdict == "keep"
-            and verdict.confidence >= reviewer.minimum_confidence
+            finding.block_id in failed_blocks
+            or verdict is None
+            or verdict.confidence < reviewer.minimum_confidence
         ):
+            # A failed/missing/uncertain model decision is not sufficient to
+            # discard a deterministic finding.
+            accepted.append(finding)
+        elif verdict.verdict == "keep":
             accepted.append(
                 replace(
                     finding,
-                    origin="llm",
                     confidence=verdict.confidence,
                     rule_version=f"{finding.rule_version}+{reviewer.version}",
                 )
             )
-        else:
-            # Full review optimizes recall: deterministic findings are always
-            # preserved. Use AI filter mode when model-driven dropping is wanted.
+        elif verdict.verdict != "drop":
             accepted.append(finding)
 
     block_text = {block.id: block.text for block in blocks}
@@ -266,22 +273,37 @@ def _apply_full_review(
             or proposal.end > len(text)
             or proposal.start >= proposal.end
             or text[proposal.start : proposal.end] != proposal.source_text
-            or _contains_ignored_text(proposal.source_text, ignored_words)
         ):
             continue
-        detector = f"llm.discovery.{proposal.reason_code}.v1"
+        localized = localize_llm_edit(
+            proposal.source_text, proposal.suggestion, proposal.reason_code
+        )
+        if localized is None:
+            continue
+        relative_start, source_text, suggestion = localized
+        start = proposal.start + relative_start
+        end = start + len(source_text)
+        if (
+            text[start:end] != source_text
+            or _contains_ignored_text(source_text, ignored_words)
+        ):
+            continue
+        category, reason_code = canonicalize_llm_edit(
+            source_text, suggestion, proposal.category, proposal.reason_code
+        )
+        detector = f"llm.discovery.{reason_code}.{LLM_DISCOVERY_VERSION}"
         accepted.append(
             Finding(
-                id=f"{proposal.block_id}:{proposal.start}:{proposal.end}:{detector}",
-                category=proposal.category,
+                id=f"{proposal.block_id}:{start}:{end}:{detector}",
+                category=category,
                 origin="llm",
                 detector_id=detector,
                 block_id=proposal.block_id,
-                start=proposal.start,
-                end=proposal.end,
-                source_text=proposal.source_text,
-                suggestion=proposal.suggestion,
-                reason=_review_reason(proposal.reason_code),
+                start=start,
+                end=end,
+                source_text=source_text,
+                suggestion=suggestion,
+                reason=_review_reason(reason_code),
                 rule_version=reviewer.version,
                 confidence=proposal.confidence,
             )
@@ -331,25 +353,14 @@ def _merge_review_findings(findings: list[Finding], blocks: list[Block]) -> list
     for finding in findings:
         key = (finding.block_id, finding.start, finding.end, finding.suggestion)
         current = deduplicated.get(key)
-        if current is None or _finding_rank(finding) < _finding_rank(current):
+        if current is None or _exact_duplicate_rank(finding) < _exact_duplicate_rank(
+            current
+        ):
             deduplicated[key] = finding
-    known = [
-        item
-        for item in deduplicated.values()
-        if not item.detector_id.startswith("llm.discovery.")
-    ]
-    discoveries = sorted(
-        (
-            item
-            for item in deduplicated.values()
-            if item.detector_id.startswith("llm.discovery.")
-        ),
-        key=_finding_rank,
-    )
-    winners = list(known)
-    for discovery in discoveries:
-        if not any(_findings_overlap(discovery, item) for item in winners):
-            winners.append(discovery)
+    winners: list[Finding] = []
+    for finding in sorted(deduplicated.values(), key=_overlap_rank):
+        if not any(_findings_overlap(finding, item) for item in winners):
+            winners.append(finding)
     return sorted(
         winners,
         key=lambda item: (block_order.get(item.block_id, 1_000_000), item.start, item.end),
@@ -369,21 +380,7 @@ def _limit_review_findings(
 ) -> list[Finding]:
     if len(findings) <= limit:
         return findings
-    known = [
-        item for item in findings if not item.detector_id.startswith("llm.discovery.")
-    ]
-    remaining = max(0, limit - len(known))
-    selected = [
-        *known[:limit],
-        *sorted(
-            (
-                item
-                for item in findings
-                if item.detector_id.startswith("llm.discovery.")
-            ),
-            key=_finding_rank,
-        )[:remaining],
-    ]
+    selected = sorted(findings, key=_quota_rank)[:limit]
     block_order = {block.id: index for index, block in enumerate(blocks)}
     return sorted(
         selected,
@@ -391,8 +388,7 @@ def _limit_review_findings(
     )
 
 
-def _finding_rank(finding: Finding) -> tuple[int, int, float, int, str]:
-    known_candidate = not finding.detector_id.startswith("llm.discovery.")
+def _category_priority(finding: Finding) -> int:
     category_priority = {
         "spelling": 6,
         "compound_word": 5,
@@ -402,11 +398,37 @@ def _finding_rank(finding: Finding) -> tuple[int, int, float, int, str]:
         "technical": 1,
         "custom_rule": 0,
     }
+    return category_priority.get(finding.category, 0)
+
+
+def _is_discovery(finding: Finding) -> bool:
+    return finding.detector_id.startswith("llm.discovery.")
+
+
+def _exact_duplicate_rank(finding: Finding) -> tuple[int, float, str]:
+    # When both sources propose the exact same edit, retain the deterministic
+    # detector as provenance instead of manufacturing an AI-only duplicate.
+    return (int(_is_discovery(finding)), -finding.confidence, finding.id)
+
+
+def _overlap_rank(finding: Finding) -> tuple[int, int, int, float, str]:
+    span_length = finding.end - finding.start
     return (
-        -int(known_candidate),
-        -category_priority.get(finding.category, 0),
+        span_length,
+        0 if _is_discovery(finding) else 1,
+        -_category_priority(finding),
         -finding.confidence,
-        -(finding.end - finding.start),
+        finding.id,
+    )
+
+
+def _quota_rank(finding: Finding) -> tuple[int, int, int, int, float, str]:
+    return (
+        0 if _is_discovery(finding) else 1,
+        finding.end - finding.start,
+        -_category_priority(finding),
+        finding.start,
+        -finding.confidence,
         finding.id,
     )
 
@@ -425,6 +447,7 @@ def _contains_ignored_text(value: str, ignored_words: frozenset[str]) -> bool:
 def _review_reason(reason_code: str) -> str:
     return {
         "spelling": "Từ hoặc cụm từ có thể sai chính tả.",
+        "diacritic": "Dấu tiếng Việt có thể được đặt chưa đúng.",
         "compound_word": "Cách viết từ ghép có thể chưa đúng.",
         "capitalization": "Cách viết hoa có thể chưa phù hợp.",
         "punctuation": "Dấu câu có thể chưa đúng vị trí hoặc cách dùng.",

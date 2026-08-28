@@ -87,8 +87,11 @@ class SqliteCustomRuleRepository:
                 if aggregate_length - previous_length + len(clean_prompt) > MAX_CUSTOM_RULE_PROMPT_LENGTH:
                     raise ValueError("CUSTOM_RULE_LIMIT_REACHED")
 
+                latest_timestamp = self._connection.execute(
+                    "SELECT MAX(updated_at) FROM custom_rules"
+                ).fetchone()[0]
                 updated_at = self._next_timestamp(
-                    str(existing["updated_at"]) if existing else None
+                    str(latest_timestamp) if latest_timestamp is not None else None
                 )
                 created_at = str(existing["created_at"]) if existing else updated_at
                 self._connection.execute(

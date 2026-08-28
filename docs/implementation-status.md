@@ -1,6 +1,6 @@
 # Implementation status
 
-Ngày cập nhật: 25/8/2026
+Ngày cập nhật: 27/8/2026
 
 | Milestone | Đã triển khai trong source | Gate cần môi trường/evidence ngoài repo |
 |---|---|---|
@@ -11,14 +11,14 @@ Ngày cập nhật: 25/8/2026
 
 ## Quyết định fail-closed hiện tại
 
-- Khi model có capability `full_review`, UI bật LLM-only mặc định. Nhánh này không gọi rule engine và chỉ xuất discovery của model. Bộ kiểm tra cơ bản cố định chỉ còn là fallback tương thích khi full review bị tắt; các field `preset`, `rule_config`, `ignored_words` vẫn được gửi mặc định/rỗng.
+- Khi model có capability `full_review`, UI bật full review mặc định. LLM-only vẫn là mặc định; người dùng có thể bật riêng `include_rule_findings` để chạy bộ kiểm tra code như lớp bổ sung, trong khi AI vẫn discovery trên toàn văn bản. Bộ kiểm tra cơ bản cũng là fallback tương thích khi full review bị tắt; các field `preset`, `rule_config`, `ignored_words` vẫn được gửi mặc định/rỗng.
 - Mỗi quy tắc riêng là một prompt text CRUD độc lập. UI ghép tất cả mục theo thứ tự bằng `\n\n`; text lưu tối đa 4.000 ký tự và transport tối đa 4.200 ký tự. Context này chỉ được gửi khi người dùng bật AI và registry báo `ready`.
-- `use_model=false` là fallback kiểm tra cơ bản; `use_model=true, full_review=false` là AI filter; `use_model=true, full_review=true` là LLM-only full review. Full review không chạy khi model tắt hoặc manifest không khai báo capability `full_review`.
+- `use_model=false` là fallback kiểm tra cơ bản; `use_model=true, full_review=false` là AI filter; `use_model=true, full_review=true` là AI full review. Trong full review, `include_rule_findings=false` là LLM-only và `true` thêm finding từ code. Full review không chạy khi model tắt hoặc manifest không khai báo capability `full_review`; tùy chọn rule bổ sung không hợp lệ ngoài full review.
 - Gói phát hành sai corpus/model hash, thiếu quality evidence hoặc không đạt gate bị từ chối. GGUF nhập trực tiếp được đánh dấu `local_unverified` và có thể chạy full review ở chế độ thử nghiệm, nhưng không được coi là đã benchmark hoặc phê duyệt phát hành. `installed` nghĩa package nằm trên máy nhưng runtime chưa hoạt động; chỉ smoke-load thành công mới là `ready`.
 - Không finding thì output tạm bị xoá và không tạo bản sao.
 - Finding nằm hoàn toàn trong run thường vẫn được annotation dù cùng paragraph có hyperlink/tracked change/content control. Finding không thể neo an toàn không được ghi; nếu không finding nào xuất được thì job báo `DOCUMENT_FINDINGS_NOT_EXPORTABLE`, còn full review phải phản ánh block đó bằng coverage `partial`.
-- Discovery full review ngoài target chunk, trỏ vào context-only hoặc không khớp chính xác `paragraph_id + source_text + occurrence_index` bị loại.
-- Full review chạy chunk tuần tự, dùng discovery-only schema, input chunk local 500 token và output budget tối đa 768 token để tránh JSON bị cắt. Runtime tự bật GPU offload khi backend hỗ trợ và fallback CPU. Model local dùng timeout mặc định 300 giây/chunk; chunk timeout/malformed/inference lỗi được chia đôi và retry tuần tự tối đa hai cấp. Coverage ghi rõ nguyên nhân, số retry/recovered; nếu vẫn còn phần lỗi thì trả `partial`, còn nếu mọi attempt đều thất bại thì báo `MODEL_FULL_REVIEW_FAILED`.
+- Discovery full review ngoài target chunk, trỏ vào context-only hoặc không khớp chính xác `paragraph_id + source_text + occurrence_index` bị loại. Quality gate còn loại no-op, rewrite rộng không có context đối chiếu và edit không thể thu về một span ngắn an toàn; khi model gửi cả câu đã sửa, engine chỉ giữ từ/cụm từ thay đổi nếu ánh xạ chắc chắn.
+- Full review chạy chunk tuần tự, dùng discovery-only schema khi `include_rule_findings=false` và schema verdict+discovery khi lớp rule bổ sung bật. AI có thể loại candidate rule bằng verdict `drop` đủ confidence; khi review thiếu/không chắc chắn thì candidate được giữ fail-safe. Merge ưu tiên anchor ngắn, AI thắng khi cùng độ rộng, còn correction trùng chính xác giữ provenance rule. Input chunk local 500 token và output budget tối đa 768 token để tránh JSON bị cắt. Runtime tự bật GPU offload khi backend hỗ trợ và fallback CPU. Model local dùng timeout mặc định 300 giây/chunk; chunk timeout/malformed/inference lỗi được chia đôi và retry tuần tự tối đa hai cấp. Coverage ghi rõ nguyên nhân, số retry/recovered; nếu vẫn còn phần lỗi thì trả `partial`, còn nếu mọi attempt đều thất bại thì báo `MODEL_FULL_REVIEW_FAILED`.
 - Header/footer/textbox/footnote được giữ nguyên trong ZIP nhưng không được kiểm tra ở M1.
 
 Chi tiết từng requirement, lệnh và evidence nằm tại [`m0-m1-acceptance.md`](m0-m1-acceptance.md). GitHub-hosted runner hiện dùng Windows Server, nên không coi run này, Open XML SDK hoặc corpus tổng hợp là bằng chứng thay thế cho Windows 10/11 client + Word 2016/2019/365 và 20 tài liệu thật.

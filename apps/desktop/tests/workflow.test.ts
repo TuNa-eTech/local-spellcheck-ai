@@ -128,10 +128,24 @@ beforeEach(() => {
 describe("four-step desktop workflow", () => {
   it("moves from file selection to the fixed preparation screen", async () => {
     await loadApp();
+    const progressStrip = document.querySelector<HTMLElement>('nav.progress-strip[aria-label="Tiến trình kiểm tra"]');
+    expect(progressStrip?.nextElementSibling?.matches("main.workflow-shell")).toBe(true);
     expect(document.querySelectorAll(".stepper li")).toHaveLength(4);
     expect(document.querySelector('.stepper li[aria-current="step"]')?.textContent).toContain("Chọn tệp");
+    expect(document.querySelector(".step-label")).toBeNull();
     await chooseDocument();
     expect(document.querySelector('.stepper li[aria-current="step"]')?.textContent).toContain("Chuẩn bị");
+    expect(
+      [...document.querySelectorAll<HTMLElement>(".stepper > li")].map(item => ({
+        current: item.getAttribute("aria-current"),
+        complete: item.dataset.complete,
+      })),
+    ).toEqual([
+      { current: null, complete: "true" },
+      { current: "step", complete: "false" },
+      { current: null, complete: "false" },
+      { current: null, complete: "false" },
+    ]);
     expect(document.querySelector('input[name="preset"]')).toBeNull();
     expect(document.querySelector("#ignored-words")).toBeNull();
     expect(document.querySelector("#prompt")).toBeNull();
@@ -159,6 +173,7 @@ describe("four-step desktop workflow", () => {
     expect(api.startJob.mock.calls[0][3]).toBe("");
     expect(api.startJob.mock.calls[0][4]).toBe(false);
     expect(api.startJob.mock.calls[0][7]).toBe(false);
+    expect(api.startJob.mock.calls[0][8]).toBe(false);
     expect(api.startJob.mock.calls[0][5]).toEqual({
       technical: true,
       repeated_words: true,
@@ -541,7 +556,7 @@ describe("four-step desktop workflow", () => {
     expect(document.querySelector("#start")).not.toBeNull();
   });
 
-  it("provides persistent custom-rule create, edit, delete, and undo in Settings", async () => {
+  it("provides master-detail prompt create, edit, delete, undo, and aggregate-limit feedback", async () => {
     const firstCreatedAt = "2026-08-25T01:00:00.000000Z";
     const first = customRule("rule-1", "Giữ nguyên tên SoátVăn.", firstCreatedAt);
     const api = await loadApp({
@@ -553,22 +568,43 @@ describe("four-step desktop workflow", () => {
     });
     document.querySelector<HTMLButtonElement>("#settings")!.click();
     await vi.waitFor(() => expect(document.querySelector("#custom-rule-form")).not.toBeNull());
-    expect(document.querySelectorAll(".tabs button")).toHaveLength(2);
-    expect(document.querySelector("#dictionary-form, [data-rule]")).toBeNull();
-    expect(document.body.textContent).toContain("Giữ nguyên tên SoátVăn.");
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>("#new-custom-rule")?.disabled).toBe(false));
+    const master = document.querySelector<HTMLElement>('nav.prompt-list[aria-label="Danh sách prompt"]')!;
+    expect(master).not.toBeNull();
+    expect(master.querySelectorAll("[data-prompt-id]")).toHaveLength(1);
+    const firstRow = master.querySelector<HTMLButtonElement>('[data-prompt-id="rule-1"][data-edit-rule="rule-1"]')!;
+    expect(firstRow.textContent).toContain("Giữ nguyên tên SoátVăn.");
+    expect(firstRow.getAttribute("aria-label")).toBe("Sửa prompt 1");
+    expect(document.querySelector('.prompt-manager__detail[aria-labelledby="custom-rule-editor-title"]')).not.toBeNull();
+    expect(document.querySelector('input[name="title"], #custom-rule-title')).toBeNull();
+    expect(document.querySelector("#custom-rule-help")?.textContent).toContain("4.000 ký tự");
 
+    firstRow.click();
+    await vi.waitFor(() => expect(document.querySelector('[data-prompt-id="rule-1"]')?.getAttribute("aria-current")).toBe("true"));
     let prompt = document.querySelector<HTMLTextAreaElement>("#custom-rule-prompt")!;
+    expect(prompt.value).toBe("Giữ nguyên tên SoátVăn.");
+    expect(prompt.maxLength).toBe(4000);
+    expect(document.querySelector("#custom-rule-count")?.textContent).toContain("/4.000 ký tự");
+
+    document.querySelector<HTMLButtonElement>("#new-custom-rule")!.click();
+    prompt = document.querySelector<HTMLTextAreaElement>("#custom-rule-prompt")!;
+    expect(prompt.value).toBe("");
+    expect(document.querySelector('[data-prompt-id][aria-current="true"]')).toBeNull();
+
     prompt.value = "Dùng thuật ngữ “khách hàng”.";
     prompt.dispatchEvent(new InputEvent("input", { bubbles: true }));
-    document.querySelector<HTMLFormElement>("#custom-rule-form")!.requestSubmit();
+    const externalSubmit = document.querySelector<HTMLButtonElement>('button[type="submit"][form="custom-rule-form"]')!;
+    expect(externalSubmit.form?.id).toBe("custom-rule-form");
+    externalSubmit.click();
     await vi.waitFor(() =>
       expect(api.customRuleUpsert).toHaveBeenCalledWith(null, "Dùng thuật ngữ “khách hàng”."),
     );
     await vi.waitFor(() => expect(document.body.textContent).toContain("Dùng thuật ngữ “khách hàng”."));
 
-    document.querySelector<HTMLButtonElement>('[data-edit-rule="rule-1"]')!.click();
+    document.querySelector<HTMLButtonElement>('[data-prompt-id="rule-1"][data-edit-rule="rule-1"]')!.click();
     prompt = document.querySelector<HTMLTextAreaElement>("#custom-rule-prompt")!;
     expect(prompt.value).toBe("Giữ nguyên tên SoátVăn.");
+    expect(document.querySelector('[data-prompt-id="rule-1"]')?.getAttribute("aria-current")).toBe("true");
     prompt.value = "Giữ nguyên tên riêng SoátVăn.";
     prompt.dispatchEvent(new InputEvent("input", { bubbles: true }));
     document.querySelector<HTMLFormElement>("#custom-rule-form")!.requestSubmit();
@@ -581,21 +617,328 @@ describe("four-step desktop workflow", () => {
     await vi.waitFor(() => expect(api.customRuleUpsert).toHaveBeenCalledWith("rule-1", "Giữ nguyên tên riêng SoátVăn."));
   });
 
-  it("keeps Settings modal, labelled tabs, and focus inside the dialog", async () => {
+  it("guards every prompt draft exit and supports cancelling or confirming discard", async () => {
+    await loadApp({
+      customRuleList: () => Promise.resolve([
+        customRule("rule-1", "Prompt one."),
+        customRule("rule-2", "Prompt two.", "2026-08-25T02:00:00.000000Z"),
+      ]),
+    });
+    document.querySelector<HTMLButtonElement>("#settings")!.click();
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-prompt-id="rule-2"]')).not.toBeNull());
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')?.disabled).toBe(false));
+
+    const changeDraft = (value: string) => {
+      const textarea = document.querySelector<HTMLTextAreaElement>("#custom-rule-prompt")!;
+      textarea.value = value;
+      textarea.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    };
+    const expectDiscardPrompt = async () => {
+      await vi.waitFor(() => expect(document.querySelector("#prompt-discard-confirmation")).not.toBeNull());
+      await vi.waitFor(() => expect((document.activeElement as HTMLElement | null)?.id).toBe("cancel-prompt-discard"));
+    };
+
+    changeDraft("Unsaved new prompt.");
+    document.querySelector<HTMLButtonElement>("#settings-back")!.click();
+    await expectDiscardPrompt();
+    expect(document.querySelector("#settings-page")).not.toBeNull();
+    document.querySelector<HTMLButtonElement>("#cancel-prompt-discard")!.click();
+    await vi.waitFor(() => expect(document.querySelector("#prompt-discard-confirmation")).toBeNull());
+    expect(document.querySelector<HTMLTextAreaElement>("#custom-rule-prompt")!.value).toBe("Unsaved new prompt.");
+
+    document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')!.click();
+    await expectDiscardPrompt();
+    document.querySelector<HTMLButtonElement>("#cancel-prompt-discard")!.click();
+    expect(document.querySelector('[data-settings-section="prompts"]')?.getAttribute("aria-current")).toBe("page");
+    expect(document.querySelector<HTMLTextAreaElement>("#custom-rule-prompt")!.value).toBe("Unsaved new prompt.");
+    document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')!.click();
+    await expectDiscardPrompt();
+    document.querySelector<HTMLButtonElement>("#confirm-prompt-discard")!.click();
+    await vi.waitFor(() => expect((document.activeElement as HTMLElement | null)?.id).toBe("settings-models-title"));
+
+    document.querySelector<HTMLButtonElement>('[data-settings-section="prompts"]')!.click();
+    await vi.waitFor(() => expect((document.activeElement as HTMLElement | null)?.id).toBe("settings-prompts-title"));
+    document.querySelector<HTMLButtonElement>('[data-prompt-id="rule-1"]')!.click();
+    changeDraft("Edited prompt one.");
+    document.querySelector<HTMLButtonElement>("#new-custom-rule")!.click();
+    await expectDiscardPrompt();
+    document.querySelector<HTMLButtonElement>("#cancel-prompt-discard")!.click();
+    expect(document.querySelector<HTMLTextAreaElement>("#custom-rule-prompt")!.value).toBe("Edited prompt one.");
+    expect(document.querySelector('[data-prompt-id="rule-1"]')?.getAttribute("aria-current")).toBe("true");
+    document.querySelector<HTMLButtonElement>("#new-custom-rule")!.click();
+    await expectDiscardPrompt();
+    document.querySelector<HTMLButtonElement>("#confirm-prompt-discard")!.click();
+    await vi.waitFor(() => expect(document.querySelector<HTMLTextAreaElement>("#custom-rule-prompt")?.value).toBe(""));
+    expect(document.querySelector('[data-prompt-id][aria-current="true"]')).toBeNull();
+
+    document.querySelector<HTMLButtonElement>('[data-prompt-id="rule-1"]')!.click();
+    changeDraft("Another edit to prompt one.");
+    document.querySelector<HTMLButtonElement>('[data-prompt-id="rule-2"]')!.click();
+    await expectDiscardPrompt();
+    document.querySelector<HTMLButtonElement>("#cancel-prompt-discard")!.click();
+    expect(document.querySelector('[data-prompt-id="rule-1"]')?.getAttribute("aria-current")).toBe("true");
+    expect(document.querySelector<HTMLTextAreaElement>("#custom-rule-prompt")!.value).toBe("Another edit to prompt one.");
+    document.querySelector<HTMLButtonElement>('[data-prompt-id="rule-2"]')!.click();
+    await expectDiscardPrompt();
+    document.querySelector<HTMLButtonElement>("#confirm-prompt-discard")!.click();
+    await vi.waitFor(() => expect(document.querySelector('[data-prompt-id="rule-2"]')?.getAttribute("aria-current")).toBe("true"));
+    expect(document.querySelector<HTMLTextAreaElement>("#custom-rule-prompt")!.value).toBe("Prompt two.");
+
+    changeDraft("Edited prompt two.");
+    document.querySelector<HTMLButtonElement>("#settings-back")!.click();
+    await expectDiscardPrompt();
+    document.querySelector<HTMLButtonElement>("#confirm-prompt-discard")!.click();
+    await vi.waitFor(() => expect(document.querySelector("#settings-page")).toBeNull());
+    expect((document.activeElement as HTMLElement | null)?.id).toBe("settings");
+  });
+
+  it("marks the prompt editor invalid and describes it with the save error", async () => {
+    const api = await loadApp({
+      customRuleUpsert: () => Promise.reject(new Error("aggregate prompt limit")),
+    });
+    document.querySelector<HTMLButtonElement>("#settings")!.click();
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>("#new-custom-rule")?.disabled).toBe(false));
+    const prompt = document.querySelector<HTMLTextAreaElement>("#custom-rule-prompt")!;
+    prompt.value = "This prompt will be rejected.";
+    prompt.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    document.querySelector<HTMLFormElement>("#custom-rule-form")!.requestSubmit();
+
+    await vi.waitFor(() => expect(api.customRuleUpsert).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(document.querySelector<HTMLTextAreaElement>("#custom-rule-prompt")?.getAttribute("aria-invalid")).toBe("true"));
+    const invalidPrompt = document.querySelector<HTMLTextAreaElement>("#custom-rule-prompt")!;
+    expect(invalidPrompt.getAttribute("aria-describedby")?.split(/\s+/)).toEqual(
+      expect.arrayContaining(["custom-rule-help", "custom-rule-count", "settings-message"]),
+    );
+    expect(document.querySelector("#settings-message")?.getAttribute("role")).toBe("alert");
+    expect(document.activeElement).toBe(invalidPrompt);
+  });
+
+  it("keeps busy prompt navigation focusable and sends blocked actions to the status message", async () => {
+    const save = deferred<CustomRule>();
+    const api = await loadApp({ customRuleUpsert: () => save.promise });
+    document.querySelector<HTMLButtonElement>("#settings")!.click();
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>("#new-custom-rule")?.disabled).toBe(false));
+    const prompt = document.querySelector<HTMLTextAreaElement>("#custom-rule-prompt")!;
+    prompt.value = "Pending prompt.";
+    prompt.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    document.querySelector<HTMLFormElement>("#custom-rule-form")!.requestSubmit();
+    await vi.waitFor(() => expect(api.customRuleUpsert).toHaveBeenCalledOnce());
+
+    let back = document.querySelector<HTMLButtonElement>("#settings-back")!;
+    expect(back.disabled).toBe(false);
+    expect(back.getAttribute("aria-disabled")).toBe("true");
+    expect(back.tabIndex).toBe(0);
+    back.click();
+    await vi.waitFor(() => expect((document.activeElement as HTMLElement | null)?.id).toBe("settings-message"));
+    expect(document.querySelector('[data-settings-section="prompts"]')?.getAttribute("aria-current")).toBe("page");
+
+    const models = document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')!;
+    expect(models.disabled).toBe(false);
+    expect(models.getAttribute("aria-disabled")).toBe("true");
+    models.click();
+    await vi.waitFor(() => expect((document.activeElement as HTMLElement | null)?.id).toBe("settings-message"));
+    expect(document.querySelector('[data-settings-section="prompts"]')?.getAttribute("aria-current")).toBe("page");
+
+    save.resolve(customRule("rule-created", "Pending prompt."));
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>("#settings-back")?.hasAttribute("aria-disabled")).toBe(false));
+  });
+
+  it("renders exactly one Settings main with labelled local-section navigation and page keyboard semantics", async () => {
     await loadApp();
     document.querySelector<HTMLButtonElement>("#settings")!.click();
-    await vi.waitFor(() => expect(document.querySelector("#settings-dialog")).not.toBeNull());
-    await vi.waitFor(() => expect((document.activeElement as HTMLElement | null)?.id).toBe("custom-rule-prompt"));
-    const dialog = document.querySelector<HTMLDialogElement>("#settings-dialog")!;
-    expect(dialog.getAttribute("aria-labelledby")).toBe("settings-title");
-    expect(document.querySelector("main")?.hasAttribute("inert")).toBe(true);
-    const activeTab = document.querySelector<HTMLButtonElement>('[role="tab"][aria-selected="true"]')!;
-    expect(activeTab.dataset.tab).toBe("custom-rules");
-    activeTab.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
-    await vi.waitFor(() => expect(document.querySelector('[role="tab"][aria-selected="true"]')?.getAttribute("data-tab")).toBe("model"));
-    expect(document.querySelector('[role="tabpanel"]')?.getAttribute("aria-labelledby")).toBe("settings-tab-model");
-    document.querySelector<HTMLButtonElement>("#close-settings")!.click();
+    await vi.waitFor(() => expect(document.querySelector("#settings-page")).not.toBeNull());
+    await vi.waitFor(() => expect((document.activeElement as HTMLElement | null)?.id).toBe("settings-title"));
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-settings-section="prompts"]')?.disabled).toBe(false));
+    const page = document.querySelector<HTMLElement>("#settings-page")!;
+    expect(page.tagName).toBe("MAIN");
+    expect(page.getAttribute("aria-labelledby")).toBe("settings-title");
+    expect(document.querySelectorAll("main")).toHaveLength(1);
+    expect(document.querySelector("dialog, [role=tablist], [role=tab], [role=tabpanel], [inert]")).toBeNull();
+    expect(document.querySelector(".progress-strip, .workflow-shell")).toBeNull();
+
+    const localNav = page.querySelector<HTMLElement>('nav.settings-nav[aria-label="Mục cài đặt"]')!;
+    const sectionButtons = [...localNav.querySelectorAll<HTMLButtonElement>("[data-settings-section]")];
+    expect(sectionButtons.map(button => button.dataset.settingsSection)).toEqual(["prompts", "review-rules", "models"]);
+    expect(localNav.querySelectorAll('[aria-current="page"]')).toHaveLength(1);
+    expect(localNav.querySelector('[aria-current="page"]')?.getAttribute("data-settings-section")).toBe("prompts");
+    expect(page.querySelectorAll(".settings-section")).toHaveLength(1);
+    expect(page.querySelector("#settings-prompts")?.getAttribute("aria-labelledby")).toBe("settings-prompts-title");
+    const footer = page.querySelector<HTMLElement>(".settings-footer")!;
+    expect(footer.querySelector('button[type="submit"][form="custom-rule-form"]')).not.toBeNull();
+
+    document.querySelector<HTMLButtonElement>('[data-settings-section="review-rules"]')!.click();
+    await vi.waitFor(() => expect((document.activeElement as HTMLElement | null)?.id).toBe("settings-review-rules-title"));
+    expect(document.querySelector('[data-settings-section="review-rules"]')?.getAttribute("aria-current")).toBe("page");
+    expect(document.querySelectorAll('[aria-current="page"][data-settings-section]')).toHaveLength(1);
+    expect(document.querySelector("#settings-review-rules")?.getAttribute("aria-labelledby")).toBe("settings-review-rules-title");
+    expect(document.querySelectorAll("[data-review-rule]")).toHaveLength(5);
+
+    document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')!.click();
+    await vi.waitFor(() => expect((document.activeElement as HTMLElement | null)?.id).toBe("settings-models-title"));
+    expect(document.querySelector('[data-settings-section="models"]')?.getAttribute("aria-current")).toBe("page");
+    expect(document.querySelectorAll('[aria-current="page"][data-settings-section]')).toHaveLength(1);
+    expect(document.querySelector("#settings-models")?.getAttribute("aria-labelledby")).toBe("settings-models-title");
+    expect(
+      [...document.querySelectorAll<HTMLButtonElement>(".settings-footer button")].map(button => button.id),
+    ).toEqual(["model-import", "model-action"]);
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    expect(document.querySelector("#settings-page")).not.toBeNull();
+    const currentPage = document.querySelector<HTMLElement>("#settings-page")!;
+    const focusable = [...currentPage.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')];
+    const lastFocusable = focusable.at(-1)!;
+    lastFocusable.focus();
+    const tabEvent = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+    lastFocusable.dispatchEvent(tabEvent);
+    expect(tabEvent.defaultPrevented).toBe(false);
+    expect(document.querySelector("#settings-page")).not.toBeNull();
+
+    document.querySelector<HTMLButtonElement>("#settings-back")!.click();
     await vi.waitFor(() => expect((document.activeElement as HTMLElement | null)?.id).toBe("settings"));
+  });
+
+  it("returns focus to each workflow Settings opener", async () => {
+    const api = await loadApp({
+      customRuleList: () => Promise.resolve([customRule("rule-1", "Giữ nguyên tên SoátVăn.")]),
+    });
+    await vi.waitFor(() => expect(api.customRuleList).toHaveBeenCalled());
+    await chooseDocument();
+    await vi.waitFor(() => expect(document.body.textContent).toContain("1 quy tắc riêng"));
+
+    const cases = [
+      ["manage-custom-rules", "settings-prompts-title"],
+      ["manage-review-rules", "settings-review-rules-title"],
+      ["open-model-settings", "settings-models-title"],
+    ] as const;
+
+    for (const [openerId, headingId] of cases) {
+      const opener = document.querySelector<HTMLButtonElement>(`#${openerId}`)!;
+      expect(opener).not.toBeNull();
+      opener.focus();
+      opener.click();
+      await vi.waitFor(() => expect(document.querySelector("#settings-page")).not.toBeNull());
+      await vi.waitFor(() => expect((document.activeElement as HTMLElement | null)?.id).toBe(headingId));
+      await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>("#settings-back")?.disabled).toBe(false));
+      document.querySelector<HTMLButtonElement>("#settings-back")!.click();
+      await vi.waitFor(() => expect((document.activeElement as HTMLElement | null)?.id).toBe(openerId));
+      expect(document.querySelector("#start")).not.toBeNull();
+      expect(document.body.textContent).toContain("nguồn.docx");
+    }
+  });
+
+  it("keeps the fixed review-rule inventory read-only and preserves workflow review state", async () => {
+    const api = await loadApp({ modelStatus: () => Promise.resolve(signedReadyModel) });
+    await chooseDocument();
+    await vi.waitFor(() => expect(document.querySelector("#include-rule-findings")).not.toBeNull());
+    document.querySelector<HTMLInputElement>("#include-rule-findings")!.click();
+    expect(document.querySelector<HTMLInputElement>("#include-rule-findings")!.checked).toBe(true);
+
+    document.querySelector<HTMLButtonElement>("#manage-review-rules")!.click();
+    await vi.waitFor(() => expect((document.activeElement as HTMLElement | null)?.id).toBe("settings-review-rules-title"));
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>("#settings-back")?.disabled).toBe(false));
+    const inventory = document.querySelector<HTMLElement>("#settings-review-rules")!;
+    expect(inventory.getAttribute("aria-labelledby")).toBe("settings-review-rules-title");
+    const ruleList = inventory.querySelector<HTMLUListElement>("ul.review-rule-inventory")!;
+    expect(ruleList).not.toBeNull();
+    expect(ruleList.querySelectorAll(":scope > li.review-rule-row[data-review-rule]")).toHaveLength(5);
+    expect([...ruleList.children].every(item => item.tagName === "LI")).toBe(true);
+    expect(inventory.querySelector("article.review-rule-row")).toBeNull();
+    expect(inventory.querySelector("button, input, select, textarea")).toBeNull();
+    expect(inventory.querySelector('[data-rule-toggle], input[name="preset"], #dictionary-form, #ignored-words')).toBeNull();
+    expect(document.querySelector("#full-review, #include-rule-findings")).toBeNull();
+
+    document.querySelector<HTMLButtonElement>("#settings-back")!.click();
+    await vi.waitFor(() => expect((document.activeElement as HTMLElement | null)?.id).toBe("manage-review-rules"));
+    expect(document.querySelector('.stepper li[aria-current="step"]')?.textContent).toContain("Chuẩn bị");
+    expect(document.body.textContent).toContain("nguồn.docx");
+    expect(document.querySelector<HTMLInputElement>("#full-review")?.checked).toBe(true);
+    expect(document.querySelector<HTMLInputElement>("#include-rule-findings")?.checked).toBe(true);
+    expect(api.chooseDocument).toHaveBeenCalledOnce();
+    expect(api.inspectDropped).not.toHaveBeenCalled();
+  });
+
+  it("ignores Ctrl+O plus HTML and Tauri file drops while Settings is active", async () => {
+    const api = await loadApp();
+    document.querySelector<HTMLButtonElement>("#settings")!.click();
+    await vi.waitFor(() => expect(document.querySelector("#settings-page")).not.toBeNull());
+
+    const shortcut = new KeyboardEvent("keydown", { key: "o", ctrlKey: true, bubbles: true, cancelable: true });
+    window.dispatchEvent(shortcut);
+    expect(shortcut.defaultPrevented).toBe(true);
+
+    const file = new File(["docx"], "khác.docx", { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" }) as File & { path?: string };
+    Object.defineProperty(file, "path", { value: "C:\\Tài liệu\\khác.docx" });
+    const htmlDrop = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(htmlDrop, "dataTransfer", { value: { files: [file] } });
+    window.dispatchEvent(htmlDrop);
+    api.emitFileDrop("C:\\Tài liệu\\khác-tauri.docx");
+    await Promise.resolve();
+
+    expect(htmlDrop.defaultPrevented).toBe(true);
+    expect(api.chooseDocument).not.toHaveBeenCalled();
+    expect(api.inspectDropped).not.toHaveBeenCalled();
+    expect(document.querySelector("#settings-page")).not.toBeNull();
+  });
+
+  it("falls back to the workflow heading when a conditional Settings opener disappears", async () => {
+    const api = await loadApp({
+      customRuleList: () => Promise.resolve([customRule("rule-1", "Keep this prompt.")]),
+    });
+    await vi.waitFor(() => expect(api.customRuleList).toHaveBeenCalled());
+    await chooseDocument();
+    await vi.waitFor(() => expect(document.querySelector("#open-model-settings")).not.toBeNull());
+
+    document.querySelector<HTMLButtonElement>("#open-model-settings")!.click();
+    await vi.waitFor(() => expect((document.activeElement as HTMLElement | null)?.id).toBe("settings-models-title"));
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>("#model-action")?.disabled).toBe(false));
+    document.querySelector<HTMLButtonElement>("#model-action")!.click();
+    await vi.waitFor(() => expect(document.querySelector<HTMLInputElement>("#use-model")?.checked).toBe(true));
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>("#settings-back")?.hasAttribute("aria-disabled")).toBe(false));
+    document.querySelector<HTMLButtonElement>("#settings-back")!.click();
+
+    await vi.waitFor(() => expect(document.querySelector("#settings-page")).toBeNull());
+    expect(document.querySelector("#open-model-settings")).toBeNull();
+    const workflowHeading = document.querySelector<HTMLElement>(".workflow-card h1")!;
+    await vi.waitFor(() => expect(document.activeElement).toBe(workflowHeading));
+    expect(workflowHeading.getAttribute("tabindex")).toBe("-1");
+    expect(document.querySelector("#start")).not.toBeNull();
+  });
+
+  it("shows the Settings shell immediately and does not reopen after Back wins deferred loads", async () => {
+    const modelLoad = deferred<ModelStatus>();
+    const ruleLoad = deferred<CustomRule[]>();
+    let modelStatusCalls = 0;
+    let customRuleListCalls = 0;
+    const api = await loadApp({
+      modelStatus: () => {
+        modelStatusCalls += 1;
+        return modelStatusCalls === 1 ? Promise.resolve({ state: "not_installed" }) : modelLoad.promise;
+      },
+      customRuleList: () => {
+        customRuleListCalls += 1;
+        return customRuleListCalls === 1 ? Promise.resolve([]) : ruleLoad.promise;
+      },
+    });
+    await vi.waitFor(() => expect(api.modelStatus).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(api.customRuleList).toHaveBeenCalledOnce());
+
+    document.querySelector<HTMLButtonElement>("#settings")!.click();
+    await vi.waitFor(() => expect(api.modelStatus).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(api.customRuleList).toHaveBeenCalledTimes(2));
+    const page = document.querySelector<HTMLElement>("#settings-page")!;
+    expect(page).not.toBeNull();
+    expect(page.getAttribute("aria-busy")).toBe("true");
+    const back = document.querySelector<HTMLButtonElement>("#settings-back")!;
+    expect(back.disabled).toBe(false);
+    back.click();
+    await vi.waitFor(() => expect(document.querySelector("#choose")).not.toBeNull());
+
+    modelLoad.resolve({ state: "not_installed" });
+    ruleLoad.resolve([]);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(document.querySelector("#settings-page")).toBeNull();
+    expect(document.querySelector("#choose")).not.toBeNull();
   });
 
   it("compiles saved prompts and offers full review for an approved capable model", async () => {
@@ -613,11 +956,37 @@ describe("four-step desktop workflow", () => {
     expect(fullReview).not.toBeNull();
     expect(fullReview.checked).toBe(true);
     expect(document.body.textContent).toContain("Chỉ dùng AI để rà soát");
+    const includeRuleFindings = document.querySelector<HTMLInputElement>("#include-rule-findings")!;
+    expect(includeRuleFindings).not.toBeNull();
+    expect(includeRuleFindings.checked).toBe(false);
+    expect(document.body.textContent).toContain("Bổ sung cảnh báo từ bộ quy tắc code");
+    expect(document.body.textContent).toContain("AI vẫn rà toàn văn");
+    includeRuleFindings.click();
+    expect(document.querySelector<HTMLInputElement>("#include-rule-findings")!.checked).toBe(true);
+    expect(document.body.textContent).toContain("AI rà soát toàn văn");
+    expect(document.body.textContent).not.toContain("Chỉ dùng AI để rà soát");
+    expect(document.body.textContent).toContain("AI là lớp rà soát chính");
     document.querySelector<HTMLButtonElement>("#start")!.click();
     await vi.waitFor(() => expect(api.startJob).toHaveBeenCalled());
     expect(api.startJob.mock.calls[0][3]).toBe("Giữ nguyên tên SoátVăn.\n\nDùng thuật ngữ khách hàng.");
     expect(api.startJob.mock.calls[0][4]).toBe(true);
     expect(api.startJob.mock.calls[0][7]).toBe(true);
+    expect(api.startJob.mock.calls[0][8]).toBe(true);
+  });
+
+  it("resets the optional code-rule findings when full review is switched off", async () => {
+    await loadApp({ modelStatus: () => Promise.resolve(signedReadyModel) });
+    await chooseDocument();
+    await vi.waitFor(() => expect(document.querySelector("#include-rule-findings")).not.toBeNull());
+    document.querySelector<HTMLInputElement>("#include-rule-findings")!.click();
+    expect(document.querySelector<HTMLInputElement>("#include-rule-findings")!.checked).toBe(true);
+
+    document.querySelector<HTMLInputElement>("#full-review")!.click();
+    expect(document.querySelector("#include-rule-findings")).toBeNull();
+    expect(document.body.textContent).toContain("Bộ kiểm tra cơ bản sẽ tạo candidate");
+
+    document.querySelector<HTMLInputElement>("#full-review")!.click();
+    expect(document.querySelector<HTMLInputElement>("#include-rule-findings")!.checked).toBe(false);
   });
 
   it("deactivates the model runtime when AI is switched off", async () => {
@@ -627,21 +996,29 @@ describe("four-step desktop workflow", () => {
     });
     await vi.waitFor(() => expect(api.customRuleList).toHaveBeenCalled());
     await chooseDocument();
-    document.querySelector<HTMLInputElement>("#full-review")!.click();
+    await vi.waitFor(() => expect(document.querySelector("#include-rule-findings")).not.toBeNull());
+    document.querySelector<HTMLInputElement>("#include-rule-findings")!.click();
+    expect(document.querySelector<HTMLInputElement>("#include-rule-findings")!.checked).toBe(true);
     document.querySelector<HTMLButtonElement>("#settings")!.click();
-    await vi.waitFor(() => expect(document.querySelector('[data-tab="model"]')).not.toBeNull());
-    document.querySelector<HTMLButtonElement>('[data-tab="model"]')!.click();
-    document.querySelector<HTMLInputElement>("#use-model")!.click();
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')?.disabled).toBe(false));
+    document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')!.click();
+    await vi.waitFor(() => expect(document.querySelector<HTMLInputElement>("#use-model")?.disabled).toBe(false));
+    const useModel = document.querySelector<HTMLInputElement>("#use-model")!;
+    expect(useModel.disabled).toBe(false);
+    expect(useModel.checked).toBe(true);
+    useModel.click();
     await vi.waitFor(() => expect(api.modelDeactivate).toHaveBeenCalledOnce());
     expect(document.querySelector<HTMLInputElement>("#use-model")!.checked).toBe(false);
-    document.querySelector<HTMLButtonElement>("#close-settings")!.click();
+    document.querySelector<HTMLButtonElement>("#settings-back")!.click();
     expect(document.querySelector("#full-review")).toBeNull();
+    expect(document.querySelector("#include-rule-findings")).toBeNull();
     expect(document.body.textContent).toContain("Chưa được áp dụng vì AI cục bộ đang tắt");
     document.querySelector<HTMLButtonElement>("#start")!.click();
     await vi.waitFor(() => expect(api.startJob).toHaveBeenCalled());
     expect(api.startJob.mock.calls[0][3]).toBe("");
     expect(api.startJob.mock.calls[0][4]).toBe(false);
     expect(api.startJob.mock.calls[0][7]).toBe(false);
+    expect(api.startJob.mock.calls[0][8]).toBe(false);
   });
 
   it("offers experimental full review for local-unverified AI without release approval", async () => {
@@ -664,24 +1041,28 @@ describe("four-step desktop workflow", () => {
     expect(fullReview.checked).toBe(true);
     expect(document.body.textContent).toContain("chế độ thử nghiệm");
     document.querySelector<HTMLButtonElement>("#settings")!.click();
-    await vi.waitFor(() => expect(document.querySelector('[data-tab="model"]')).not.toBeNull());
-    document.querySelector<HTMLButtonElement>('[data-tab="model"]')!.click();
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')?.disabled).toBe(false));
+    document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')!.click();
     expect(document.body.textContent).toContain("kết quả chưa được phê duyệt cho phát hành");
-    document.querySelector<HTMLButtonElement>("#close-settings")!.click();
+    document.querySelector<HTMLButtonElement>("#settings-back")!.click();
     document.querySelector<HTMLButtonElement>("#start")!.click();
     await vi.waitFor(() => expect(api.startJob).toHaveBeenCalled());
     expect(api.startJob.mock.calls[0][3]).toBe("Không đổi tên đơn vị.");
     expect(api.startJob.mock.calls[0][4]).toBe(true);
     expect(api.startJob.mock.calls[0][7]).toBe(true);
+    expect(api.startJob.mock.calls[0][8]).toBe(false);
   });
 
   it("cancels an import and ignores its late success", async () => {
     const imported = deferred<ModelStatus | null>();
     const api = await loadApp({ modelImport: () => imported.promise });
     document.querySelector<HTMLButtonElement>("#settings")!.click();
-    await vi.waitFor(() => expect(document.querySelector('[data-tab="model"]')).not.toBeNull());
-    document.querySelector<HTMLButtonElement>('[data-tab="model"]')!.click();
-    document.querySelector<HTMLButtonElement>("#model-import")!.click();
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')?.disabled).toBe(false));
+    document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')!.click();
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>("#model-import")?.disabled).toBe(false));
+    const modelImport = document.querySelector<HTMLButtonElement>("#model-import")!;
+    expect(modelImport.disabled).toBe(false);
+    modelImport.click();
     await vi.waitFor(() => expect(api.modelImport).toHaveBeenCalledOnce());
     expect(document.body.textContent).toContain("Đang nhập gói model");
     document.querySelector<HTMLButtonElement>("#model-action")!.click();
@@ -700,20 +1081,49 @@ describe("four-step desktop workflow", () => {
     const download = deferred<ModelStatus>();
     api.modelDownload.mockReturnValue(download.promise);
     document.querySelector<HTMLButtonElement>("#settings")!.click();
-    await vi.waitFor(() => expect(document.querySelector('[data-tab="model"]')).not.toBeNull());
-    document.querySelector<HTMLButtonElement>('[data-tab="model"]')!.click();
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')?.disabled).toBe(false));
+    document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')!.click();
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>("#model-action")?.disabled).toBe(false));
     const modelRadios = [...document.querySelectorAll<HTMLInputElement>('input[name="gemma-select"]')];
     expect(modelRadios).toHaveLength(3);
     expect(modelRadios.every(radio => radio.labels.length === 1)).toBe(true);
     expect(document.querySelectorAll("[data-model-download]")).toHaveLength(0);
-    document.querySelector<HTMLButtonElement>("#model-action")!.click();
+    const modelAction = document.querySelector<HTMLButtonElement>("#model-action")!;
+    expect(modelAction.disabled).toBe(false);
+    modelAction.click();
     await vi.waitFor(() => expect(api.modelDownload).toHaveBeenCalled());
     expect(document.body.textContent).toContain("Đang tải model");
+    const lockedBack = document.querySelector<HTMLButtonElement>("#settings-back")!;
+    const lockedReviewNav = document.querySelector<HTMLButtonElement>("#review-nav")!;
+    const lockedSections = [...document.querySelectorAll<HTMLButtonElement>("[data-settings-section]")];
+    expect(lockedBack.disabled).toBe(false);
+    expect(lockedBack.getAttribute("aria-disabled")).toBe("true");
+    expect(lockedBack.getAttribute("aria-describedby")).toBe("settings-message");
+    expect(lockedBack.tabIndex).toBe(0);
+    expect(lockedReviewNav.disabled).toBe(false);
+    expect(lockedReviewNav.getAttribute("aria-disabled")).toBe("true");
+    expect(lockedSections.every(button => !button.disabled && button.getAttribute("aria-disabled") === "true")).toBe(true);
+
+    lockedBack.click();
+    await vi.waitFor(() => expect((document.activeElement as HTMLElement | null)?.id).toBe("settings-message"));
+    expect(document.querySelector('[data-settings-section="models"]')?.getAttribute("aria-current")).toBe("page");
+    expect(document.querySelector("#settings-page")).not.toBeNull();
+
+    const lockedPromptNav = document.querySelector<HTMLButtonElement>('[data-settings-section="prompts"]')!;
+    lockedPromptNav.click();
+    await vi.waitFor(() => expect((document.activeElement as HTMLElement | null)?.id).toBe("settings-message"));
+    expect(document.querySelector('[data-settings-section="models"]')?.getAttribute("aria-current")).toBe("page");
+    expect(document.querySelector("#settings-page")).not.toBeNull();
     api.emitModelProgress(512, 1024);
     expect(document.querySelector("#model-download-progress")?.getAttribute("aria-valuenow")).toBe("50");
     document.querySelector<HTMLButtonElement>("#model-action")!.click();
     await vi.waitFor(() => expect(api.modelCancel).toHaveBeenCalled());
     expect(document.body.textContent).toContain("Chưa cài AI cục bộ");
+    expect(document.querySelector<HTMLButtonElement>("#settings-back")?.disabled).toBe(false);
+    expect(document.querySelector<HTMLButtonElement>("#settings-back")?.hasAttribute("aria-disabled")).toBe(false);
+    expect(
+      [...document.querySelectorAll<HTMLButtonElement>("[data-settings-section]")].every(button => !button.disabled && !button.hasAttribute("aria-disabled")),
+    ).toBe(true);
     download.resolve(signedReadyModel);
     await Promise.resolve();
     expect(document.body.textContent).toContain("Chưa cài AI cục bộ");

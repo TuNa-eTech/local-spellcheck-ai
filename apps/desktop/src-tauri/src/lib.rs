@@ -130,6 +130,8 @@ struct StartJobRequest {
     use_model: bool,
     #[serde(default)]
     full_review: bool,
+    #[serde(default)]
+    include_rule_findings: bool,
     rule_options: RuleOptions,
     ignored_words: Vec<String>,
 }
@@ -143,6 +145,7 @@ struct SidecarJobParams<'a> {
     custom_prompt: &'a str,
     use_model: bool,
     full_review: bool,
+    include_rule_findings: bool,
     rule_config: &'a RuleOptions,
     ignored_words: &'a [String],
 }
@@ -204,6 +207,7 @@ async fn start_job(request: StartJobRequest, state: State<'_, AppState>) -> AppR
         custom_prompt,
         use_model,
         full_review,
+        include_rule_findings,
         rule_options,
         ignored_words,
     } = request;
@@ -212,7 +216,12 @@ async fn start_job(request: StartJobRequest, state: State<'_, AppState>) -> AppR
         return Err(AppError::Engine("PRESET_INVALID".into()));
     }
     validate_custom_prompt(&custom_prompt)?;
-    validate_model_job_options(&custom_prompt, use_model, full_review)?;
+    validate_model_job_options(
+        &custom_prompt,
+        use_model,
+        full_review,
+        include_rule_findings,
+    )?;
     if use_model {
         let model_status = engine_model_status(&state.engine, true)?;
         if model_status.state != "ready" || !model_status.capabilities.candidate_filter {
@@ -253,6 +262,7 @@ async fn start_job(request: StartJobRequest, state: State<'_, AppState>) -> AppR
             custom_prompt: &custom_prompt,
             use_model,
             full_review,
+            include_rule_findings,
             rule_config: &rule_options,
             ignored_words: &ignored_words,
         })?,
@@ -379,12 +389,18 @@ fn validate_model_job_options(
     custom_prompt: &str,
     use_model: bool,
     full_review: bool,
+    include_rule_findings: bool,
 ) -> AppResult<()> {
     if !custom_prompt.trim().is_empty() && !use_model {
         return Err(AppError::Engine("CUSTOM_PROMPT_REQUIRES_MODEL".into()));
     }
     if full_review && !use_model {
         return Err(AppError::Engine("FULL_REVIEW_REQUIRES_MODEL".into()));
+    }
+    if include_rule_findings && (!use_model || !full_review) {
+        return Err(AppError::Engine(
+            "INCLUDE_RULE_FINDINGS_REQUIRES_FULL_REVIEW".into(),
+        ));
     }
     Ok(())
 }
@@ -1290,24 +1306,55 @@ mod tests {
             serde_json::from_value(start_job_request_json()).expect("deserialize request");
 
         assert!(!request.full_review);
+        assert!(!request.include_rule_findings);
     }
 
     #[test]
-    fn full_review_uses_camel_case_at_the_tauri_boundary() {
+    fn full_review_options_use_camel_case_at_the_tauri_boundary() {
         let mut value = start_job_request_json();
         value["fullReview"] = json!(true);
+        value["includeRuleFindings"] = json!(true);
 
         let request: StartJobRequest = serde_json::from_value(value).expect("deserialize request");
 
         assert!(request.full_review);
+        assert!(request.include_rule_findings);
+    }
+
+    #[test]
+    fn include_rule_findings_requires_a_boolean() {
+        let mut value = start_job_request_json();
+        value["includeRuleFindings"] = json!("true");
+
+        serde_json::from_value::<StartJobRequest>(value)
+            .expect_err("string booleans must be rejected");
     }
 
     #[test]
     fn full_review_requires_an_enabled_model() {
-        let error = validate_model_job_options("", false, true).expect_err("must reject request");
+        let error =
+            validate_model_job_options("", false, true, false).expect_err("must reject request");
 
         assert_eq!(error.to_string(), "FULL_REVIEW_REQUIRES_MODEL");
-        assert!(validate_model_job_options("", true, true).is_ok());
+        assert!(validate_model_job_options("", true, true, false).is_ok());
+    }
+
+    #[test]
+    fn rule_findings_require_model_full_review() {
+        let no_model =
+            validate_model_job_options("", false, false, true).expect_err("must reject request");
+        let filter_mode =
+            validate_model_job_options("", true, false, true).expect_err("must reject request");
+
+        assert_eq!(
+            no_model.to_string(),
+            "INCLUDE_RULE_FINDINGS_REQUIRES_FULL_REVIEW"
+        );
+        assert_eq!(
+            filter_mode.to_string(),
+            "INCLUDE_RULE_FINDINGS_REQUIRES_FULL_REVIEW"
+        );
+        assert!(validate_model_job_options("", true, true, true).is_ok());
     }
 
     #[test]
@@ -1318,7 +1365,7 @@ mod tests {
     }
 
     #[test]
-    fn sidecar_job_params_include_full_review() {
+    fn sidecar_job_params_include_full_review_options() {
         let rules = RuleOptions {
             technical: true,
             repeated_words: true,
@@ -1335,12 +1382,14 @@ mod tests {
             custom_prompt: "",
             use_model: true,
             full_review: true,
+            include_rule_findings: true,
             rule_config: &rules,
             ignored_words: &ignored_words,
         })
         .expect("serialize sidecar params");
 
         assert_eq!(payload["full_review"], true);
+        assert_eq!(payload["include_rule_findings"], true);
         assert_eq!(payload["use_model"], true);
     }
 

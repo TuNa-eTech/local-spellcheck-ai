@@ -1,22 +1,40 @@
 {
-  "date": "2026-08-22",
-  "artifact": "docs/mockup.html",
+  "date": "2026-08-27",
+  "artifact": "apps/desktop",
+  "scope": "app",
   "existing_signals": {
-    "framework": null,
-    "global_stylesheets": [],
-    "design_tokens": [],
-    "font_stack": [],
-    "palette": [],
-    "motion_system": [],
-    "spacing_scale": []
+    "framework": "Tauri 2, Vite and vanilla TypeScript",
+    "global_stylesheets": [
+      "tokens.css",
+      "apps/desktop/src/styles.css"
+    ],
+    "design_tokens": "root CSS custom properties; OKLCH palette; 4-point spacing scale",
+    "design_system": "design.md",
+    "font_stack": [
+      "Bahnschrift",
+      "Segoe UI Variable",
+      "Segoe UI"
+    ],
+    "palette": "Cobalt on cool paper",
+    "motion_system": "CSS duration/easing tokens; press feedback; functional progress rotation; reduced-motion fallback",
+    "spacing_scale": "4-point token scale with compact role tokens",
+    "window": "1040x640 default; 720x540 minimum",
+    "preserve": [
+      "four-step workflow",
+      "fixed detector set without per-detector controls",
+      "heading focus, exact return focus and live-region behaviour",
+      "typed Tauri API boundary"
+    ]
   },
   "introduced": {
-    "framework": "vanilla HTML, CSS and JavaScript",
-    "token_file": "tokens.css",
-    "font_policy": "offline Windows system fonts",
-    "macrostructure": "Guided Task",
+    "framework": "unchanged",
+    "design_system": "design.md",
+    "macrostructure": "Index-First application shell; Narrative Workflow review",
     "theme": "Cobalt",
-    "navigation": "none",
-    "footer": "Ft2 status strip"
+    "navigation": "N1b balanced two-destination app header; local Settings section index",
+    "footer": "Ft2 dense status strip",
+    "density": "very compact; 36px fine-pointer controls; 44px coarse-pointer controls",
+    "settings_pattern": "in-app CMS page; Prompt master/detail CRUD; fixed-rule inventory; full model lifecycle",
+    "enrichment": "none"
   }
 }

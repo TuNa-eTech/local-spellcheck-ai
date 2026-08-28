@@ -132,10 +132,11 @@ class Sidecar:
                 temporary_output,
                 Preset(params.get("preset", "standard")),
                 _rule_config(params.get("rule_config")),
-                bool(params.get("use_model", False)),
+                _boolean_param(params, "use_model"),
                 _custom_prompt(params.get("custom_prompt", "")),
                 _ignored_words(params.get("ignored_words", [])),
-                bool(params.get("full_review", False)),
+                _boolean_param(params, "full_review"),
+                _boolean_param(params, "include_rule_findings"),
             )
 
             def progress(stage: str, percent: int, message_code: str) -> None:
@@ -229,6 +230,13 @@ def _rule_config(value: object) -> RuleConfig | None:
     if not isinstance(value, dict):
         raise ValueError("RULE_CONFIG_INVALID")
     return RuleConfig.from_dict(value)
+
+
+def _boolean_param(params: dict[str, Any], name: str) -> bool:
+    value = params.get(name, False)
+    if not isinstance(value, bool):
+        raise ValueError("INVALID_PARAMS")
+    return value
 
 
 def _custom_prompt(value: object) -> str:
@@ -348,6 +356,9 @@ def safe_message(code: str) -> str:
         "MODEL_REVIEW_CONTEXT_TOO_SMALL": "Cửa sổ ngữ cảnh của model quá nhỏ để rà soát toàn văn.",
         "CUSTOM_PROMPT_REQUIRES_MODEL": "Prompt riêng yêu cầu bật model AI.",
         "FULL_REVIEW_REQUIRES_MODEL": "Rà soát toàn văn yêu cầu bật model AI.",
+        "INCLUDE_RULE_FINDINGS_REQUIRES_FULL_REVIEW": (
+            "Quy tắc tự động chỉ có thể được bổ sung khi bật AI rà soát toàn văn."
+        ),
         "CUSTOM_PROMPT_TOO_LONG": "Nội dung quy tắc riêng vượt giới hạn cho phép.",
         "RULE_CONFIG_INVALID": "Cấu hình quy tắc không hợp lệ.",
         "SESSION_DICTIONARY_INVALID": "Danh sách từ bỏ qua không hợp lệ.",

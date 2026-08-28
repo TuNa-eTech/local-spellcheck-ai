@@ -13,7 +13,7 @@
 
 Xây dựng phần mềm desktop nhận file Word, phát hiện lỗi chính tả và trình bày tiếng Việt, trả về file Word có bôi vàng và comment kèm gợi ý sửa. Toàn bộ nội dung tài liệu được xử lý trên máy người dùng. Build air-gap không có mạng; build connected chỉ kết nối khi người dùng chủ động tải model từ endpoint allowlist và không gửi nội dung tài liệu.
 
-Kiến trúc lai: **bộ kiểm tra cơ bản cố định** luôn chạy để phát hiện lỗi kỹ thuật và các lỗi có độ tin cậy cao; **LLM offline** có thể tắt, chỉ lọc candidate hoặc rà toàn bộ phần nội dung được hỗ trợ theo các chunk giới hạn token để bổ sung lỗi ngữ cảnh. Người dùng không cấu hình preset/nhóm rule/từ điển; phần tuỳ biến duy nhất là CRUD các **quy tắc riêng**, mỗi mục là một đoạn prompt text được ghép thành context chung khi AI bật.
+Kiến trúc lai: **LLM offline** có thể tắt, chỉ lọc candidate hoặc rà toàn bộ phần nội dung được hỗ trợ theo các chunk giới hạn token. **Bộ kiểm tra cơ bản cố định** chạy độc lập khi AI tắt, cung cấp candidate cho AI filter, hoặc được bật như lớp bổ sung tùy chọn trong full review. Người dùng không cấu hình preset/nhóm rule/từ điển; phần tuỳ biến duy nhất là CRUD các **quy tắc riêng**, mỗi mục là một đoạn prompt text được ghép thành context chung khi AI bật.
 
 ---
 
@@ -82,7 +82,7 @@ Kiến trúc lai: **bộ kiểm tra cơ bản cố định** luôn chạy để 
 - ✅ Given file không phải .docx, when thả vào, then hiện thông báo nêu rõ định dạng được hỗ trợ, không crash
 
 **F2. Soát lỗi — bộ kiểm tra cơ bản tương thích**
-- Chỉ chạy khi LLM-only full review bị tắt; người dùng không chọn preset, không bật/tắt nhóm rule và không có từ điển/danh sách bỏ qua
+- Chạy làm fallback khi AI full review bị tắt, hoặc chạy bổ sung khi người dùng bật tùy chọn rule trong AI full review; người dùng không chọn preset, không bật/tắt từng nhóm rule và không có từ điển/danh sách bỏ qua
 - Chuẩn hoá Unicode NFC trước mọi xử lý
 - Lỗi kỹ thuật: khoảng trắng thừa/thiếu, dấu câu sai vị trí, lặp từ
 - Âm tiết không tồn tại trong tiếng Việt
@@ -92,20 +92,26 @@ Kiến trúc lai: **bộ kiểm tra cơ bản cố định** luôn chạy để 
 - ✅ Given tài liệu chứa `ngiên cứu`, when soát, then báo lỗi và đề xuất `nghiên cứu`
 - ✅ Given phần mềm chạy trên máy không có GPU, when soát bằng tầng luật, then vẫn chạy đầy đủ
 
-**F3. Quản lý quy tắc riêng**
-- Settings có một tab `Quy tắc riêng`; người dùng có thể xem danh sách, thêm, sửa và xoá
+**F3. Settings và quản lý prompt riêng**
+- Settings là một trang trong ứng dụng, không phải modal/dialog, gồm ba mục `Prompt`, `Quy tắc rà soát` và `AI cục bộ`
+- Mục `Prompt` dùng bố cục master-detail: danh sách prompt ở master và editor của mục đang chọn ở detail; người dùng có thể thêm, sửa, xoá và hoàn tác xoá
 - Mỗi mục chỉ gồm một đoạn prompt text; không phải regex, dictionary entry hoặc một công tắc detector
 - Tổng text của mọi mục tối đa 4.000 ký tự; dữ liệu được chuẩn hoá NFC và lưu cục bộ
 - Khi AI bật và sẵn sàng, các mục được ghép theo thứ tự bằng một dòng trống thành context chung cho lần rà soát
 - Khi AI tắt/chưa sẵn sàng, các mục vẫn được lưu nhưng không ảnh hưởng bộ kiểm tra cơ bản; UI phải nói rõ điều này
-- ✅ Given người dùng thêm/sửa/xoá quy tắc, when mở lại Settings, then danh sách phản ánh đúng dữ liệu đã lưu
+- Mục `Quy tắc rà soát` chỉ hiển thị inventory read-only của bộ kiểm tra cố định; không có preset, từ điển, danh sách bỏ qua hoặc công tắc bật/tắt detector. Tùy chọn chạy bổ sung bộ quy tắc code vẫn thuộc bước `Chuẩn bị rà soát`
+- Mục `AI cục bộ` hiển thị trạng thái và quản lý vòng đời model trên máy; không thay đổi network contract của release profile
+- Khi mở Settings hoặc đổi mục, focus chuyển tới heading tương ứng; khi quay lại, focus được trả về đúng control đã mở Settings. `Ctrl+O` chỉ hoạt động trong view rà soát và bị bỏ qua trong Settings; Settings không đăng ký `Esc` làm thao tác đóng trang
+- ✅ Given người dùng thêm/sửa/xoá prompt, when mở lại mục `Prompt`, then danh sách phản ánh đúng dữ liệu đã lưu
 - ✅ Given tổng nội dung vượt giới hạn, when lưu, then thao tác bị từ chối và dữ liệu cũ không đổi
+- ✅ Given người dùng mở Settings từ một control trong workflow, when quay lại, then tài liệu/chế độ rà soát được giữ nguyên và focus trở về đúng control đó
 
 **F4. Soát lỗi — tầng ngữ cảnh (LLM)**
-- Có ba chế độ tương thích: **rule-only**, **AI filter** và **AI full review / LLM-only**. Khi model hỗ trợ, LLM-only được chọn mặc định, không chạy tầng luật và model tự tìm lỗi chính tả, trình bày, ngữ pháp hoặc chọn từ trong mọi block được hỗ trợ.
+- Có ba chế độ tương thích: **rule-only**, **AI filter** và **AI full review**. Khi model hỗ trợ, full review được chọn mặc định và model tự tìm lỗi chính tả, trình bày, ngữ pháp hoặc chọn từ trong mọi block được hỗ trợ. Full review mặc định là LLM-only; người dùng có thể bật riêng lớp rule code để bổ sung finding, không thay thế phạm vi rà toàn văn của AI.
 - Full review chia nội dung theo token và cấu trúc; không gửi file DOCX nhị phân hoặc toàn bộ văn bản trong một prompt
 - Mỗi block được hỗ trợ là target đúng một lần; block lân cận có thể chỉ làm context và LLM không được báo finding trong vùng context-only
-- Bật/tắt AI từ tab `AI cục bộ`; full review xuất hiện và được bật mặc định khi manifest khai báo capability này. Với GGUF nhập trực tiếp, UI phải ghi rõ đây là chế độ thử nghiệm chưa được benchmark/phê duyệt phát hành.
+- Bật/tắt AI từ mục `AI cục bộ` trong Settings; full review xuất hiện và được bật mặc định khi manifest khai báo capability này. Với GGUF nhập trực tiếp, UI phải ghi rõ đây là chế độ thử nghiệm chưa được benchmark/phê duyệt phát hành.
+- Tùy chọn **Bổ sung cảnh báo từ bộ quy tắc code** chỉ khả dụng khi AI full review đang bật, mặc định tắt và tự tắt khi AI/full review bị tắt.
 - ✅ Given tắt tầng LLM, when soát, then phần mềm chạy bình thường bằng tầng luật
 - ✅ Given bật AI filter, when soát, then LLM không được tạo finding ngoài các candidate đã gửi
 - ✅ Given bật AI full review, when soát, then mọi paragraph/table cell được hỗ trợ đều được đưa qua một chunk target hoặc được báo rõ là chưa rà
@@ -127,6 +133,7 @@ Kiến trúc lai: **bộ kiểm tra cơ bản cố định** luôn chạy để 
 **F7. Cài đặt phần mềm và model offline**
 - Bộ cài chạy được trên máy không có internet
 - Model được nhập bằng package đã xác minh; build connected có thể cho tải chủ động từ endpoint allowlist và không gửi nội dung tài liệu
+- Mục `AI cục bộ` hỗ trợ chọn model, tải hoặc nhập theo release profile, hiển thị tiến độ, huỷ thao tác, kích hoạt/tắt runtime và gỡ model
 - ✅ Given máy hoàn toàn không có mạng, when cài đặt và chạy, then phần mềm hoạt động đầy đủ
 
 > **Superseded từ PRD 0.2:** preview tài liệu, finding list, thao tác sửa/bỏ qua/undo trong app, quản lý từ điển, preset và checkbox từng nhóm rule không còn thuộc sản phẩm hiện hành. Người dùng xem cảnh báo và quyết định chỉnh sửa trong file DOCX kết quả bằng Microsoft Word.
@@ -162,6 +169,7 @@ Kiến trúc lai: **bộ kiểm tra cơ bản cố định** luôn chạy để 
 | **Toàn vẹn dữ liệu** | Không bao giờ ghi đè file gốc. Mọi kết quả ghi ra file mới |
 | **Cấu hình tối thiểu** | Windows 10, 8 GB RAM, 15 GB trống — *cần xác nhận sau PoC* |
 | **Khả năng chịu lỗi** | File hỏng hoặc quá lớn phải báo lỗi rõ ràng, không crash |
+| **Điều hướng bàn phím** | Settings là page, không có focus trap hoặc `Esc`-to-close; page/section navigation đưa focus tới heading, Back khôi phục opener focus và `Ctrl+O` chỉ có hiệu lực trong view rà soát |
 | **Giấy phép** | Mọi thành phần bên thứ ba phải cho phép dùng thương mại và phân phối lại |
 
 ---

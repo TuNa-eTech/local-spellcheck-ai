@@ -52,6 +52,29 @@ def test_protocol_examples_validate_and_unknown_fields_fail() -> None:
         validator.validate({**examples[0], "document_content": "must never cross IPC"})
 
 
+def test_job_start_schema_enforces_full_review_model_invariants() -> None:
+    validator = Draft202012Validator(_schema("ipc-v1.schema.json"))
+    valid = {
+        "v": 1,
+        "id": "r1",
+        "method": "job.start",
+        "params": {
+            "use_model": True,
+            "full_review": True,
+            "include_rule_findings": True,
+        },
+    }
+    validator.validate(valid)
+
+    for params in (
+        {"use_model": False, "full_review": True},
+        {"use_model": True, "full_review": False, "include_rule_findings": True},
+        {"use_model": False, "full_review": False, "include_rule_findings": True},
+    ):
+        with pytest.raises(ValidationError):
+            validator.validate({**valid, "params": params})
+
+
 def test_domain_finding_matches_contract() -> None:
     finding = RuleEngine().check(
         [Block("document:p0", "sát nhập")], Preset.STANDARD

@@ -13,6 +13,7 @@ import pytest
 from soatvan.entrypoints import sidecar as sidecar_module
 from soatvan.entrypoints.sidecar import (
     Sidecar,
+    _boolean_param,
     _custom_prompt,
     _ignored_words,
     safe_message,
@@ -104,6 +105,17 @@ def test_custom_prompt_transport_limit_and_new_errors_have_safe_messages() -> No
     assert safe_message("MODEL_FULL_REVIEW_NOT_APPROVED") == (
         "Model n\u00e0y ch\u01b0a \u0111\u01b0\u1ee3c ph\u00ea duy\u1ec7t \u0111\u1ec3 r\u00e0 so\u00e1t to\u00e0n v\u0103n."
     )
+    assert safe_message("INCLUDE_RULE_FINDINGS_REQUIRES_FULL_REVIEW") == (
+        "Quy tắc tự động chỉ có thể được bổ sung khi bật AI rà soát toàn văn."
+    )
+
+
+@pytest.mark.parametrize("name", ["use_model", "full_review", "include_rule_findings"])
+def test_model_mode_transport_flags_require_booleans(name: str) -> None:
+    assert _boolean_param({}, name) is False
+    assert _boolean_param({name: True}, name) is True
+    with pytest.raises(ValueError, match="INVALID_PARAMS"):
+        _boolean_param({name: "false"}, name)
 
 
 def test_job_start_is_async_and_emits_terminal_event(make_docx, tmp_path: Path) -> None:

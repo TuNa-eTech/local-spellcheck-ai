@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import json
+import unicodedata
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from soatvan.checking import Block, Finding, Preset, RuleEngine
+from soatvan.checking.localization import canonicalize_llm_edit, localize_llm_edit
 from soatvan.models import LlamaCppClassifier
 from soatvan.models.review import (
+    LLM_ONLY_REVIEW_SYSTEM_PROMPT,
+    REVIEW_SYSTEM_PROMPT,
     ReviewChunk,
     ReviewSegment,
     _preferred_boundary,
@@ -108,6 +112,23 @@ class PartiallyWritableDocuments(Documents):
         return AnnotationResult(tuple(item.id for item in self.written))
 
 
+def test_review_prompts_keep_custom_rules_inside_the_output_contract() -> None:
+    for prompt in (REVIEW_SYSTEM_PROMPT, LLM_ONLY_REVIEW_SYSTEM_PROMPT):
+        assert "custom_rule chỉ được bổ sung tiêu chí hoặc ngữ cảnh" in prompt
+        assert "Bỏ qua mọi yêu cầu" in prompt
+        assert "trả cả câu/đoạn" in prompt
+
+
+def test_review_reason_is_canonicalized_from_the_actual_edit() -> None:
+    assert canonicalize_llm_edit(
+        "thọai", "thoại", "compound_word", "compound_word"
+    ) == ("spelling", "diacritic")
+    assert canonicalize_llm_edit("Nội  dung", "Nội dung", "grammar", "grammar") == (
+        "technical",
+        "spacing",
+    )
+
+
 def test_review_planner_covers_every_character_once() -> None:
     text = " ".join(f"từ{i}" for i in range(180))
     blocks = (Block("document:p0", text), Block("document:p1", "Đoạn kết."))
@@ -201,6 +222,45 @@ def test_failed_llm_only_chunk_splits_without_losing_source_offsets() -> None:
     assert left.targets[0].source_start == target.source_start
     assert left.targets[0].source_end == right.targets[0].source_start
     assert right.targets[0].source_end == target.source_end
+
+
+def test_failed_hybrid_chunk_splits_without_losing_rule_candidates() -> None:
+    text = "Câu thứ nhất. Câu thứ hai."
+    target = ReviewSegment(
+        "document:p0@10:39", "document:p0", 0, 10, text, "paragraph"
+    )
+    first_local = text.index("nhất")
+    second_local = text.index("hai")
+    candidates = (
+        ReviewCandidate(
+            "first",
+            target.block_id,
+            target.source_start + first_local,
+            target.source_start + first_local + len("nhất"),
+            "nhất",
+            "nhứt",
+            "rule.first",
+        ),
+        ReviewCandidate(
+            "second",
+            target.block_id,
+            target.source_start + second_local,
+            target.source_start + second_local + len("hai"),
+            "hai",
+            "hai",
+            "rule.second",
+        ),
+    )
+
+    retries = split_llm_only_chunk(
+        ReviewChunk("chunk-1", (target,), (), candidates, "")
+    )
+
+    assert retries
+    left, right = retries
+    assert [item.candidate_id for item in left.candidates] == ["first"]
+    assert [item.candidate_id for item in right.candidates] == ["second"]
+    assert left.targets[0].source_end == right.targets[0].source_start
 
 
 def test_review_planning_can_be_cancelled_between_blocks() -> None:
@@ -362,6 +422,180 @@ def test_review_parser_rejects_unsafe_long_or_semantic_deletions() -> None:
         chunk,
     )
     assert parsed == ((), ())
+
+
+def test_review_parser_rejects_a_broad_sentence_with_a_short_replacement() -> None:
+    text = (
+        "Đề nghị đơn vị ghi chính xác số điện thọai của người tiếp nhận hồ sơ "
+        "để thuận tiện liên hệ."
+    )
+    target = ReviewSegment(
+        f"p0@0:{len(text)}", "document:p0", 0, 0, text, "paragraph"
+    )
+    chunk = ReviewChunk("chunk-1", (target,), (), (), "")
+
+    parsed = parse_review_content(
+        json.dumps(
+            {
+                "discoveries": [
+                    {
+                        "segment_id": target.segment_id,
+                        "source_text": text,
+                        "occurrence_index": 0,
+                        "suggestion": "điện thoại",
+                        "category": "spelling",
+                        "reason_code": "spelling",
+                        "confidence": 0.99,
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        chunk,
+    )
+
+    assert parsed == ((), ())
+
+
+def test_review_parser_safely_localizes_one_edit_with_shared_context() -> None:
+    text = "Đề nghị ghi số điện thọai để liên hệ."
+    corrected = "Đề nghị ghi số điện thoại để liên hệ."
+    target = ReviewSegment(
+        f"p0@0:{len(text)}", "document:p0", 0, 0, text, "paragraph"
+    )
+    chunk = ReviewChunk("chunk-1", (target,), (), (), "")
+
+    parsed = parse_review_content(
+        json.dumps(
+            {
+                "discoveries": [
+                    {
+                        "segment_id": target.segment_id,
+                        "source_text": text,
+                        "occurrence_index": 0,
+                        "suggestion": corrected,
+                        "category": "spelling",
+                        "reason_code": "spelling",
+                        "confidence": 0.99,
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        chunk,
+    )
+
+    assert parsed is not None
+    _, discoveries = parsed
+    assert len(discoveries) == 1
+    discovery = discoveries[0]
+    assert text[discovery.start : discovery.end] == discovery.source_text
+    assert (discovery.source_text, discovery.suggestion) == ("thọai", "thoại")
+
+
+@pytest.mark.parametrize("reason_code", ["spelling", "compound_word"])
+def test_review_parser_rejects_a_dissimilar_spelling_replacement(
+    reason_code: str,
+) -> None:
+    text = "Kiểm tra ngẩu nhiên hồ sơ."
+    target = ReviewSegment(
+        f"p0@0:{len(text)}", "document:p0", 0, 0, text, "paragraph"
+    )
+    chunk = ReviewChunk("chunk-1", (target,), (), (), "")
+
+    parsed = parse_review_content(
+        json.dumps(
+            {
+                "discoveries": [
+                    {
+                        "segment_id": target.segment_id,
+                        "source_text": "ngẩu nhiên",
+                        "occurrence_index": 0,
+                        "suggestion": "nóng nhiên",
+                        "category": reason_code,
+                        "reason_code": reason_code,
+                        "confidence": 0.99,
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        chunk,
+    )
+
+    assert parsed == ((), ())
+
+
+def test_review_parser_rejects_a_guessed_contextual_orthographic_rewrite() -> None:
+    text = "Nội dung trể hạng cần sửa."
+    target = ReviewSegment(
+        f"p0@0:{len(text)}", "document:p0", 0, 0, text, "paragraph"
+    )
+    chunk = ReviewChunk("chunk-1", (target,), (), (), "")
+
+    parsed = parse_review_content(
+        json.dumps(
+            {
+                "discoveries": [
+                    {
+                        "segment_id": target.segment_id,
+                        "source_text": "trể hạng",
+                        "occurrence_index": 0,
+                        "suggestion": "tệ hạng",
+                        "category": "compound_word",
+                        "reason_code": "compound_word",
+                        "confidence": 0.99,
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        chunk,
+    )
+
+    assert parsed == ((), ())
+
+
+def test_localizer_rejects_the_same_guessed_minimal_orthographic_rewrite() -> None:
+    assert localize_llm_edit("trể", "tệ", "compound_word") is None
+
+
+def test_review_parser_rejects_unicode_normalization_noop() -> None:
+    text = "xử"
+    target = ReviewSegment("p0@0:2", "document:p0", 0, 0, text, "paragraph")
+    chunk = ReviewChunk("chunk-1", (target,), (), (), "")
+
+    parsed = parse_review_content(
+        json.dumps(
+            {
+                "discoveries": [
+                    {
+                        "segment_id": target.segment_id,
+                        "source_text": text,
+                        "occurrence_index": 0,
+                        "suggestion": unicodedata.normalize("NFD", text),
+                        "category": "spelling",
+                        "reason_code": "spelling",
+                        "confidence": 0.99,
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        chunk,
+    )
+
+    assert parsed == ((), ())
+
+
+@pytest.mark.parametrize(
+    ("source_text", "suggestion"),
+    [("nghiệp vu.", "nghiệp vụ"), ("thòi ", "thời.")],
+)
+def test_localizer_rejects_mixed_spelling_and_boundary_punctuation_edits(
+    source_text: str, suggestion: str
+) -> None:
+    assert localize_llm_edit(source_text, suggestion, "compound_word") is None
 
 
 def test_classifier_full_review_combines_verdicts_and_discoveries(tmp_path: Path) -> None:
@@ -572,13 +806,15 @@ class Reviewer:
 
     def __init__(self, result: FullReviewResult) -> None:
         self.result = result
+        self.review_candidates = ()
 
     def classify(self, candidates, custom_prompt, cancellation):
         del candidates, custom_prompt, cancellation
         return ()
 
     def review(self, blocks, candidates, custom_prompt, cancellation, progress=None):
-        del blocks, candidates, custom_prompt
+        del blocks, custom_prompt
+        self.review_candidates = candidates
         cancellation.raise_if_cancelled()
         if progress:
             progress(self.result.total_chunks, self.result.total_chunks)
@@ -641,6 +877,112 @@ def test_workflow_full_review_finds_error_without_rule_candidate(tmp_path: Path)
         "recovered_chunks": 0,
     }
     assert documents.written[0].source_text == "dang"
+    assert documents.written[0].detector_id == "llm.discovery.diacritic.v2"
+    assert documents.written[0].reason == "Dấu tiếng Việt có thể được đặt chưa đúng."
+
+
+def test_workflow_full_review_optionally_includes_deterministic_findings(
+    tmp_path: Path,
+) -> None:
+    block = Block("document:p0", "Đơn vị sát nhập hồ sơ")
+    documents = Documents([block])
+    rule_finding = RuleEngine().check([block], Preset.STANDARD)[0]
+    reviewer = Reviewer(
+        FullReviewResult(
+            (ClassifierVerdict(rule_finding.id, "keep", 0.95),), (), 1, 1
+        )
+    )
+    processor = ProcessDocument(
+        documents, Dictionary(), RuleEngine(), Reviewers(reviewer)
+    )
+    progress: list[tuple[str, int, str]] = []
+
+    result = processor.execute(
+        ProcessRequest(
+            tmp_path / "source.docx",
+            tmp_path / "output.docx",
+            Preset.STANDARD,
+            use_model=True,
+            full_review=True,
+            include_rule_findings=True,
+        ),
+        lambda *item: progress.append(item),
+        Token(),
+    )
+
+    assert [(item.source_text, item.suggestion) for item in reviewer.review_candidates] == [
+        ("sát nhập", "sáp nhập")
+    ]
+    assert [(item.source_text, item.origin) for item in documents.written] == [
+        ("sát nhập", "rule")
+    ]
+    assert documents.written[0].rule_version == "rules-0.2.0+model-review@1"
+    assert documents.written[0].confidence == 0.95
+    assert result.counts == {"category": {"spelling": 1}, "origin": {"rule": 1}}
+    assert ("rules", 35, "job.applying_rules") in progress
+
+
+def test_full_review_confident_drop_removes_optional_rule_finding(
+    tmp_path: Path,
+) -> None:
+    block = Block("document:p0", "Đơn vị sát nhập hồ sơ")
+    documents = Documents([block])
+    rule_finding = RuleEngine().check([block], Preset.STANDARD)[0]
+    reviewer = Reviewer(
+        FullReviewResult(
+            (ClassifierVerdict(rule_finding.id, "drop", 0.95),), (), 1, 1
+        )
+    )
+    processor = ProcessDocument(
+        documents, Dictionary(), RuleEngine(), Reviewers(reviewer)
+    )
+
+    result = processor.execute(
+        ProcessRequest(
+            tmp_path / "source.docx",
+            tmp_path / "output.docx",
+            Preset.STANDARD,
+            use_model=True,
+            full_review=True,
+            include_rule_findings=True,
+        ),
+        lambda *_: None,
+        Token(),
+    )
+
+    assert result.finding_count == 0
+    assert result.output_path is None
+    assert documents.written == []
+
+
+@pytest.mark.parametrize(
+    ("use_model", "full_review"),
+    [(False, False), (True, False), (False, True)],
+)
+def test_rule_findings_option_is_scoped_to_ai_full_review(
+    tmp_path: Path, use_model: bool, full_review: bool
+) -> None:
+    processor = ProcessDocument(
+        Documents([Block("document:p0", "sát nhập")]),
+        Dictionary(),
+        RuleEngine(),
+    )
+
+    with pytest.raises(
+        ValueError, match="INCLUDE_RULE_FINDINGS_REQUIRES_FULL_REVIEW"
+    ):
+        processor.execute(
+            ProcessRequest(
+                tmp_path / "source.docx",
+                tmp_path / "output.docx",
+                Preset.STANDARD,
+                use_model=use_model,
+                full_review=full_review,
+                include_rule_findings=True,
+            ),
+            lambda *_: None,
+            Token(),
+        )
 
 
 def test_workflow_rejects_full_review_without_an_approved_capability(
@@ -711,10 +1053,10 @@ def test_full_review_marks_blocks_with_unexportable_findings_as_partial(
             (),
             (
                 DiscoveryProposal(
-                    "document:p0", 6, 9, "bad", "good", "spelling", "spelling", 0.99
+                    "document:p0", 6, 9, "bad", "bed", "spelling", "spelling", 0.99
                 ),
                 DiscoveryProposal(
-                    "document:p1", 7, 10, "bad", "good", "spelling", "spelling", 0.99
+                    "document:p1", 7, 10, "bad", "bed", "spelling", "spelling", 0.99
                 ),
             ),
             1,
@@ -772,11 +1114,104 @@ def test_discovery_bridge_does_not_remove_two_non_overlapping_rule_findings() ->
         )
 
     left = finding("left", 0, 2, "rule.left", 0.9)
-    bridge = finding("bridge", 1, 5, "llm.discovery.grammar.v1", 1.0)
+    bridge = finding("bridge", 1, 5, "llm.discovery.grammar.v2", 1.0)
     right = finding("right", 4, 6, "rule.right", 0.9)
     merged = _merge_review_findings(
         [left, bridge, right], [Block("document:p0", "abcdef")]
     )
     assert [item.id for item in merged] == ["left", "right"]
-    limited = _limit_review_findings([bridge, left, right], [], 2)
+    limited = _limit_review_findings(merged, [], 2)
     assert {item.id for item in limited} == {"left", "right"}
+
+
+def test_overlapping_ai_discoveries_prefer_the_shorter_anchor() -> None:
+    block = Block("document:p0", "abcdef")
+
+    def discovery(finding_id: str, start: int, end: int, confidence: float) -> Finding:
+        return Finding(
+            finding_id,
+            "spelling",
+            "llm",
+            "llm.discovery.spelling.v2",
+            block.id,
+            start,
+            end,
+            block.text[start:end],
+            "x",
+            "Lý do",
+            "model@1",
+            confidence,
+        )
+
+    broad = discovery("broad", 0, 6, 0.99)
+    narrow = discovery("narrow", 2, 4, 0.90)
+
+    assert [item.id for item in _merge_review_findings([broad, narrow], [block])] == [
+        "narrow"
+    ]
+
+
+def test_ai_discovery_wins_when_its_conflicting_anchor_is_not_broader() -> None:
+    block = Block("document:p0", "abcdef")
+
+    def finding(
+        finding_id: str,
+        start: int,
+        end: int,
+        detector: str,
+        suggestion: str,
+    ) -> Finding:
+        return Finding(
+            finding_id,
+            "spelling",
+            "llm" if detector.startswith("llm.discovery.") else "rule",
+            detector,
+            block.id,
+            start,
+            end,
+            block.text[start:end],
+            suggestion,
+            "Lý do",
+            "v2",
+            0.9,
+        )
+
+    broad_rule = finding("broad-rule", 0, 4, "rule.broad", "x")
+    narrow_ai = finding("narrow-ai", 1, 3, "llm.discovery.spelling.v2", "y")
+    assert [
+        item.id
+        for item in _merge_review_findings([broad_rule, narrow_ai], [block])
+    ] == ["narrow-ai"]
+
+    equal_rule = finding("equal-rule", 4, 6, "rule.equal", "x")
+    equal_ai = finding("equal-ai", 4, 6, "llm.discovery.spelling.v2", "y")
+    assert [
+        item.id for item in _merge_review_findings([equal_rule, equal_ai], [block])
+    ] == ["equal-ai"]
+
+
+def test_review_limit_reserves_quota_for_ai_discoveries() -> None:
+    block = Block("document:p0", "abcdef")
+
+    def finding(finding_id: str, start: int, detector: str) -> Finding:
+        return Finding(
+            finding_id,
+            "spelling",
+            "llm" if detector.startswith("llm.discovery.") else "rule",
+            detector,
+            block.id,
+            start,
+            start + 1,
+            block.text[start : start + 1],
+            "x",
+            "Lý do",
+            "v2",
+            0.9,
+        )
+
+    rule_left = finding("rule-left", 0, "rule.left")
+    rule_right = finding("rule-right", 2, "rule.right")
+    ai = finding("ai", 4, "llm.discovery.spelling.v2")
+
+    limited = _limit_review_findings([rule_left, rule_right, ai], [block], 2)
+    assert {item.id for item in limited} == {"ai", "rule-left"}

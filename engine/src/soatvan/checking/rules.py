@@ -7,7 +7,7 @@ from dataclasses import replace
 
 from .domain import Block, Finding, Preset, RuleConfig
 
-RULE_VERSION = "rules-0.1.0"
+RULE_VERSION = "rules-0.2.0"
 
 CONFUSIONS: dict[str, tuple[str, str]] = {
     "sát nhập": ("sáp nhập", "Cụm từ chuẩn là “sáp nhập”."),
@@ -15,10 +15,12 @@ CONFUSIONS: dict[str, tuple[str, str]] = {
     "xử lí": ("xử lý", "Khuyến nghị dùng “xử lý” thống nhất trong văn bản."),
     "qui định": ("quy định", "Khuyến nghị dùng “quy định” thống nhất trong văn bản."),
     "ngiên cứu": ("nghiên cứu", "Âm tiết đứng trước i, e, ê phải dùng phụ âm đầu “ngh”."),
+    "qủa": ("quả", "Dấu thanh trong âm tiết “quả” phải đặt ở nguyên âm chính."),
 }
 
 WORD_PATTERN = re.compile(r"[A-Za-zÀ-ỹĐđ]+")
 FRONT_VOWELS = frozenset("iíìỉĩịeéèẻẽẹêếềểễệyýỳỷỹỵ")
+PUNCTUATION_WITHOUT_TRAILING_SPACE = frozenset("/\\)]}»”’\"'")
 
 
 def _syllable_repair(word: str) -> tuple[str, str] | None:
@@ -53,12 +55,31 @@ def _syllable_repair(word: str) -> tuple[str, str] | None:
     elif lowered.startswith("c") and lowered[1:2] in FRONT_VOWELS:
         replacement = ("K" if word[0].isupper() else "k") + word[1:]
         reason = "Âm tiết đứng trước i, e, ê phải dùng phụ âm đầu “k”."
-    elif lowered.startswith("q") and lowered[1:2] != "u":
+    elif lowered.startswith("q") and _base_character(lowered[1:2]) != "u":
         replacement = word[:1] + ("U" if word[:1].isupper() else "u") + word[1:]
         reason = "Phụ âm đầu “q” trong âm tiết tiếng Việt phải đi cùng “u”."
     if replacement is None:
         return None
     return replacement, reason
+
+
+def _base_character(value: str) -> str:
+    return unicodedata.normalize("NFD", value)[:1]
+
+
+def _high_confidence_missing_space(text: str, punctuation_index: int) -> bool:
+    punctuation = text[punctuation_index]
+    previous = text[punctuation_index - 1] if punctuation_index else ""
+    following = text[punctuation_index + 1 : punctuation_index + 2]
+    if not following or following in PUNCTUATION_WITHOUT_TRAILING_SPACE:
+        return False
+    if punctuation == "." and previous.isalnum() and following.isalpha():
+        # Domains, e-mail addresses and abbreviations such as TP.HCM are more
+        # common than a reliably detectable missing sentence space here.
+        return False
+    if punctuation == "." and previous in ",.;:!?":
+        return False
+    return not (punctuation == ":" and following in "/\\")
 
 
 def _contains_ignored(value: str, ignored: set[str]) -> bool:
@@ -161,26 +182,30 @@ class RuleEngine:
             )
             if len(found) >= limit:
                 return found
-        for match in re.finditer(r"\s+([,.;:!?])", text):
+        for match in re.finditer(r"[ \u00a0]+([,.;:!?])", text):
+            if match.group(1) == "." and text[match.end() : match.end() + 1] == ".":
+                continue
             found.append(
                 self._make(
                     block,
                     *match.span(),
                     "technical",
-                    "punctuation.leading_space.v1",
+                    "punctuation.leading_space.v2",
                     match.group(1),
                     "Không đặt khoảng trắng trước dấu câu.",
                 )
             )
             if len(found) >= limit:
                 return found
-        for match in re.finditer(r"([,.;:!?])(?=[^\s\d])", text):
+        for match in re.finditer(r"([,.;:!?])(?=[^\s\d,.;:!?])", text):
+            if not _high_confidence_missing_space(text, match.start()):
+                continue
             found.append(
                 self._make(
                     block,
                     *match.span(),
                     "technical",
-                    "punctuation.missing_space.v1",
+                    "punctuation.missing_space.v2",
                     f"{match.group(1)} ",
                     "Nên có khoảng trắng sau dấu câu.",
                 )
@@ -206,7 +231,7 @@ class RuleEngine:
                     block,
                     *match.span(),
                     "spelling",
-                    "syllable.onset.v1",
+                    "syllable.onset.v2",
                     suggestion,
                     reason,
                     0.99,
@@ -220,7 +245,9 @@ class RuleEngine:
         self, block: Block, text: str, ignored: set[str], limit: int
     ) -> list[Finding]:
         found: list[Finding] = []
-        pattern = re.compile(r"\b([A-Za-zÀ-ỹĐđ]+)(\s+)\1\b", re.IGNORECASE)
+        pattern = re.compile(
+            r"\b([A-Za-zÀ-ỹĐđ]+)([ \u00a0]+)\1\b", re.IGNORECASE
+        )
         for match in pattern.finditer(text):
             if match.group(1).casefold() not in ignored:
                 start = match.start(1) + len(match.group(1))
@@ -230,7 +257,7 @@ class RuleEngine:
                         start,
                         match.end(),
                         "technical",
-                        "word.repeated.v1",
+                        "word.repeated.v2",
                         "",
                         "Từ bị lặp liên tiếp.",
                     )

@@ -25,6 +25,40 @@ MAX_RATIO = 200
 REQUIRED_PARTS = frozenset({"[Content_Types].xml", "_rels/.rels", "word/document.xml"})
 
 
+def _projected_paragraph_text(paragraph: etree._Element) -> str:
+    nodes = paragraph.xpath(
+        ".//w:t | .//w:tab | .//w:br | .//w:cr", namespaces=NS
+    )
+    return "".join(_projected_node_text(node) for node in nodes)
+
+
+def _projected_node_text(node: etree._Element) -> str:
+    if node.tag == f"{{{W}}}t":
+        return node.text or ""
+    if node.tag == f"{{{W}}}tab":
+        return "\t"
+    return "\n"
+
+
+def _run_has_only_isolatable_content(run: etree._Element) -> bool:
+    allowed = {
+        f"{{{W}}}rPr",
+        f"{{{W}}}t",
+        f"{{{W}}}tab",
+        f"{{{W}}}br",
+        f"{{{W}}}cr",
+    }
+    return all(child.tag in allowed for child in run)
+
+
+def _run_shell(run: etree._Element) -> etree._Element:
+    clone = copy.deepcopy(run)
+    for child in list(clone):
+        if child.tag != f"{{{W}}}rPr":
+            clone.remove(child)
+    return clone
+
+
 class InvalidDocument(ValueError):
     pass
 
@@ -73,7 +107,7 @@ class DocxPackage:
     def _blocks(root: etree._Element) -> list[Block]:
         blocks: list[Block] = []
         for index, paragraph in enumerate(root.xpath("//w:body//w:p", namespaces=NS)):
-            text = "".join(paragraph.xpath(".//w:t/text()", namespaces=NS))
+            text = _projected_paragraph_text(paragraph)
             if text:
                 in_table = bool(paragraph.xpath("ancestor::w:tc", namespaces=NS))
                 blocks.append(
@@ -177,17 +211,23 @@ class DocxPackage:
     def _annotate_one(
         self, paragraph: etree._Element, comments: etree._Element, finding: Finding, comment_id: int
     ) -> bool:
-        all_texts = paragraph.xpath(".//w:t", namespaces=NS)
+        projected_nodes = paragraph.xpath(
+            ".//w:t | .//w:tab | .//w:br | .//w:cr", namespaces=NS
+        )
         spans: list[tuple[etree._Element, int, int, int, int]] = []
         cursor = 0
-        for text in all_texts:
-            value = text.text or ""
-            run = text.getparent()
+        full_text_parts: list[str] = []
+        for node in projected_nodes:
+            value = _projected_node_text(node)
+            full_text_parts.append(value)
+            run = node.getparent()
             if (
-                run is not None
+                node.tag == f"{{{W}}}t"
+                and run is not None
                 and run.tag == f"{{{W}}}r"
                 and run.getparent() is paragraph
                 and len(run.xpath("./w:t", namespaces=NS)) == 1
+                and _run_has_only_isolatable_content(run)
             ):
                 # A paragraph can mix ordinary runs with structures whose
                 # anchoring rules are more complex (hyperlinks, tracked changes
@@ -196,7 +236,7 @@ class DocxPackage:
                 # direct-child runs.
                 spans.append((run, cursor, cursor + len(value), 0, len(value)))
             cursor += len(value)
-        full_text = "".join(text.text or "" for text in all_texts)
+        full_text = "".join(full_text_parts)
         if (
             finding.end > len(full_text)
             or full_text[finding.start : finding.end] != finding.source_text
@@ -246,8 +286,11 @@ class DocxPackage:
         p = etree.SubElement(comment, f"{{{W}}}p")
         r = etree.SubElement(p, f"{{{W}}}r")
         text = etree.SubElement(r, f"{{{W}}}t")
+        suggestion = finding.suggestion or "(xoá)"
+        reason = re.sub(r"\.{2,}$", ".", finding.reason.strip())
         text.text = (
-            f"Gợi ý: {finding.suggestion or '(xoá)'}. {finding.reason} [{finding.rule_version}]"
+            f"Sai: “{finding.source_text}” → Đề xuất: “{suggestion}” — "
+            f"Lý do: {reason} [{finding.rule_version}]"
         )
         return True
 
@@ -266,17 +309,31 @@ class DocxPackage:
         if end < len(value):
             pieces.append((value[end:], False))
         target: etree._Element | None = None
+        replacements: list[etree._Element] = []
+        for child in run:
+            if child.tag == f"{{{W}}}rPr":
+                continue
+            if child is text:
+                for piece, selected in pieces:
+                    clone = _run_shell(run)
+                    clone_text = copy.deepcopy(text)
+                    clone_text.text = piece
+                    space_attribute = "{http://www.w3.org/XML/1998/namespace}space"
+                    if piece.startswith(" ") or piece.endswith(" "):
+                        clone_text.set(space_attribute, "preserve")
+                    else:
+                        clone_text.attrib.pop(space_attribute, None)
+                    clone.append(clone_text)
+                    replacements.append(clone)
+                    if selected:
+                        target = clone
+            else:
+                clone = _run_shell(run)
+                clone.append(copy.deepcopy(child))
+                replacements.append(clone)
         parent.remove(run)
-        for offset, (piece, selected) in enumerate(pieces):
-            clone = copy.deepcopy(run)
-            clone_text = clone.find(f"{{{W}}}t")
-            assert clone_text is not None
-            clone_text.text = piece
-            if piece.startswith(" ") or piece.endswith(" "):
-                clone_text.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+        for offset, clone in enumerate(replacements):
             parent.insert(index + offset, clone)
-            if selected:
-                target = clone
         assert target is not None
         return target
 

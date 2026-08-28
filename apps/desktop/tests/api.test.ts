@@ -24,7 +24,7 @@ describe("desktop API", () => {
     Object.defineProperty(window, "__TAURI_INTERNALS__", { configurable: true, value: {} });
   });
 
-  it("sends the fixed baseline, compiled prompt, and full-review flag using camelCase", async () => {
+  it("sends the fixed baseline and full-review options using camelCase", async () => {
     const ruleOptions = {
       technical: true,
       repeated_words: true,
@@ -42,6 +42,7 @@ describe("desktop API", () => {
       ruleOptions,
       [],
       true,
+      true,
     );
 
     expect(mocks.invoke).toHaveBeenCalledWith("start_job", {
@@ -52,6 +53,7 @@ describe("desktop API", () => {
         customPrompt: "Giữ nguyên SoátVăn.\n\nDùng thuật ngữ khách hàng.",
         useModel: true,
         fullReview: true,
+        includeRuleFindings: true,
         ruleOptions,
         ignoredWords: [],
       },

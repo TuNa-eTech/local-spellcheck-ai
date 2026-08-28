@@ -19,8 +19,8 @@ def test_rules_are_deterministic_and_resolve_overlaps() -> None:
     assert [item.detector_id for item in findings] == [
         "spacing.multiple.v1",
         "confusion.sát_nhập.v1",
-        "punctuation.missing_space.v1",
-        "word.repeated.v1",
+        "punctuation.missing_space.v2",
+        "word.repeated.v2",
         "confusion.xử_lí.v1",
     ]
     assert all(
@@ -74,6 +74,29 @@ def test_syllable_onset_repairs_are_conservative_and_dictionary_aware() -> None:
         ("gế", "ghế"),
         ("qản", "quản"),
         ("ngiên", "nghiên"),
+    ]
+
+
+def test_toned_u_after_q_is_not_duplicated() -> None:
+    findings = RuleEngine().check(
+        [Block("document:p0", "Kết qủa kiểm tra")], Preset.SPELLING
+    )
+
+    assert [(item.source_text, item.suggestion) for item in findings] == [
+        ("qủa", "quả")
+    ]
+    assert all(item.suggestion != "quủa" for item in findings)
+
+
+def test_technical_rules_skip_urls_abbreviations_quotes_and_line_breaks() -> None:
+    text = (
+        "TP.HCM https://example.com lienhe@example.com Kết thúc.” ...Tiếp\n"
+        ", từ\ntừ;nhưng"
+    )
+    findings = RuleEngine().check([Block("document:p0", text)], Preset.STANDARD)
+
+    assert [(item.source_text, item.suggestion) for item in findings] == [
+        (";", "; ")
     ]
 
 
