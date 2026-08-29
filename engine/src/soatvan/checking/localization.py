@@ -19,10 +19,21 @@ _VIETNAMESE_VOWELS = frozenset("aăâeêioôơuưy")
 
 
 def _syllable_onset_length(value: str) -> int:
-    for index, character in enumerate(value):
-        if _without_diacritics(character).casefold() in _VIETNAMESE_VOWELS:
-            return index
-    return len(value)
+    base = [_without_diacritics(character).casefold() for character in value]
+    cut = len(base)
+    for index, character in enumerate(base):
+        if character in _VIETNAMESE_VOWELS:
+            cut = index
+            break
+    # "gi" and "qu" are digraph onsets, so their vowel letter belongs to the
+    # onset rather than the rime as long as a rime is left behind: giấu, quyết.
+    if cut == 1 and len(base) > 2:
+        digraph = (base[0], base[1])
+        if digraph in {("g", "i"), ("q", "u")} and any(
+            character in _VIETNAMESE_VOWELS for character in base[2:]
+        ):
+            cut = 2
+    return cut
 
 
 def _onset_only_substitution(source_text: str, suggestion: str) -> bool:

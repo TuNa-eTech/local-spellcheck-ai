@@ -692,6 +692,47 @@ def test_review_parser_rejects_a_guessed_contextual_orthographic_rewrite() -> No
     assert parsed == ((), ())
 
 
+@pytest.mark.parametrize(
+    ("source_text", "suggestion", "expected"),
+    [
+        # Vietnamese onset confusions cost two character edits, so the plain
+        # distance-1 limit used to reject all of them.
+        ("nhất chí", "nhất trí", [("chí", "trí")]),
+        ("phong chào", "phong trào", [("chào", "trào")]),
+        ("trân trọng", "chân trọng", [("trân", "chân")]),
+        ("nàm việc", "làm việc", [("nàm", "làm")]),
+        ("dục dịch", "rục rịch", [("dục", "rục"), ("dịch", "rịch")]),
+        # "gi" is a digraph onset: its vowel letter belongs to the onset.
+        ("dấu diếm", "giấu giếm", [("dấu", "giấu"), ("diếm", "giếm")]),
+        ("dành riêng", "giành riêng", [("dành", "giành")]),
+    ],
+)
+def test_localizer_accepts_onset_only_substitutions(
+    source_text: str, suggestion: str, expected: list[tuple[str, str]]
+) -> None:
+    edits = localize_llm_edits(source_text, suggestion, "spelling")
+    assert [(item[1], item[2]) for item in edits] == expected
+    for offset, edited_source, _ in edits:
+        assert source_text[offset : offset + len(edited_source)] == edited_source
+
+
+@pytest.mark.parametrize(
+    ("source_text", "suggestion"),
+    [
+        # The rime changes too, so these stay guessed rewrites.
+        ("xán", "sáng"),
+        ("trể", "tệ"),
+        # Unrelated wording is never an orthographic fix.
+        ("báo cáo", "tài liệu"),
+        ("hồ sơ này", "văn bản đó"),
+    ],
+)
+def test_localizer_still_rejects_changes_beyond_the_onset(
+    source_text: str, suggestion: str
+) -> None:
+    assert localize_llm_edits(source_text, suggestion, "spelling") == ()
+
+
 def test_localizer_rejects_the_same_guessed_minimal_orthographic_rewrite() -> None:
     assert localize_llm_edit("trể", "tệ", "compound_word") is None
 
