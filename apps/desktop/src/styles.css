@@ -860,8 +860,7 @@ button:not(:disabled):not([aria-disabled="true"]):active,
 .settings-page {
   min-inline-size: 0;
   min-block-size: 0;
-  inline-size: min(var(--layout-settings-max), 100%);
-  margin-inline: auto;
+  inline-size: 100%;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
@@ -986,6 +985,9 @@ button:not(:disabled):not([aria-disabled="true"]):active,
 
 .settings-section {
   min-inline-size: 0;
+  inline-size: 100%;
+  max-inline-size: var(--layout-settings-max);
+  margin-inline: auto;
   display: grid;
   align-content: start;
   gap: var(--space-sm);
@@ -1027,10 +1029,12 @@ button:not(:disabled):not([aria-disabled="true"]):active,
   color: var(--color-ink);
 }
 
-.settings-footer__actions {
+.settings-footer__inner {
   inline-size: 100%;
-  grid-template-columns: minmax(0, 1fr);
-  justify-content: end;
+  max-inline-size: var(--layout-settings-max);
+  margin-inline: auto;
+  display: flex;
+  justify-content: flex-end;
 }
 
 .custom-rule-form {
@@ -1796,12 +1800,11 @@ button:not(:disabled):not([aria-disabled="true"]):active,
     grid-template-columns: repeat(2, max-content);
   }
 
-  .settings-footer__actions {
-    inline-size: auto;
+  .settings-footer__inner .button-row {
     grid-template-columns: repeat(2, max-content);
   }
 
-  .settings-footer__actions:has(> :only-child) {
+  .settings-footer__inner .button-row:has(> :only-child) {
     grid-template-columns: max-content;
   }
 
