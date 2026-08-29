@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { CustomRule, DocumentInfo, JobResult, ModelStatus, ProgressEvent } from "../src/contracts";
+import type { AiConfigState, AiTestConnectionResult, CustomRule, DocumentInfo, JobResult, ModelStatus, ProgressEvent } from "../src/contracts";
 
 const documentInfo: DocumentInfo = {
   path: "C:\\Tài liệu\\nguồn.docx",
@@ -55,6 +55,10 @@ async function loadApp(options?: {
   modelStatus?: () => Promise<ModelStatus>;
   modelImport?: () => Promise<ModelStatus | null>;
   modelCancel?: () => Promise<boolean>;
+  aiConfigGet?: () => Promise<AiConfigState>;
+  aiConfigUpdate?: (params: any) => Promise<{ updated: boolean }>;
+  aiConfigSetActive?: (provider: string) => Promise<{ active_provider: string }>;
+  aiConfigTestConnection?: (params: any) => Promise<AiTestConnectionResult>;
 }) {
   let progressHandler: ((event: ProgressEvent) => void) | undefined;
   let fileDropHandler: ((path: string) => void) | undefined;
@@ -96,6 +100,16 @@ async function loadApp(options?: {
     modelImport: vi.fn(options?.modelImport ?? (() => Promise.resolve(null))),
     modelCancel: vi.fn(options?.modelCancel ?? (() => Promise.resolve(true))),
     modelRemove: vi.fn(() => Promise.resolve({ state: "not_installed" as const })),
+    aiConfigGet: vi.fn(options?.aiConfigGet ?? (() => Promise.resolve({
+      active_provider: "local",
+      configs: [
+        { provider: "openai", base_url: "https://api.openai.com/v1", model_name: "gpt-4o-mini", masked_key: "sk-1234" },
+        { provider: "gemini", base_url: "https://generativelanguage.googleapis.com/v1beta", model_name: "gemini-2.5-flash", masked_key: "AIza...5678" },
+      ],
+    }))),
+    aiConfigUpdate: vi.fn(options?.aiConfigUpdate ?? (() => Promise.resolve({ updated: true }))),
+    aiConfigSetActive: vi.fn(options?.aiConfigSetActive ?? ((provider: string) => Promise.resolve({ active_provider: provider }))),
+    aiConfigTestConnection: vi.fn(options?.aiConfigTestConnection ?? ((params: any) => Promise.resolve({ ok: true, provider: params.provider, model: params.modelName || "gpt-4o-mini" }))),
   };
   vi.doMock("../src/api", () => ({ api }));
   await import("../src/main");
@@ -1240,4 +1254,133 @@ describe("four-step desktop workflow", () => {
     await Promise.resolve();
     expect(document.body.textContent).toContain("Chưa cài AI cục bộ");
   });
+
+  it("allows switching between AI sources in Settings and displays privacy notices for cloud providers", async () => {
+    const api = await loadApp();
+    document.querySelector<HTMLButtonElement>("#settings")!.click();
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')?.disabled).toBe(false));
+    document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')!.click();
+    await vi.waitFor(() => expect((document.activeElement as HTMLElement | null)?.id).toBe("settings-models-title"));
+
+    // Check 3 provider tabs exist
+    const tabs = [...document.querySelectorAll<HTMLButtonElement>("[data-provider-tab]")];
+    expect(tabs.map(t => t.dataset.providerTab)).toEqual(["local", "openai", "gemini"]);
+    expect(document.querySelector("#provider-tab-local")?.classList.contains("selected")).toBe(true);
+
+    // Switch to OpenAI tab
+    document.querySelector<HTMLButtonElement>("#provider-tab-openai")!.click();
+    await vi.waitFor(() => expect(document.querySelector("#provider-tab-openai")?.classList.contains("selected")).toBe(true));
+    expect(document.querySelector(".privacy-banner")).not.toBeNull();
+    expect(document.body.textContent).toContain("Lưu ý quyền riêng tư");
+    expect(document.body.textContent).toContain("OpenAI / Tương thích");
+    expect(document.querySelector<HTMLInputElement>("#cloud-base-url")?.value).toBe("https://api.openai.com/v1");
+    expect(document.querySelector<HTMLInputElement>("#cloud-model-name")?.value).toBe("gpt-4o-mini");
+    expect(document.querySelector("#cloud-test-connection")).not.toBeNull();
+    expect(document.querySelector("#cloud-save-active")).not.toBeNull();
+
+    // Switch to Gemini tab
+    document.querySelector<HTMLButtonElement>("#provider-tab-gemini")!.click();
+    await vi.waitFor(() => expect(document.querySelector("#provider-tab-gemini")?.classList.contains("selected")).toBe(true));
+    expect(document.body.textContent).toContain("Google Gemini API");
+    expect(document.querySelector<HTMLInputElement>("#cloud-base-url")?.value).toBe("https://generativelanguage.googleapis.com/v1beta");
+    expect(document.querySelector<HTMLInputElement>("#cloud-model-name")?.value).toBe("gemini-2.5-flash");
+  });
+
+  it("tests connection with success and error feedback", async () => {
+    const api = await loadApp();
+    document.querySelector<HTMLButtonElement>("#settings")!.click();
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')?.disabled).toBe(false));
+    document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')!.click();
+    document.querySelector<HTMLButtonElement>("#provider-tab-openai")!.click();
+
+    // Fill new API Key and test connection
+    const keyInput = document.querySelector<HTMLInputElement>("#cloud-api-key")!;
+    keyInput.value = "sk-test-new-key";
+    keyInput.dispatchEvent(new InputEvent("input", { bubbles: true }));
+
+    document.querySelector<HTMLButtonElement>("#cloud-test-connection")!.click();
+    await vi.waitFor(() => expect(api.aiConfigTestConnection).toHaveBeenCalledWith({
+      provider: "openai",
+      apiKey: "sk-test-new-key",
+      baseUrl: "https://api.openai.com/v1",
+      modelName: "gpt-4o-mini",
+    }));
+    await vi.waitFor(() => expect(document.querySelector("#cloud-test-status")?.textContent).toContain("Kết nối thành công"));
+
+    // Test error case
+    api.aiConfigTestConnection.mockResolvedValueOnce({
+      ok: false,
+      error: "API_KEY_INVALID",
+      message: "API key không hợp lệ",
+    });
+    document.querySelector<HTMLButtonElement>("#cloud-test-connection")!.click();
+    await vi.waitFor(() => expect(document.querySelector("#cloud-test-status")?.textContent).toContain("API key không hợp lệ"));
+  });
+
+  it("saves and activates cloud AI, and updates workflow view to treat cloud AI as ready", async () => {
+    const api = await loadApp({
+      customRuleList: () => Promise.resolve([customRule("rule-1", "Giữ nguyên SoátVăn.")]),
+    });
+    document.querySelector<HTMLButtonElement>("#settings")!.click();
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')?.disabled).toBe(false));
+    document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')!.click();
+    document.querySelector<HTMLButtonElement>("#provider-tab-openai")!.click();
+
+    // Fill form and click Save & Activate
+    const keyInput = document.querySelector<HTMLInputElement>("#cloud-api-key")!;
+    keyInput.value = "sk-secret-12345678";
+    keyInput.dispatchEvent(new InputEvent("input", { bubbles: true }));
+
+    api.aiConfigGet.mockResolvedValue({
+      active_provider: "openai",
+      configs: [
+        {
+          provider: "openai",
+          base_url: "https://api.openai.com/v1",
+          model_name: "gpt-4o-mini",
+          masked_key: "sk-se...5678",
+          is_active: true,
+        },
+      ],
+    });
+
+    document.querySelector<HTMLButtonElement>("#cloud-save-active")!.click();
+    await vi.waitFor(() => expect(api.aiConfigUpdate).toHaveBeenCalledWith({
+      provider: "openai",
+      apiKey: "sk-secret-12345678",
+      baseUrl: "https://api.openai.com/v1",
+      modelName: "gpt-4o-mini",
+      isActive: true,
+    }));
+    expect(api.aiConfigSetActive).toHaveBeenCalledWith("openai");
+    await vi.waitFor(() => expect(document.body.textContent).toContain("Đã lưu và kích hoạt OpenAI / Tương thích"));
+
+    // Return to workflow
+    document.querySelector<HTMLButtonElement>("#settings-back")!.click();
+    await vi.waitFor(() => expect(document.querySelector("#choose")).not.toBeNull());
+
+    // Choose document and verify Step 2 workflow with Cloud AI active
+    await chooseDocument();
+    await vi.waitFor(() => expect(document.querySelector("#workflow-ai-badge")).not.toBeNull());
+    expect(document.querySelector("#workflow-ai-badge")?.textContent).toContain("AI Cloud: OpenAI (gpt-4o-mini)");
+    expect(document.body.textContent).toContain("AI Cloud: OpenAI (gpt-4o-mini) sẽ tự tìm lỗi trong toàn bộ nội dung");
+
+    // Full review should be available and checked
+    const fullReview = document.querySelector<HTMLInputElement>("#full-review")!;
+    expect(fullReview).not.toBeNull();
+    expect(fullReview.checked).toBe(true);
+
+    // Custom rules should be enabled and selectable
+    const ruleInput = document.querySelector<HTMLInputElement>('[data-select-rule="rule-1"]')!;
+    expect(ruleInput.disabled).toBe(false);
+    expect(ruleInput.checked).toBe(true);
+
+    // Start job with Cloud AI active
+    document.querySelector<HTMLButtonElement>("#start")!.click();
+    await vi.waitFor(() => expect(api.startJob).toHaveBeenCalled());
+    expect(api.startJob.mock.calls[0][3]).toBe("Giữ nguyên SoátVăn.");
+    expect(api.startJob.mock.calls[0][4]).toBe(true);
+    expect(api.startJob.mock.calls[0][7]).toBe(true);
+  });
 });
+

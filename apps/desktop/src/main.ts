@@ -1,6 +1,17 @@
 import "./styles.css";
 import { api } from "./api";
-import type { CustomRule, DocumentInfo, JobResult, ModelStatus, Preset, RuleOptions, Step } from "./contracts";
+import type {
+  AiConfigEntry,
+  AiConfigState,
+  AiTestConnectionResult,
+  CustomRule,
+  DocumentInfo,
+  JobResult,
+  ModelStatus,
+  Preset,
+  RuleOptions,
+  Step,
+} from "./contracts";
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
 let renderedStep: Step | null = null;
@@ -14,6 +25,7 @@ let modelStatusRequestSequence = 0;
 let customRuleRequestSequence = 0;
 let modelOperationBaseline: { model: ModelStatus; useModel: boolean } | null = null;
 type SettingsSection = "prompts" | "review-rules" | "models";
+type ProviderTab = "local" | "openai" | "gemini";
 type AppView =
   | { kind: "workflow" }
   | { kind: "settings"; section: SettingsSection; returnFocus: string };
@@ -24,6 +36,26 @@ type PendingPromptAction =
   | { kind: "new" }
   | { kind: "edit"; id: string };
 type OutputAction = "open" | "reveal";
+
+const defaultAiConfigs: Record<string, AiConfigEntry> = {
+  openai: {
+    provider: "openai",
+    base_url: "https://api.openai.com/v1",
+    model_name: "gpt-4o-mini",
+    temperature: 0.0,
+    timeout_seconds: 60,
+    is_active: false,
+  },
+  gemini: {
+    provider: "gemini",
+    base_url: "https://generativelanguage.googleapis.com/v1beta",
+    model_name: "gemini-2.5-flash",
+    temperature: 0.0,
+    timeout_seconds: 60,
+    is_active: false,
+  },
+};
+
 const state: {
   view: AppView;
   step: Step;
@@ -38,6 +70,12 @@ const state: {
   cancelPending: boolean;
   result: JobResult | null;
   model: ModelStatus;
+  aiConfig: AiConfigState;
+  selectedProviderTab: ProviderTab;
+  cloudDrafts: Record<string, { apiKey: string; baseUrl: string; modelName: string }>;
+  cloudTestLoading: boolean;
+  cloudTestResult: AiTestConnectionResult | null;
+  cloudSaving: boolean;
   settingsLoading: boolean;
   customRules: CustomRule[];
   selectedRuleIds: string[];
@@ -70,6 +108,18 @@ const state: {
   includeRuleFindings: false,
   result: null,
   model: { state: "not_installed" },
+  aiConfig: {
+    active_provider: "local",
+    configs: [defaultAiConfigs.openai, defaultAiConfigs.gemini],
+  },
+  selectedProviderTab: "local",
+  cloudDrafts: {
+    openai: { apiKey: "", baseUrl: "https://api.openai.com/v1", modelName: "gpt-4o-mini" },
+    gemini: { apiKey: "", baseUrl: "https://generativelanguage.googleapis.com/v1beta", modelName: "gemini-2.5-flash" },
+  },
+  cloudTestLoading: false,
+  cloudTestResult: null,
+  cloudSaving: false,
   settingsLoading: false,
   customRules: [],
   selectedRuleIds: [],
@@ -133,6 +183,7 @@ function focusSelectorFor(element: Element | null): string | null {
   if (!(element instanceof HTMLElement)) return null;
   if (element.id) return `#${element.id}`;
   if (element.dataset.settingsSection) return `[data-settings-section="${element.dataset.settingsSection}"]`;
+  if (element.dataset.providerTab) return `[data-provider-tab="${element.dataset.providerTab}"]`;
   if (element.dataset.selectRule) return `[data-select-rule="${element.dataset.selectRule}"]`;
   if (element.dataset.editRule) return `[data-edit-rule="${element.dataset.editRule}"]`;
   if (element.dataset.deleteRule) return `[data-delete-rule="${element.dataset.deleteRule}"]`;
@@ -142,37 +193,87 @@ function documentMetadata(doc: DocumentInfo): string {
   const pages = doc.page_count ? `${doc.page_count.toLocaleString("vi-VN")} trang · ` : "";
   return `${formatBytes(doc.size)} · ${pages}${doc.word_count.toLocaleString("vi-VN")} từ · ${doc.paragraph_count.toLocaleString("vi-VN")} đoạn · ${doc.table_cell_count.toLocaleString("vi-VN")} ô bảng`;
 }
+
+function isCloudActive(): boolean {
+  return state.aiConfig.active_provider === "openai" || state.aiConfig.active_provider === "gemini";
+}
+
+function activeAiLabel(): string {
+  if (state.aiConfig.active_provider === "openai") {
+    const cfg = state.aiConfig.configs.find(c => c.provider === "openai");
+    const model = cfg?.model_name || state.cloudDrafts.openai?.modelName || "gpt-4o-mini";
+    return `AI Cloud: OpenAI (${model})`;
+  }
+  if (state.aiConfig.active_provider === "gemini") {
+    const cfg = state.aiConfig.configs.find(c => c.provider === "gemini");
+    const model = cfg?.model_name || state.cloudDrafts.gemini?.modelName || "gemini-2.5-flash";
+    return `AI Cloud: Gemini (${model})`;
+  }
+  return "AI Cục bộ";
+}
+
 function modelCanFilter(model: ModelStatus): boolean { return model.state === "ready" && model.capabilities?.candidate_filter === true; }
-function modelFilterAvailable(): boolean { return modelCanFilter(state.model); }
-function fullReviewAvailable(): boolean { return state.useModel && modelFilterAvailable() && state.model.capabilities?.full_review === true; }
+function modelFilterAvailable(): boolean {
+  if (isCloudActive()) return true;
+  return modelCanFilter(state.model);
+}
+function fullReviewAvailable(): boolean {
+  if (!state.useModel) return false;
+  if (isCloudActive()) return true;
+  return modelCanFilter(state.model) && state.model.capabilities?.full_review === true;
+}
 function clearUnavailableFullReview(): void {
   if (!fullReviewAvailable()) state.fullReview = false;
   if (!state.fullReview) state.includeRuleFindings = false;
 }
+
+function syncCloudDraftsFromConfig(): void {
+  for (const cfg of state.aiConfig.configs) {
+    if (cfg.provider === "openai" || cfg.provider === "gemini") {
+      state.cloudDrafts[cfg.provider] = {
+        apiKey: "",
+        baseUrl: cfg.base_url || defaultAiConfigs[cfg.provider]?.base_url || "",
+        modelName: cfg.model_name || defaultAiConfigs[cfg.provider]?.model_name || "",
+      };
+    }
+  }
+}
+
 function fullReviewOptionHtml(): string {
   if (!fullReviewAvailable()) return "";
-  const experimental = state.model.trust === "local_unverified" ? " Đây là chế độ thử nghiệm vì model chưa được benchmark và phê duyệt phát hành." : "";
+  const cloud = isCloudActive();
+  const experimental = (!cloud && state.model.trust === "local_unverified") ? " Đây là chế độ thử nghiệm vì model chưa được benchmark và phê duyệt phát hành." : "";
   const fullReviewLabel = state.includeRuleFindings ? "AI rà soát toàn văn" : "Chỉ dùng AI để rà soát";
+  const desc = cloud
+    ? `Bật mặc định. ${activeAiLabel()} dùng prompt tiếng Việt tích hợp để đọc toàn bộ thân bài và bảng.`
+    : `Bật mặc định. AI dùng prompt tiếng Việt tích hợp để đọc toàn bộ thân bài và bảng.${experimental}`;
   const includeRules = state.fullReview
     ? `<label class="setting-row include-rule-findings-option"><span><strong>Bổ sung cảnh báo từ bộ quy tắc code</strong><small>AI vẫn rà toàn văn; bộ quy tắc code chỉ chạy thêm và cộng các cảnh báo hợp lệ.</small></span><input type="checkbox" id="include-rule-findings" ${state.includeRuleFindings ? "checked" : ""}></label>`
     : "";
-  return `<div class="full-review-options"><label class="setting-row full-review-option"><span><strong>${fullReviewLabel}</strong><small>Bật mặc định. AI dùng prompt tiếng Việt tích hợp để đọc toàn bộ thân bài và bảng.${experimental}</small></span><input type="checkbox" id="full-review" ${state.fullReview ? "checked" : ""}></label>${includeRules}</div>`;
+  return `<div class="full-review-options"><label class="setting-row full-review-option"><span><strong>${fullReviewLabel}</strong><small>${desc}</small></span><input type="checkbox" id="full-review" ${state.fullReview ? "checked" : ""}></label>${includeRules}</div>`;
 }
+
 function reviewModeDescription(): string {
+  if (isCloudActive()) {
+    if (!state.fullReview) return "Bộ kiểm tra cơ bản sẽ tạo candidate, sau đó AI Cloud sẽ lọc lại kết quả.";
+    return state.includeRuleFindings
+      ? `${activeAiLabel()} là lớp rà soát chính; bộ quy tắc code sẽ chạy thêm để bổ sung cảnh báo.`
+      : `${activeAiLabel()} sẽ tự tìm lỗi trong toàn bộ nội dung; bộ quy tắc code không chạy.`;
+  }
   if (!state.fullReview) return "Bộ kiểm tra cơ bản sẽ tạo candidate, sau đó AI có thể lọc lại kết quả.";
   return state.includeRuleFindings
     ? "AI là lớp rà soát chính; bộ quy tắc code sẽ chạy thêm để bổ sung cảnh báo."
     : "AI sẽ dùng prompt tiếng Việt mặc định để tự tìm lỗi trong toàn bộ nội dung; bộ quy tắc code không chạy.";
 }
+
 function selectedCustomRules(): CustomRule[] { return state.customRules.filter(rule => state.selectedRuleIds.includes(rule.id)); }
 function compiledCustomPrompt(): string { return state.useModel ? selectedCustomRules().map(rule => rule.prompt).join("\n\n") : ""; }
-// A freshly loaded rule set starts from the operator's Settings defaults; the
-// review step then owns the per-document choice until the list changes again.
+
 function syncDefaultRuleSelection(): void { state.selectedRuleIds = state.customRules.filter(rule => rule.is_default).map(rule => rule.id); }
 function customRuleCharacterCount(): number { return state.customRules.reduce((total, rule) => total + [...rule.prompt].length, 0); }
 function modelOperationBusy(): boolean { return state.modelRemovalRunning || ["importing", "verifying"].includes(state.model.state); }
 function isWorkflowView(): boolean { return state.view.kind === "workflow"; }
-function settingsOperationLocked(): boolean { return modelOperationBusy() || modelOperationBaseline !== null || state.modelRemovalPending || state.customRulePending; }
+function settingsOperationLocked(): boolean { return modelOperationBusy() || modelOperationBaseline !== null || state.modelRemovalPending || state.customRulePending || state.cloudTestLoading || state.cloudSaving; }
 function settingsSectionNavigationLocked(): boolean { return state.settingsLoading || settingsOperationLocked(); }
 function customRuleDraftDirty(): boolean {
   const editing = state.customRules.find(rule => rule.id === state.editingCustomRuleId);
@@ -184,6 +285,8 @@ function customRuleDraftDirty(): boolean {
 }
 function settingsBusyMessage(): SettingsMessage {
   if (state.customRulePending) return { tone: "status", text: "Đang cập nhật prompt. Hãy chờ thao tác hoàn tất." };
+  if (state.cloudSaving) return { tone: "status", text: "Đang lưu cấu hình AI Cloud. Hãy chờ thao tác hoàn tất." };
+  if (state.cloudTestLoading) return { tone: "status", text: "Đang kiểm tra kết nối AI Cloud. Hãy chờ thao tác hoàn tất." };
   if (state.modelRemovalRunning) return { tone: "status", text: "Đang gỡ model khỏi máy. Hãy chờ thao tác hoàn tất." };
   if (state.modelRemovalPending) return { tone: "status", text: "Hãy chọn giữ lại hoặc gỡ model trước khi rời mục này." };
   if (state.model.state === "importing") return { tone: "status", text: "Đang nhập gói model. Bạn có thể huỷ thao tác bằng nút bên dưới." };
@@ -197,13 +300,16 @@ function settingsSectionHeading(section: SettingsSection): string {
 
 function customRuleSelectionHtml(): string {
   const count = state.customRules.length;
-  const applies = count > 0 && state.useModel && modelFilterAvailable();
+  const cloud = isCloudActive();
+  const applies = count > 0 && state.useModel && (cloud || modelFilterAvailable());
   const selected = state.selectedRuleIds.filter(id => state.customRules.some(rule => rule.id === id)).length;
   const summary = count === 0
     ? "Không có yêu cầu bổ sung; AI vẫn dùng prompt mặc định."
     : applies
       ? `Đang chọn ${selected.toLocaleString("vi-VN")}/${count.toLocaleString("vi-VN")}; các prompt được chọn sẽ gộp thành yêu cầu bổ sung cho prompt mặc định.`
-      : "Chưa được áp dụng vì AI cục bộ đang tắt hoặc chưa sẵn sàng.";
+      : cloud
+        ? "Chưa được áp dụng vì AI đang tắt."
+        : "Chưa được áp dụng vì AI cục bộ đang tắt hoặc chưa sẵn sàng.";
   const picker = count === 0
     ? `<div class="empty-state"><strong>Chưa có prompt riêng.</strong><span>Tạo prompt trong Cài đặt để cung cấp thuật ngữ hoặc tiêu chí riêng cho AI.</span></div>`
     : `<ul class="prompt-picker">${state.customRules.map(rule => {
@@ -211,7 +317,7 @@ function customRuleSelectionHtml(): string {
         const checked = state.selectedRuleIds.includes(rule.id) ? "checked" : "";
         return `<li class="prompt-picker__item"><label class="setting-row prompt-picker__row"><span><strong>${escape(rule.title)}</strong><small>${escape(rule.prompt)}</small></span><input type="checkbox" data-select-rule="${id}" ${checked} ${applies ? "" : "disabled"}></label></li>`;
       }).join("")}</ul>`;
-  return `<fieldset class="custom-rules-summary prompt-picker-group"><legend class="sr-only">Quy tắc riêng áp dụng cho lần rà soát này</legend><div class="prompt-picker-group__header"><div><strong>${count.toLocaleString("vi-VN")} quy tắc riêng</strong><span>${summary}</span></div><div class="button-row"><button class="button button--secondary" id="manage-custom-rules" type="button">Quản lý prompt</button><button class="button button--quiet" id="manage-review-rules" type="button">Xem quy tắc rà soát</button></div></div>${picker}</fieldset>${count > 0 && !applies ? `<p class="settings-message settings-message--error" role="alert">Bật AI cục bộ để áp dụng các quy tắc riêng. <button class="inline-button" id="open-model-settings" type="button">Thiết lập AI</button></p>` : ""}`;
+  return `<fieldset class="custom-rules-summary prompt-picker-group"><legend class="sr-only">Quy tắc riêng áp dụng cho lần rà soát này</legend><div class="prompt-picker-group__header"><div><strong>${count.toLocaleString("vi-VN")} quy tắc riêng</strong><span>${summary}</span></div><div class="button-row"><button class="button button--secondary" id="manage-custom-rules" type="button">Quản lý prompt</button><button class="button button--quiet" id="manage-review-rules" type="button">Xem quy tắc rà soát</button></div></div>${picker}</fieldset>${count > 0 && !applies ? `<p class="settings-message settings-message--error" role="alert">${cloud ? "Bật AI để áp dụng các quy tắc riêng." : "Bật AI cục bộ để áp dụng các quy tắc riêng."} <button class="inline-button" id="open-model-settings" type="button">Thiết lập AI</button></p>` : ""}`;
 }
 
 function render(preferredFocus?: string): void {
@@ -238,11 +344,11 @@ function render(preferredFocus?: string): void {
     </nav>
     <main class="workflow-shell">
       ${state.step === "file" ? `<section class="workflow-card workflow-card--file"><div class="section-copy"><h1>Chọn tệp Word cần kiểm tra</h1><p>Ứng dụng tạo một bản kết quả mới và luôn giữ nguyên tệp gốc.</p></div><button class="drop-zone" id="choose"><strong>Chọn hoặc kéo thả tệp .docx</strong><span>Nhấn Ctrl+O để mở nhanh</span></button>${errorHtml()}</section>` : ""}
-      ${state.step === "rules" && doc ? `<section class="workflow-card"><div class="workflow-context"><button class="back-button" id="back">← Chọn tệp khác</button><div class="file-chip"><strong>${escape(doc.name)}</strong><span>${documentMetadata(doc)}</span></div></div><div class="workflow-lead"><div class="section-copy"><h1>Chuẩn bị rà soát</h1><p>${reviewModeDescription()}</p></div><div class="workflow-actions workflow-actions--lead"><button class="button button--primary" id="start">Bắt đầu xử lý</button></div></div>${customRuleSelectionHtml()}${fullReviewOptionHtml()}${errorHtml()}</section>` : ""}
-      ${state.step === "processing" ? `<section class="workflow-card processing-panel"><div class="processing-status"><span class="spinner" aria-hidden="true"></span><div class="section-copy"><h1>${progressTitle()}</h1><p>Mọi xử lý tài liệu diễn ra trên máy này.</p></div></div><div class="progress-row"><div class="progress" role="progressbar" aria-label="Tiến độ xử lý" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${state.progress}"><span style="--progress-scale:${state.progress / 100}"></span></div><strong class="progress-value">${state.progress}%</strong></div><p class="sr-only progress-announcement" aria-live="polite" aria-atomic="true">${progressTitle()} ${state.progress}%</p><div class="workflow-actions"><button class="button button--secondary" id="cancel" ${state.jobStarting || state.cancelPending ? "disabled" : ""} ${state.jobStarting || state.cancelPending ? 'aria-busy="true"' : ""}>${state.jobStarting ? "Đang chuẩn bị…" : state.cancelPending ? "Đang dừng…" : "Dừng xử lý"}</button></div>${errorHtml()}</section>` : ""}
+      ${state.step === "rules" && doc ? `<section class="workflow-card"><div class="workflow-context"><button class="back-button" id="back">← Chọn tệp khác</button><div class="file-chip"><strong>${escape(doc.name)}</strong><span>${documentMetadata(doc)}</span></div></div><div class="workflow-lead"><div class="section-copy"><div class="ai-provider-badge" id="workflow-ai-badge"><span class="badge-dot ${isCloudActive() ? "badge-dot--cloud" : "badge-dot--local"}"></span><span>${escape(activeAiLabel())}</span></div><h1>Chuẩn bị rà soát</h1><p>${reviewModeDescription()}</p></div><div class="workflow-actions workflow-actions--lead"><button class="button button--primary" id="start">Bắt đầu xử lý</button></div></div>${customRuleSelectionHtml()}${fullReviewOptionHtml()}${errorHtml()}</section>` : ""}
+      ${state.step === "processing" ? `<section class="workflow-card processing-panel"><div class="processing-status"><span class="spinner" aria-hidden="true"></span><div class="section-copy"><h1>${progressTitle()}</h1><p>${isCloudActive() ? "Đang xử lý phân tích văn bản qua API AI." : "Mọi xử lý tài liệu diễn ra trên máy này."}</p></div></div><div class="progress-row"><div class="progress" role="progressbar" aria-label="Tiến độ xử lý" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${state.progress}"><span style="--progress-scale:${state.progress / 100}"></span></div><strong class="progress-value">${state.progress}%</strong></div><p class="sr-only progress-announcement" aria-live="polite" aria-atomic="true">${progressTitle()} ${state.progress}%</p><div class="workflow-actions"><button class="button button--secondary" id="cancel" ${state.jobStarting || state.cancelPending ? "disabled" : ""} ${state.jobStarting || state.cancelPending ? 'aria-busy="true"' : ""}>${state.jobStarting ? "Đang chuẩn bị…" : state.cancelPending ? "Đang dừng…" : "Dừng xử lý"}</button></div>${errorHtml()}</section>` : ""}
       ${(state.step === "result" || state.step === "no-findings") ? resultHtml() : ""}
     </main>` : settingsHtml()}
-    <footer class="status-bar"><span><span aria-hidden="true">●</span> Xử lý cục bộ · không gửi nội dung tài liệu lên mạng</span><span>v${escape(state.appVersion)}</span></footer>`;
+    <footer class="status-bar">${isCloudActive() ? `<span><span aria-hidden="true">☁</span> ${escape(activeAiLabel())} · Gửi dữ liệu qua API đám mây</span>` : `<span><span aria-hidden="true">●</span> Xử lý cục bộ · không gửi nội dung tài liệu lên mạng</span>`}<span>v${escape(state.appVersion)}</span></footer>`;
   bind();
   renderedStep = state.step;
   renderedView = state.view.kind;
@@ -267,7 +373,7 @@ function stepIndex(): number { return state.step === "file" ? 0 : state.step ===
 function errorHtml(): string { return state.error ? `<p class="error" role="alert">${escape(state.error)}</p>` : ""; }
 const progressStageRanks: Record<string, number> = { reading: 0, rules: 1, model: 2, validating: 3, exporting: 4, complete: 5 };
 function progressTitle(): string {
-  if (state.progressStage === "model") return state.fullReview ? "Đang rà soát thân bài và bảng bằng AI cục bộ…" : "Đang phân loại các trường hợp nghi ngờ bằng model cục bộ…";
+  if (state.progressStage === "model") return state.fullReview ? `Đang rà soát thân bài và bảng bằng ${activeAiLabel()}…` : `Đang phân loại các trường hợp nghi ngờ bằng ${activeAiLabel()}…`;
   const titles: Record<string, string> = {
     reading: "Đang đọc cấu trúc tệp Word…",
     rules: "Đang áp dụng quy tắc…",
@@ -337,13 +443,13 @@ function resultHtml(): string {
 function settingsHtml(): string {
   if (state.view.kind !== "settings") return "";
   const section = state.view.section;
-  const sections: [SettingsSection, string][] = [["prompts", "Prompt"], ["review-rules", "Quy tắc"], ["models", "AI cục bộ"]];
+  const sections: [SettingsSection, string][] = [["prompts", "Prompt"], ["review-rules", "Quy tắc"], ["models", "AI & Mô hình"]];
   const operationLocked = settingsOperationLocked();
   const content = settingsContent(section);
   return `<main class="settings-page" id="settings-page" aria-labelledby="settings-title" aria-describedby="settings-description" ${state.settingsLoading ? 'aria-busy="true"' : ""}>
     <header class="settings-page__header">
        <button class="back-button" id="settings-back" type="button" ${operationLocked ? 'aria-disabled="true" aria-describedby="settings-message"' : ""}>← Quay lại rà soát</button>
-      <div><h1 id="settings-title">Cài đặt</h1><p id="settings-description">Quản lý prompt, xem bộ quy tắc cố định và model chạy trên máy.</p></div>
+      <div><h1 id="settings-title">Cài đặt</h1><p id="settings-description">Quản lý prompt, xem bộ quy tắc cố định và thiết lập nguồn AI.</p></div>
     </header>
     <div class="settings-layout">
        <nav class="settings-nav" aria-label="Mục cài đặt">${sections.map(([id, label]) => `<button class="settings-nav__item" type="button" id="settings-nav-${id}" data-settings-section="${id}" ${section === id ? 'aria-current="page"' : ""} ${state.settingsLoading ? "disabled" : operationLocked ? 'aria-disabled="true" aria-describedby="settings-message"' : ""}>${label}</button>`).join("")}</nav>
@@ -393,34 +499,117 @@ function settingsContent(section: SettingsSection): { body: string; footer: stri
       footer: "",
     };
   }
+
   const installed = state.model.state === "ready" || state.model.state === "installed";
   const busy = modelOperationBusy();
-  const controlsLocked = busy || modelOperationBaseline !== null || state.modelRemovalPending || state.settingsLoading;
+  const controlsLocked = busy || modelOperationBaseline !== null || state.modelRemovalPending || state.settingsLoading || state.cloudTestLoading || state.cloudSaving;
   const activeModelId = state.model.model_id;
   const title = state.modelRemovalRunning ? "Đang gỡ model…" : state.model.state === "ready" ? (state.model.release_approved ? "AI cục bộ đã sẵn sàng" : "AI cục bộ đang ở chế độ đánh giá") : state.model.state === "installed" ? (state.model.code ? "Model đã cài nhưng chưa thể khởi động" : "Model đã cài; AI đang tắt") : state.model.state === "importing" ? "Đang nhập gói model…" : state.model.state === "verifying" ? "Đang xác minh và khởi động model…" : state.model.state === "cancelled" ? "Đã dừng thao tác model" : state.model.state === "invalid" || state.model.state === "incompatible" ? "Gói model không hợp lệ hoặc không tương thích" : state.model.state === "error" ? "Không thể cài model" : "Chưa cài AI cục bộ";
+
+  const currentTab = state.selectedProviderTab;
+
+  const providerTabsHtml = `
+    <div class="provider-tabs" role="tablist" aria-label="Nguồn AI">
+      <button class="provider-tab ${currentTab === "local" ? "selected" : ""}" id="provider-tab-local" data-provider-tab="local" type="button" role="tab" aria-selected="${currentTab === "local"}" ${controlsLocked ? "disabled" : ""}>
+        <span class="provider-tab__badge">${state.aiConfig.active_provider === "local" ? "Đang dùng" : "Offline"}</span>
+        <strong>Mô hình cục bộ</strong>
+        <small>Offline GGUF / .svmodel</small>
+      </button>
+      <button class="provider-tab ${currentTab === "openai" ? "selected" : ""}" id="provider-tab-openai" data-provider-tab="openai" type="button" role="tab" aria-selected="${currentTab === "openai"}" ${controlsLocked ? "disabled" : ""}>
+        <span class="provider-tab__badge">${state.aiConfig.active_provider === "openai" ? "Đang dùng" : "Cloud"}</span>
+        <strong>OpenAI / Tương thích</strong>
+        <small>OpenAI, DeepSeek, Groq...</small>
+      </button>
+      <button class="provider-tab ${currentTab === "gemini" ? "selected" : ""}" id="provider-tab-gemini" data-provider-tab="gemini" type="button" role="tab" aria-selected="${currentTab === "gemini"}" ${controlsLocked ? "disabled" : ""}>
+        <span class="provider-tab__badge">${state.aiConfig.active_provider === "gemini" ? "Đang dùng" : "Cloud"}</span>
+        <strong>Google Gemini API</strong>
+        <small>Gemini 2.5 Flash</small>
+      </button>
+    </div>`;
+
+  if (currentTab === "local") {
+    const isLocalActive = state.aiConfig.active_provider === "local";
+    return {
+      body: `
+      <section class="settings-section settings-models" id="settings-models" aria-labelledby="settings-models-title">
+      <header class="settings-section__header"><div class="section-copy"><h2 id="settings-models-title">Mô hình AI</h2><p>Chọn nguồn AI: mô hình chạy offline trên máy hoặc kết nối qua API đám mây.</p></div></header>
+      ${providerTabsHtml}
+      <div class="model-card">
+        <div class="model-card__header">
+          <div>
+            <strong id="model-status-title">${title}</strong>
+            <p>${installed ? `${escape(activeModelId ?? "model")} · ${escape(state.model.version ?? "1.0.0")}` : "Ứng dụng vẫn kiểm tra đầy đủ bằng bộ quy tắc cục bộ."}</p>
+          </div>
+          ${installed && !state.modelRemovalPending ? `<button class="delete-button" id="model-remove" type="button" ${controlsLocked ? "disabled" : ""}>Gỡ model</button>` : ""}
+        </div>
+        ${state.modelRemovalPending ? `<div class="destructive-confirm" role="alert"><p>Gỡ model sẽ giải phóng dung lượng, nhưng bạn phải nhập lại gói nếu muốn dùng AI sau này.</p><div class="button-row"><button class="button button--secondary button--small" id="cancel-model-remove" type="button" ${state.modelRemovalRunning ? "disabled" : ""}>Giữ lại</button><button class="button button--danger button--small" id="confirm-model-remove" type="button" ${state.modelRemovalRunning ? 'disabled aria-busy="true"' : ""}>${state.modelRemovalRunning ? "Đang gỡ…" : "Gỡ model"}</button></div></div>` : ""}
+      </div>
+      ${installed && state.model.trust === "local_unverified" ? `<p class="settings-message settings-message--error" role="status">Model GGUF nhập cục bộ chưa có chữ ký và benchmark phát hành. Có thể rà soát sâu để đánh giá trên máy này, nhưng kết quả chưa được phê duyệt cho phát hành.</p>` : ""}
+      ${installed ? `<label class="setting-row"><span><strong>Dùng AI với quy tắc riêng</strong><small>Tắt để giải phóng bộ nhớ; bộ kiểm tra cơ bản vẫn tiếp tục hoạt động.</small></span><input type="checkbox" id="use-model" ${state.useModel ? "checked" : ""} ${controlsLocked ? "disabled" : ""}></label>` : ""}
+      ${!isLocalActive ? `<div class="activate-provider-row"><button class="button button--primary" id="activate-local-provider" type="button" ${controlsLocked ? "disabled" : ""}>Kích hoạt mô hình cục bộ</button></div>` : ""}
+      <div class="section-copy model-section-copy">
+        <h3>Nhập gói model</h3>
+        <p>Chấp nhận gói <code>.svmodel</code> đã ký hoặc tệp <code>.gguf</code> nhập cục bộ. Gói ký số mới được coi là đã phê duyệt phát hành.</p>
+      </div>
+      <p class="notice">Ứng dụng không kết nối mạng để lấy model. Nội dung tài liệu không được gửi đi.</p>
+      </section>`,
+      footer: `<footer class="settings-footer"><div class="button-row settings-footer__actions"><button class="button button--primary" id="model-import" type="button" ${controlsLocked ? "disabled" : ""}>Nhập gói có sẵn</button><button class="button button--secondary" id="model-action" type="button" ${busy && !state.modelRemovalRunning ? "" : "disabled"} ${busy ? 'aria-busy="true"' : ""}>Huỷ thao tác</button></div></footer>`,
+    };
+  }
+
+  // Cloud provider tab (openai or gemini)
+  const provider = currentTab;
+  const isCloudCurrentActive = state.aiConfig.active_provider === provider;
+  const providerName = provider === "openai" ? "OpenAI / Tương thích" : "Google Gemini API";
+  const savedCfg = state.aiConfig.configs.find(c => c.provider === provider);
+  const draft = state.cloudDrafts[provider] ?? { apiKey: "", baseUrl: defaultAiConfigs[provider]?.base_url ?? "", modelName: defaultAiConfigs[provider]?.model_name ?? "" };
+
+  const cloudTestResultHtml = () => {
+    if (state.cloudTestLoading) {
+      return `<p class="settings-message settings-message--status" id="cloud-test-status" role="status">Đang kiểm tra kết nối tới ${escape(providerName)}…</p>`;
+    }
+    if (state.cloudTestResult) {
+      if (state.cloudTestResult.ok) {
+        return `<p class="settings-message settings-message--status" id="cloud-test-status" role="status">✓ Kết nối thành công! Model: ${escape(state.cloudTestResult.model ?? draft.modelName)}</p>`;
+      }
+      return `<p class="settings-message settings-message--error" id="cloud-test-status" role="alert">✕ ${escape(state.cloudTestResult.message || state.cloudTestResult.error || "Không thể kết nối")}</p>`;
+    }
+    return "";
+  };
+
   return {
     body: `
     <section class="settings-section settings-models" id="settings-models" aria-labelledby="settings-models-title">
-    <header class="settings-section__header"><div class="section-copy"><h2 id="settings-models-title">AI cục bộ</h2><p>Nhập gói model từ tệp có sẵn trên máy. Ứng dụng không tải model qua mạng.</p></div></header>
-    <div class="model-card">
-      <div class="model-card__header">
-        <div>
-          <strong id="model-status-title">${title}</strong>
-          <p>${installed ? `${escape(activeModelId ?? "model")} · ${escape(state.model.version ?? "1.0.0")}` : "Ứng dụng vẫn kiểm tra đầy đủ bằng bộ quy tắc cục bộ."}</p>
-        </div>
-        ${installed && !state.modelRemovalPending ? `<button class="delete-button" id="model-remove" type="button" ${controlsLocked ? "disabled" : ""}>Gỡ model</button>` : ""}
+    <header class="settings-section__header"><div class="section-copy"><h2 id="settings-models-title">Mô hình AI</h2><p>Chọn nguồn AI: mô hình chạy offline trên máy hoặc kết nối qua API đám mây.</p></div></header>
+    ${providerTabsHtml}
+    <div class="privacy-banner" role="note">
+      <div class="privacy-banner__icon" aria-hidden="true">🔒</div>
+      <div>
+        <strong>Lưu ý quyền riêng tư (${escape(providerName)})</strong>
+        <p>Khi kích hoạt chế độ Cloud AI, nội dung tài liệu sẽ được gửi qua mạng Internet đến API của ${escape(providerName)} để phân tích. Hãy đảm bảo tài liệu không chứa dữ liệu mật nội bộ hoặc tuân thủ chính sách dữ liệu của tổ chức.</p>
       </div>
-      ${state.modelRemovalPending ? `<div class="destructive-confirm" role="alert"><p>Gỡ model sẽ giải phóng dung lượng, nhưng bạn phải nhập lại gói nếu muốn dùng AI sau này.</p><div class="button-row"><button class="button button--secondary button--small" id="cancel-model-remove" type="button" ${state.modelRemovalRunning ? "disabled" : ""}>Giữ lại</button><button class="button button--danger button--small" id="confirm-model-remove" type="button" ${state.modelRemovalRunning ? 'disabled aria-busy="true"' : ""}>${state.modelRemovalRunning ? "Đang gỡ…" : "Gỡ model"}</button></div></div>` : ""}
     </div>
-    ${installed && state.model.trust === "local_unverified" ? `<p class="settings-message settings-message--error" role="status">Model GGUF nhập cục bộ chưa có chữ ký và benchmark phát hành. Có thể rà soát sâu để đánh giá trên máy này, nhưng kết quả chưa được phê duyệt cho phát hành.</p>` : ""}
-    ${installed ? `<label class="setting-row"><span><strong>Dùng AI với quy tắc riêng</strong><small>Tắt để giải phóng bộ nhớ; bộ kiểm tra cơ bản vẫn tiếp tục hoạt động.</small></span><input type="checkbox" id="use-model" ${state.useModel ? "checked" : ""} ${controlsLocked ? "disabled" : ""}></label>` : ""}
-    <div class="section-copy model-section-copy">
-      <h3>Nhập gói model</h3>
-      <p>Chấp nhận gói <code>.svmodel</code> đã ký hoặc tệp <code>.gguf</code> nhập cục bộ. Gói ký số mới được coi là đã phê duyệt phát hành.</p>
+    ${isCloudCurrentActive ? `<p class="active-provider-badge">● Nguồn AI này đang được kích hoạt cho rà soát</p>` : ""}
+    <div class="cloud-form">
+      <div class="control">
+        <label for="cloud-base-url">Base URL</label>
+        <input type="url" id="cloud-base-url" value="${escape(draft.baseUrl)}" placeholder="${provider === "openai" ? "https://api.openai.com/v1" : "https://generativelanguage.googleapis.com/v1beta"}" ${controlsLocked ? "disabled" : ""}>
+        <span class="field__helper">Địa chỉ endpoint của API${provider === "openai" ? " (OpenAI, DeepSeek, Groq, OpenRouter...)" : " Google Gemini"}</span>
+      </div>
+      <div class="control">
+        <label for="cloud-api-key">API Key</label>
+        <input type="password" id="cloud-api-key" value="${escape(draft.apiKey)}" placeholder="${savedCfg?.masked_key ? `Đã lưu key: ${savedCfg.masked_key}` : provider === "openai" ? "sk-..." : "AIza..."}" ${controlsLocked ? "disabled" : ""}>
+        <span class="field__helper">${savedCfg?.masked_key ? `Key đã lưu: <code>${escape(savedCfg.masked_key)}</code>. Để trống nếu giữ nguyên.` : "Bắt buộc nhập API Key để kết nối."}</span>
+      </div>
+      <div class="control">
+        <label for="cloud-model-name">Model Name</label>
+        <input type="text" id="cloud-model-name" value="${escape(draft.modelName)}" placeholder="${provider === "openai" ? "gpt-4o-mini" : "gemini-2.5-flash"}" ${controlsLocked ? "disabled" : ""}>
+        <span class="field__helper">Tên mô hình (Ví dụ: ${provider === "openai" ? "gpt-4o-mini, deepseek-chat, llama-3.3-70b-versatile" : "gemini-2.5-flash, gemini-1.5-pro"})</span>
+      </div>
     </div>
-    <p class="notice">Ứng dụng không kết nối mạng để lấy model. Nội dung tài liệu không được gửi đi.</p>
+    ${cloudTestResultHtml()}
     </section>`,
-    footer: `<footer class="settings-footer"><div class="button-row settings-footer__actions"><button class="button button--primary" id="model-import" type="button" ${controlsLocked ? "disabled" : ""}>Nhập gói có sẵn</button><button class="button button--secondary" id="model-action" type="button" ${busy && !state.modelRemovalRunning ? "" : "disabled"} ${busy ? 'aria-busy="true"' : ""}>Huỷ thao tác</button></div></footer>`,
+    footer: `<footer class="settings-footer"><div class="button-row settings-footer__actions"><button class="button button--secondary" id="cloud-test-connection" type="button" ${state.cloudTestLoading || controlsLocked ? 'disabled aria-busy="true"' : ""}>${state.cloudTestLoading ? "Đang kiểm tra…" : "Kiểm tra kết nối"}</button><button class="button button--primary" id="cloud-save-active" type="button" ${state.cloudSaving || controlsLocked ? 'disabled aria-busy="true"' : ""}>${state.cloudSaving ? "Đang lưu…" : isCloudCurrentActive ? "Lưu cấu hình" : "Lưu & Kích hoạt"}</button></div></footer>`,
   };
 }
 
@@ -493,6 +682,40 @@ function bind(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-edit-rule]").forEach(button => button.addEventListener("click", () => editCustomRule(button.dataset.editRule!)));
   document.querySelectorAll<HTMLButtonElement>("[data-delete-rule]").forEach(button => button.addEventListener("click", () => void deleteCustomRule(button.dataset.deleteRule!)));
   document.querySelector("#undo-delete-rule")?.addEventListener("click", () => void undoDeleteCustomRule());
+
+  // Model & AI Provider events
+  document.querySelectorAll<HTMLButtonElement>("[data-provider-tab]").forEach(button => {
+    button.addEventListener("click", () => {
+      const tab = button.dataset.providerTab as ProviderTab;
+      if (tab) {
+        state.selectedProviderTab = tab;
+        state.cloudTestResult = null;
+        render(`[data-provider-tab="${tab}"]`);
+      }
+    });
+  });
+  document.querySelector("#activate-local-provider")?.addEventListener("click", () => void activateLocalProvider());
+  document.querySelector<HTMLInputElement>("#cloud-base-url")?.addEventListener("input", event => {
+    const tab = state.selectedProviderTab;
+    if (tab !== "local") {
+      state.cloudDrafts[tab].baseUrl = (event.target as HTMLInputElement).value;
+    }
+  });
+  document.querySelector<HTMLInputElement>("#cloud-api-key")?.addEventListener("input", event => {
+    const tab = state.selectedProviderTab;
+    if (tab !== "local") {
+      state.cloudDrafts[tab].apiKey = (event.target as HTMLInputElement).value;
+    }
+  });
+  document.querySelector<HTMLInputElement>("#cloud-model-name")?.addEventListener("input", event => {
+    const tab = state.selectedProviderTab;
+    if (tab !== "local") {
+      state.cloudDrafts[tab].modelName = (event.target as HTMLInputElement).value;
+    }
+  });
+  document.querySelector("#cloud-test-connection")?.addEventListener("click", () => void testCloudConnection());
+  document.querySelector("#cloud-save-active")?.addEventListener("click", () => void saveAndActivateCloud());
+
   document.querySelector("#model-import")?.addEventListener("click", () => void modelImport());
   document.querySelector("#model-action")?.addEventListener("click", () => void modelAction());
   document.querySelector("#model-remove")?.addEventListener("click", () => { state.modelRemovalPending = true; state.settingsMessage = null; render("#cancel-model-remove"); });
@@ -583,9 +806,12 @@ function reset(): void {
 }
 async function start(): Promise<void> {
   if (!state.document) return;
+  const cloudActive = isCloudActive();
   if (state.fullReview && !fullReviewAvailable()) {
     clearUnavailableFullReview();
-    state.error = "Rà soát sâu cần AI cục bộ đang bật và sẵn sàng. Hãy bật AI rồi thử lại.";
+    state.error = cloudActive
+      ? "Rà soát sâu cần AI Cloud được cấu hình hợp lệ. Hãy kiểm tra cài đặt AI rồi thử lại."
+      : "Rà soát sâu cần AI cục bộ đang bật và sẵn sàng. Hãy bật AI rồi thử lại.";
     render("#start");
     return;
   }
@@ -593,7 +819,7 @@ async function start(): Promise<void> {
   settingsRequestSequence += 1;
   state.settingsLoading = false;
   const currentJobId = crypto.randomUUID();
-  const effectiveUseModel = state.useModel && modelFilterAvailable();
+  const effectiveUseModel = state.useModel && (cloudActive || modelFilterAvailable());
   const customPrompt = effectiveUseModel ? compiledCustomPrompt() : "";
   state.step = "processing";
   state.progress = 0;
@@ -742,7 +968,11 @@ async function openSettings(section: SettingsSection = "prompts", returnFocus = 
   state.customRulePromptInvalid = false;
   state.pendingPromptAction = null;
   render(returnFocus === "#settings" ? "#settings-title" : settingsSectionHeading(section));
-  const [modelResult, customRulesResult] = await Promise.allSettled([api.modelStatus(state.useModel), api.customRuleList()]);
+  const [modelResult, customRulesResult, aiConfigResult] = await Promise.allSettled([
+    api.modelStatus(state.useModel),
+    api.customRuleList(),
+    api.aiConfigGet(),
+  ]);
   if (request !== settingsRequestSequence || state.view.kind !== "settings" || state.step !== requestedStep) {
     if (request === settingsRequestSequence) {
       state.settingsLoading = false;
@@ -760,6 +990,13 @@ async function openSettings(section: SettingsSection = "prompts", returnFocus = 
     syncDefaultRuleSelection();
   } else if (customRulesResult.status === "rejected") {
     state.settingsMessage = { tone: "error", text: "Không tải được prompt riêng. Hãy quay lại màn rà soát, mở Cài đặt và thử lần nữa." };
+  }
+  if (aiConfigResult.status === "fulfilled") {
+    state.aiConfig = aiConfigResult.value;
+    syncCloudDraftsFromConfig();
+    if (state.selectedProviderTab === "local" && isCloudActive()) {
+      state.selectedProviderTab = state.aiConfig.active_provider as ProviderTab;
+    }
   }
   clearUnavailableFullReview();
   state.settingsLoading = false;
@@ -1045,6 +1282,98 @@ async function modelAction(): Promise<void> {
   if (modelOperationBusy()) await cancelModelOperation();
 }
 
+async function testCloudConnection(): Promise<void> {
+  const provider = state.selectedProviderTab;
+  if (provider === "local" || state.cloudTestLoading) return;
+  const draft = state.cloudDrafts[provider];
+  state.cloudTestLoading = true;
+  state.cloudTestResult = null;
+  render("#cloud-test-connection");
+  try {
+    const result = await api.aiConfigTestConnection({
+      provider,
+      apiKey: draft.apiKey || undefined,
+      baseUrl: draft.baseUrl || undefined,
+      modelName: draft.modelName || undefined,
+    });
+    state.cloudTestResult = result;
+  } catch (err) {
+    state.cloudTestResult = {
+      ok: false,
+      error: "TEST_FAILED",
+      message: err instanceof Error ? err.message : String(err),
+    };
+  } finally {
+    state.cloudTestLoading = false;
+    render("#cloud-test-connection");
+  }
+}
+
+async function saveAndActivateCloud(): Promise<void> {
+  const provider = state.selectedProviderTab;
+  if (provider === "local" || state.cloudSaving) return;
+  const draft = state.cloudDrafts[provider];
+  state.cloudSaving = true;
+  state.settingsMessage = null;
+  render("#cloud-save-active");
+  try {
+    await api.aiConfigUpdate({
+      provider,
+      apiKey: draft.apiKey || undefined,
+      baseUrl: draft.baseUrl || undefined,
+      modelName: draft.modelName || undefined,
+      isActive: true,
+    });
+    await api.aiConfigSetActive(provider);
+    const updatedState = await api.aiConfigGet();
+    state.aiConfig = updatedState;
+    state.useModel = true;
+    state.fullReview = true;
+    saveModelPreference(true);
+    const saved = updatedState.configs.find(c => c.provider === provider);
+    if (saved) {
+      state.cloudDrafts[provider] = {
+        apiKey: "",
+        baseUrl: saved.base_url || draft.baseUrl,
+        modelName: saved.model_name || draft.modelName,
+      };
+    }
+    state.settingsMessage = {
+      tone: "status",
+      text: `Đã lưu và kích hoạt ${provider === "openai" ? "OpenAI / Tương thích" : "Google Gemini"}.`,
+    };
+  } catch {
+    state.settingsMessage = {
+      tone: "error",
+      text: `Không lưu được cấu hình ${provider === "openai" ? "OpenAI" : "Gemini"}. Hãy thử lại.`,
+    };
+  } finally {
+    state.cloudSaving = false;
+    render("#cloud-save-active");
+  }
+}
+
+async function activateLocalProvider(): Promise<void> {
+  state.settingsMessage = null;
+  try {
+    await api.aiConfigSetActive("local");
+    const updatedState = await api.aiConfigGet();
+    state.aiConfig = updatedState;
+    state.useModel = modelCanFilter(state.model);
+    state.fullReview = state.useModel && state.model.capabilities?.full_review === true;
+    state.settingsMessage = {
+      tone: "status",
+      text: "Đã kích hoạt chế độ AI cục bộ (Offline).",
+    };
+  } catch {
+    state.settingsMessage = {
+      tone: "error",
+      text: "Không chuyển được sang AI cục bộ. Hãy thử lại.",
+    };
+  }
+  render("#activate-local-provider");
+}
+
 // Initial render immediately paints the UI
 render();
 
@@ -1108,6 +1437,19 @@ try {
 } catch { /* noop */ }
 
 try {
+  void api.aiConfigGet().then(aiConfig => {
+    state.aiConfig = aiConfig;
+    syncCloudDraftsFromConfig();
+    if (isCloudActive()) {
+      state.selectedProviderTab = aiConfig.active_provider as ProviderTab;
+      state.useModel = true;
+      state.fullReview = true;
+    }
+    render();
+  }).catch(() => {});
+} catch { /* noop */ }
+
+try {
   const customRuleSequence = customRuleOperationSequence;
   const request = ++customRuleRequestSequence;
   void api.customRuleList().then(rules => {
@@ -1119,3 +1461,4 @@ try {
 } catch { /* noop */ }
 
 try { void api.appVersion().then(version => { state.appVersion = version; render(); }).catch(() => {}); } catch { /* noop */ }
+
