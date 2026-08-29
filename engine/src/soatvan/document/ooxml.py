@@ -292,11 +292,7 @@ class DocxPackage:
         r = etree.SubElement(p, f"{{{W}}}r")
         text = etree.SubElement(r, f"{{{W}}}t")
         suggestion = finding.suggestion or "(xoá)"
-        reason = re.sub(r"\.{2,}$", ".", finding.reason.strip())
-        text.text = (
-            f"Sai: “{finding.source_text}” → Đề xuất: “{suggestion}” — "
-            f"Lý do: {reason} [{finding.rule_version}]"
-        )
+        text.text = f"Sai: “{finding.source_text}” → Đề xuất: “{suggestion}”"
         return True
 
     @staticmethod

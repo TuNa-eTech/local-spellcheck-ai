@@ -245,10 +245,7 @@ def test_generated_comment_shows_original_and_suggestion_without_double_periods(
     with zipfile.ZipFile(output) as archive:
         comments = etree.fromstring(archive.read("word/comments.xml"))
     comment = comments.xpath("string(//w:comment//w:t)", namespaces=NS)
-
-    assert "Sai: “sát nhập” → Đề xuất: “sáp nhập.”" in comment
-    assert "Lý do: Lý do thử nghiệm." in comment
-    assert ".." not in comment
+    assert comment == "Sai: “sát nhập” → Đề xuất: “sáp nhập.”"
 
 
 def test_no_findings_creates_no_output(make_docx, tmp_path: Path) -> None:
