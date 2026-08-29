@@ -174,6 +174,11 @@ class Sidecar:
 
     def _run_job(self, job_id: str, params: dict[str, Any], token: Token) -> None:
         temporary_output = Path(params["temporary_output_path"])
+        sys.stderr.write(
+            f"[SoatVan-Sidecar] _run_job starting: use_model={params.get('use_model')}, "
+            f"full_review={params.get('full_review')}, custom_prompt={params.get('custom_prompt')!r}\n"
+        )
+        sys.stderr.flush()
         try:
             request = ProcessRequest(
                 Path(params["source_path"]),
@@ -202,6 +207,11 @@ class Sidecar:
                 )
 
             result = self.processor.execute(request, progress, token)
+            sys.stderr.write(
+                f"[SoatVan-Sidecar] _run_job finished successfully: finding_count={result.finding_count}, "
+                f"output_path={result.output_path}, review={result.review}\n"
+            )
+            sys.stderr.flush()
             review_partial = bool(
                 result.review and result.review.get("status") == "partial"
             )

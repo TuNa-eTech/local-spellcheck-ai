@@ -274,6 +274,13 @@ async fn start_job(request: StartJobRequest, state: State<'_, AppState>) -> AppR
         rule_options,
         ignored_words,
     } = request;
+    eprintln!(
+        "[SoatVan-Host] start_job received: job_id={}, use_model={}, full_review={}, custom_prompt_len={}",
+        job_id,
+        use_model,
+        full_review,
+        custom_prompt.len()
+    );
     let source = validate_docx(Path::new(&source_path))?;
     if !matches!(preset.as_str(), "standard" | "administrative" | "spelling") {
         return Err(AppError::Engine("PRESET_INVALID".into()));
@@ -287,10 +294,18 @@ async fn start_job(request: StartJobRequest, state: State<'_, AppState>) -> AppR
     )?;
     if use_model {
         let model_status = engine_model_status(&state.engine, true)?;
+        eprintln!(
+            "[SoatVan-Host] model_status for job: state={}, candidate_filter={}, full_review={}",
+            model_status.state,
+            model_status.capabilities.candidate_filter,
+            model_status.capabilities.full_review
+        );
         if model_status.state != "ready" || !model_status.capabilities.candidate_filter {
+            eprintln!("[SoatVan-Host] ERROR: MODEL_CLASSIFIER_NOT_READY (state: {})", model_status.state);
             return Err(AppError::Engine("MODEL_CLASSIFIER_NOT_READY".into()));
         }
         if full_review && !model_status.capabilities.full_review {
+            eprintln!("[SoatVan-Host] ERROR: MODEL_FULL_REVIEW_NOT_APPROVED");
             return Err(AppError::Engine("MODEL_FULL_REVIEW_NOT_APPROVED".into()));
         }
     }

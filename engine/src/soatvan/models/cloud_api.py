@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -274,6 +275,11 @@ class CloudAiReviewer:
 
         for idx, (chunk_id, chunk_blocks, chunk_candidates) in enumerate(chunks):
             cancellation.raise_if_cancelled()
+            sys.stderr.write(
+                f"[SoatVan-CloudAI] Reviewing chunk {idx+1}/{total_chunks} ({chunk_id}) "
+                f"with {len(chunk_blocks)} blocks, {len(chunk_candidates)} candidates...\n"
+            )
+            sys.stderr.flush()
             try:
                 raw_json = self._call_ai(
                     system_prompt, chunk_blocks, chunk_candidates, cancellation
@@ -281,10 +287,19 @@ class CloudAiReviewer:
                 verdicts, discoveries = self._parse_response(
                     raw_json, chunk_blocks, chunk_candidates
                 )
+                sys.stderr.write(
+                    f"[SoatVan-CloudAI] Chunk {chunk_id} parsed: {len(discoveries)} discoveries, "
+                    f"{len(verdicts)} verdicts\n"
+                )
+                sys.stderr.flush()
                 all_verdicts.extend(verdicts)
                 all_discoveries.extend(discoveries)
                 reviewed_chunks += 1
-            except Exception:
+            except Exception as exc:
+                sys.stderr.write(
+                    f"[SoatVan-CloudAI] ERROR in chunk {chunk_id}: {exc}\n"
+                )
+                sys.stderr.flush()
                 failed_chunk_ids.append(chunk_id)
 
             if progress is not None:

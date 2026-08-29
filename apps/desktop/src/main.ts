@@ -782,6 +782,15 @@ async function start(): Promise<void> {
   const cloudActive = isCloudActive();
   const effectiveUseModel = cloudActive || (state.useModel && modelFilterAvailable());
   const effectiveFullReview = cloudActive || (state.fullReview && fullReviewAvailable());
+  console.log("[SoatVan-UI] Starting review:", {
+    cloudActive,
+    activeProvider: state.aiConfig.active_provider,
+    effectiveUseModel,
+    effectiveFullReview,
+    selectedRuleIds: state.selectedRuleIds,
+    customRulesCount: state.customRules.length,
+    compiledPromptLength: compiledCustomPrompt().length,
+  });
   if (effectiveFullReview && !fullReviewAvailable()) {
     clearUnavailableFullReview();
     state.error = cloudActive
@@ -795,6 +804,7 @@ async function start(): Promise<void> {
   state.settingsLoading = false;
   const currentJobId = crypto.randomUUID();
   const customPrompt = effectiveUseModel ? compiledCustomPrompt() : "";
+  console.log("[SoatVan-UI] Final customPrompt to send:", customPrompt);
   state.step = "processing";
   state.progress = 0;
   state.progressStage = "";
@@ -806,6 +816,7 @@ async function start(): Promise<void> {
   let unlisten: (() => void) | undefined;
   try {
     unlisten = await api.onProgress(event => {
+      console.log("[SoatVan-UI] onProgress event:", event);
       if (state.jobId === currentJobId && state.step === "processing" && event.job_id === currentJobId) applyProgress(event.stage, event.percent);
     }, currentJobId);
   } catch {
@@ -825,7 +836,9 @@ async function start(): Promise<void> {
   state.jobStarting = false;
   updateCancelControl();
   try {
+    console.log("[SoatVan-UI] Dispatching api.startJob with jobId:", currentJobId);
     const result = await api.startJob(currentJobId, state.document.path, defaultPreset, customPrompt, effectiveUseModel, defaultRuleOptions, [], effectiveFullReview, effectiveFullReview && state.includeRuleFindings);
+    console.log("[SoatVan-UI] api.startJob result:", result);
     if (state.jobId === currentJobId && state.step === "processing") {
       state.jobId = "";
       state.cancelPending = false;
@@ -835,6 +848,7 @@ async function start(): Promise<void> {
       render();
     }
   } catch (error) {
+    console.error("[SoatVan-UI] startJob error:", error);
     if (state.jobId === currentJobId && state.step === "processing") {
       const cancellationWasPending = state.cancelPending;
       state.jobId = "";
