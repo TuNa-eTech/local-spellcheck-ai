@@ -284,6 +284,10 @@ class CloudAiReviewer:
                 raw_json = self._call_ai(
                     system_prompt, chunk_blocks, chunk_candidates, cancellation
                 )
+                sys.stderr.write(
+                    f"[SoatVan-CloudAI] Chunk {chunk_id} raw response: {raw_json}\n"
+                )
+                sys.stderr.flush()
                 verdicts, discoveries = self._parse_response(
                     raw_json, chunk_blocks, chunk_candidates
                 )
