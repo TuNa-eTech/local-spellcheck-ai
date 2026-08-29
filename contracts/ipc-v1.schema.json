@@ -10,7 +10,7 @@
       "properties": {
         "v": {"const": 1},
         "id": {"type": "string", "minLength": 1},
-        "method": {"enum": ["engine.hello", "document.inspect", "job.start", "job.cancel", "custom_rule.list", "custom_rule.upsert", "custom_rule.delete", "model.status", "model.import", "model.cancel", "model.remove"]},
+        "method": {"enum": ["engine.hello", "document.inspect", "job.start", "job.cancel", "custom_rule.list", "custom_rule.upsert", "custom_rule.delete", "model.status", "model.import", "model.cancel", "model.remove", "ai_config.get", "ai_config.update", "ai_config.set_active", "ai_config.test_connection"]},
         "params": {"type": "object"}
       },
       "allOf": [

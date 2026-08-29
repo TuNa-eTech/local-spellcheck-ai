@@ -11,11 +11,21 @@ from typing import Any
 
 from soatvan import PROTOCOL_VERSION, __version__
 from soatvan.checking import Preset, RuleConfig, RuleEngine
-from soatvan.custom_rules import SqliteCustomRuleRepository
+from soatvan.custom_rules import (
+    AiConfigEntry,
+    SqliteAiConfigRepository,
+    SqliteCustomRuleRepository,
+)
 from soatvan.dictionary import SqliteDictionaryRepository
 from soatvan.document import DocxPackage, InvalidDocument
-from soatvan.models import ModelRegistry, runtime_available
+from soatvan.models import (
+    CloudAiReviewer,
+    ModelRegistry,
+    runtime_available,
+    test_ai_connection,
+)
 from soatvan.workflow import ProcessDocument, ProcessRequest
+from soatvan.workflow.ports import ContextClassifier
 
 MAX_FRAME = 1024 * 1024
 EMIT_LOCK = threading.Lock()
@@ -32,6 +42,10 @@ PUBLIC_METHODS = frozenset(
         "model.import",
         "model.cancel",
         "model.remove",
+        "ai_config.get",
+        "ai_config.update",
+        "ai_config.set_active",
+        "ai_config.test_connection",
     }
 )
 PUBLIC_EVENTS = frozenset(
@@ -60,6 +74,30 @@ class Token:
             raise CancelledError("JOB_CANCELLED")
 
 
+class DynamicClassifierProvider:
+    def __init__(
+        self,
+        models: ModelRegistry,
+        ai_config: SqliteAiConfigRepository,
+    ) -> None:
+        self._models = models
+        self._ai_config = ai_config
+
+    def classifier(self) -> ContextClassifier | None:
+        active = self._ai_config.get_active_config()
+        if active is not None and active.provider in {"openai", "gemini"}:
+            if not active.api_key:
+                return None
+            return CloudAiReviewer(active)
+        return self._models.classifier()
+
+    def supports_full_review(self) -> bool:
+        active = self._ai_config.get_active_config()
+        if active is not None and active.provider in {"openai", "gemini"}:
+            return bool(active.api_key)
+        return self._models.supports_full_review()
+
+
 class Sidecar:
     def __init__(self) -> None:
         configured_data = os.environ.get("SOATVAN_DATA_DIR")
@@ -72,8 +110,12 @@ class Sidecar:
         self.documents = DocxPackage()
         self.dictionary = SqliteDictionaryRepository(local_data / "dictionary.db")
         self.custom_rules = SqliteCustomRuleRepository(local_data / "preferences.db")
+        self.ai_config = SqliteAiConfigRepository(local_data / "preferences.db")
         self.models = ModelRegistry(local_data / "models")
-        self.processor = ProcessDocument(self.documents, self.dictionary, RuleEngine(), self.models)
+        self.classifiers = DynamicClassifierProvider(self.models, self.ai_config)
+        self.processor = ProcessDocument(
+            self.documents, self.dictionary, RuleEngine(), self.classifiers
+        )
         self.jobs: dict[str, Token] = {}
 
     def dispatch(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -87,6 +129,10 @@ class Sidecar:
             "custom_rule.delete": self.custom_rule_delete,
             "model.status": self.model_status,
             "model.remove": self.model_remove,
+            "ai_config.get": self.ai_config_get,
+            "ai_config.update": self.ai_config_update,
+            "ai_config.set_active": self.ai_config_set_active,
+            "ai_config.test_connection": self.ai_config_test_connection,
         }
         if method in {"model.import", "model.cancel"}:
             raise ValueError("MODEL_PROVISIONING_OWNED_BY_HOST")
@@ -95,8 +141,13 @@ class Sidecar:
         return handlers[method](params)
 
     def hello(self, _: dict[str, Any]) -> dict[str, Any]:
-        capabilities = ["rules", "custom_rules", "docx_annotations"]
-        if runtime_available():
+        capabilities = ["rules", "custom_rules", "docx_annotations", "ai_config"]
+        active_ai = self.ai_config.get_active_config()
+        if (
+            active_ai is not None
+            and active_ai.provider in {"openai", "gemini"}
+            and bool(active_ai.api_key)
+        ) or runtime_available():
             capabilities.extend(("model_classifier", "model_full_review"))
         return {
             "protocol": PROTOCOL_VERSION,
@@ -217,6 +268,26 @@ class Sidecar:
         return {"deleted": self.custom_rules.delete(params["id"])}
 
     def model_status(self, params: dict[str, Any]) -> dict[str, Any]:
+        active_ai = self.ai_config.get_active_config()
+        if active_ai is not None and active_ai.provider in {"openai", "gemini"}:
+            if not active_ai.api_key:
+                return {
+                    "state": "installed",
+                    "model_id": active_ai.model_name,
+                    "version": active_ai.provider,
+                    "code": "API_KEY_REQUIRED",
+                }
+            return {
+                "state": "ready",
+                "model_id": active_ai.model_name,
+                "version": active_ai.provider,
+                "trust": "release_signed",
+                "release_approved": True,
+                "capabilities": {
+                    "candidate_filter": True,
+                    "full_review": True,
+                },
+            }
         activate = params.get("activate", True)
         if not isinstance(activate, bool):
             raise ValueError("INVALID_PARAMS")
@@ -225,6 +296,115 @@ class Sidecar:
     def model_remove(self, _: dict[str, Any]) -> dict[str, Any]:
         self.models.deactivate()
         return {"deactivated": True}
+
+    def ai_config_get(self, _: dict[str, Any]) -> dict[str, Any]:
+        active = self.ai_config.get_active_config()
+        configs = self.ai_config.list_configs()
+        return {
+            "active_provider": active.provider if active else "local",
+            "configs": [
+                {
+                    "provider": c.provider,
+                    "api_key": c.api_key,
+                    "masked_key": c.masked_key(),
+                    "base_url": c.base_url,
+                    "model_name": c.model_name,
+                    "temperature": c.temperature,
+                    "timeout_seconds": c.timeout_seconds,
+                    "is_active": c.is_active,
+                }
+                for c in configs
+            ],
+        }
+
+    def ai_config_update(self, params: dict[str, Any]) -> dict[str, Any]:
+        provider = params.get("provider")
+        if not isinstance(provider, str) or provider not in {"openai", "gemini"}:
+            raise ValueError("INVALID_PARAMS")
+        api_key = params.get("api_key", "")
+        if not isinstance(api_key, str):
+            raise ValueError("INVALID_PARAMS")
+        base_url = params.get("base_url", "")
+        if not isinstance(base_url, str):
+            raise ValueError("INVALID_PARAMS")
+        model_name = params.get("model_name", "")
+        if not isinstance(model_name, str):
+            raise ValueError("INVALID_PARAMS")
+        temperature = params.get("temperature", 0.0)
+        if not isinstance(temperature, (int, float)):
+            raise ValueError("INVALID_PARAMS")
+        timeout_seconds = params.get("timeout_seconds", 60)
+        if not isinstance(timeout_seconds, int):
+            raise ValueError("INVALID_PARAMS")
+        is_active = params.get("is_active", False)
+        if not isinstance(is_active, bool):
+            raise ValueError("INVALID_PARAMS")
+
+        entry = self.ai_config.upsert_config(
+            provider=provider,
+            api_key=api_key,
+            base_url=base_url,
+            model_name=model_name,
+            temperature=float(temperature),
+            timeout_seconds=timeout_seconds,
+            is_active=is_active,
+        )
+        return {
+            "updated": True,
+            "config": {
+                "provider": entry.provider,
+                "api_key": entry.api_key,
+                "masked_key": entry.masked_key(),
+                "base_url": entry.base_url,
+                "model_name": entry.model_name,
+                "temperature": entry.temperature,
+                "timeout_seconds": entry.timeout_seconds,
+                "is_active": entry.is_active,
+            },
+        }
+
+    def ai_config_set_active(self, params: dict[str, Any]) -> dict[str, Any]:
+        provider = params.get("provider")
+        if not isinstance(provider, str) or provider not in {"local", "openai", "gemini"}:
+            raise ValueError("INVALID_PARAMS")
+        self.ai_config.set_active_provider(provider)
+        return {"active_provider": provider}
+
+    def ai_config_test_connection(self, params: dict[str, Any]) -> dict[str, Any]:
+        provider = params.get("provider")
+        if not isinstance(provider, str) or provider not in {"openai", "gemini"}:
+            raise ValueError("INVALID_PARAMS")
+        api_key = params.get("api_key")
+        base_url = params.get("base_url")
+        model_name = params.get("model_name")
+
+        stored = self.ai_config.get_config(provider)
+        if not isinstance(api_key, str) or not api_key:
+            api_key = stored.api_key if stored else ""
+        if not isinstance(base_url, str) or not base_url:
+            base_url = (
+                stored.base_url
+                if stored
+                else (
+                    "https://generativelanguage.googleapis.com/v1beta"
+                    if provider == "gemini"
+                    else "https://api.openai.com/v1"
+                )
+            )
+        if not isinstance(model_name, str) or not model_name:
+            model_name = (
+                stored.model_name
+                if stored
+                else ("gemini-2.5-flash" if provider == "gemini" else "gpt-4o-mini")
+            )
+
+        entry = AiConfigEntry(
+            provider=provider,
+            api_key=api_key,
+            base_url=base_url,
+            model_name=model_name,
+        )
+        return test_ai_connection(entry)
 
 
 def _rule_config(value: object) -> RuleConfig | None:
@@ -385,6 +565,10 @@ def safe_message(code: str) -> str:
         "CUSTOM_RULE_INVALID_DEFAULT": "Cờ chọn sẵn của quy tắc riêng không hợp lệ.",
         "CUSTOM_RULE_LIMIT_REACHED": "Các quy tắc riêng đã đạt giới hạn lưu trữ.",
         "MODEL_INFERENCE_TIMEOUT": "Model AI vượt quá thời gian xử lý cho phép.",
+        "API_KEY_REQUIRED": "API key không được để trống.",
+        "API_KEY_INVALID": "API key không hợp lệ hoặc không có quyền truy cập.",
+        "MODEL_NOT_FOUND": "Không tìm thấy model hoặc sai URL.",
+        "CONNECTION_FAILED": "Không thể kết nối đến máy chủ AI.",
     }
     return messages.get(code, "Không thể hoàn tất yêu cầu.")
 
