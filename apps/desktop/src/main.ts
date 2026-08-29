@@ -43,7 +43,7 @@ const defaultAiConfigs: Record<string, AiConfigEntry> = {
     base_url: "https://api.openai.com/v1",
     model_name: "gpt-4o-mini",
     temperature: 0.0,
-    timeout_seconds: 60,
+    timeout_seconds: 180,
     is_active: false,
   },
   gemini: {
@@ -51,7 +51,7 @@ const defaultAiConfigs: Record<string, AiConfigEntry> = {
     base_url: "https://generativelanguage.googleapis.com/v1beta",
     model_name: "gemini-2.5-flash",
     temperature: 0.0,
-    timeout_seconds: 60,
+    timeout_seconds: 180,
     is_active: false,
   },
 };

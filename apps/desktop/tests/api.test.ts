@@ -144,7 +144,7 @@ describe("desktop API", () => {
         baseUrl: "https://api.openai.com/v1",
         modelName: "gpt-4o-mini",
         temperature: 0,
-        timeoutSeconds: 60,
+        timeoutSeconds: 180,
         isActive: true,
       },
     });

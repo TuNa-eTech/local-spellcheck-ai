@@ -12,7 +12,7 @@ class AiConfigEntry:
     base_url: str
     model_name: str
     temperature: float = 0.0
-    timeout_seconds: int = 60
+    timeout_seconds: int = 180
     is_active: bool = False
 
     def masked_key(self) -> str:
@@ -39,7 +39,7 @@ class SqliteAiConfigRepository:
                     base_url TEXT NOT NULL,
                     model_name TEXT NOT NULL,
                     temperature REAL DEFAULT 0.0,
-                    timeout_seconds INTEGER DEFAULT 60,
+                    timeout_seconds INTEGER DEFAULT 180,
                     is_active INTEGER DEFAULT 0
                 )
                 """
@@ -120,7 +120,7 @@ class SqliteAiConfigRepository:
         base_url: str,
         model_name: str,
         temperature: float = 0.0,
-        timeout_seconds: int = 60,
+        timeout_seconds: int = 180,
         is_active: bool = False,
     ) -> AiConfigEntry:
         with sqlite3.connect(self._path) as conn:

@@ -68,7 +68,7 @@ export const api = {
             base_url: "https://api.openai.com/v1",
             model_name: "gpt-4o-mini",
             temperature: 0.0,
-            timeout_seconds: 60,
+            timeout_seconds: 180,
             is_active: false,
           },
           {
@@ -77,7 +77,7 @@ export const api = {
             base_url: "https://generativelanguage.googleapis.com/v1beta",
             model_name: "gemini-2.5-flash",
             temperature: 0.0,
-            timeout_seconds: 60,
+            timeout_seconds: 180,
             is_active: false,
           },
         ],
@@ -107,7 +107,7 @@ export const api = {
         baseUrl: params.baseUrl ?? params.base_url,
         modelName: params.modelName ?? params.model_name,
         temperature: params.temperature ?? 0.0,
-        timeoutSeconds: params.timeoutSeconds ?? params.timeout_seconds ?? 60,
+        timeoutSeconds: params.timeoutSeconds ?? params.timeout_seconds ?? 180,
         isActive: params.isActive ?? params.is_active ?? false,
       },
     });
