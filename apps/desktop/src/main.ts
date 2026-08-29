@@ -239,31 +239,13 @@ function syncCloudDraftsFromConfig(): void {
   }
 }
 
-function fullReviewOptionHtml(): string {
-  if (!fullReviewAvailable()) return "";
-  const cloud = isCloudActive();
-  const experimental = (!cloud && state.model.trust === "local_unverified") ? " Đây là chế độ thử nghiệm vì model chưa được benchmark và phê duyệt phát hành." : "";
-  const fullReviewLabel = state.includeRuleFindings ? "AI rà soát toàn văn" : "Chỉ dùng AI để rà soát";
-  const desc = cloud
-    ? `Bật mặc định. ${activeAiLabel()} dùng prompt tiếng Việt tích hợp để đọc toàn bộ thân bài và bảng.`
-    : `Bật mặc định. AI dùng prompt tiếng Việt tích hợp để đọc toàn bộ thân bài và bảng.${experimental}`;
-  const includeRules = state.fullReview
-    ? `<label class="setting-row include-rule-findings-option"><span><strong>Bổ sung cảnh báo từ bộ quy tắc code</strong><small>AI vẫn rà toàn văn; bộ quy tắc code chỉ chạy thêm và cộng các cảnh báo hợp lệ.</small></span><input type="checkbox" id="include-rule-findings" ${state.includeRuleFindings ? "checked" : ""}></label>`
-    : "";
-  return `<div class="full-review-options"><label class="setting-row full-review-option"><span><strong>${fullReviewLabel}</strong><small>${desc}</small></span><input type="checkbox" id="full-review" ${state.fullReview ? "checked" : ""}></label>${includeRules}</div>`;
-}
-
 function reviewModeDescription(): string {
   if (isCloudActive()) {
-    if (!state.fullReview) return "Bộ kiểm tra cơ bản sẽ tạo candidate, sau đó AI Cloud sẽ lọc lại kết quả.";
-    return state.includeRuleFindings
-      ? `${activeAiLabel()} là lớp rà soát chính; bộ quy tắc code sẽ chạy thêm để bổ sung cảnh báo.`
-      : `${activeAiLabel()} sẽ tự tìm lỗi trong toàn bộ nội dung; bộ quy tắc code không chạy.`;
+    return `${activeAiLabel()} sẽ rà soát và tự tìm lỗi trên toàn bộ nội dung văn bản.`;
   }
-  if (!state.fullReview) return "Bộ kiểm tra cơ bản sẽ tạo candidate, sau đó AI có thể lọc lại kết quả.";
-  return state.includeRuleFindings
-    ? "AI là lớp rà soát chính; bộ quy tắc code sẽ chạy thêm để bổ sung cảnh báo."
-    : "AI sẽ dùng prompt tiếng Việt mặc định để tự tìm lỗi trong toàn bộ nội dung; bộ quy tắc code không chạy.";
+  return state.useModel
+    ? "AI sẽ dùng prompt tiếng Việt mặc định để rà soát và tự tìm lỗi trên toàn bộ nội dung văn bản."
+    : "Bộ quy tắc kiểm tra cơ bản sẽ được áp dụng cho tài liệu.";
 }
 
 function selectedCustomRules(): CustomRule[] { return state.customRules.filter(rule => state.selectedRuleIds.includes(rule.id)); }
@@ -315,9 +297,9 @@ function customRuleSelectionHtml(): string {
     : `<ul class="prompt-picker">${state.customRules.map(rule => {
         const id = escape(rule.id);
         const checked = state.selectedRuleIds.includes(rule.id) ? "checked" : "";
-        return `<li class="prompt-picker__item"><label class="setting-row prompt-picker__row"><span><strong>${escape(rule.title)}</strong><small>${escape(rule.prompt)}</small></span><input type="checkbox" data-select-rule="${id}" ${checked} ${applies ? "" : "disabled"}></label></li>`;
+        return `<li class="prompt-picker__item"><label class="setting-row prompt-picker__row"><span><strong>${escape(rule.title)}</strong></span><input type="checkbox" data-select-rule="${id}" ${checked} ${applies ? "" : "disabled"}></label></li>`;
       }).join("")}</ul>`;
-  return `<fieldset class="custom-rules-summary prompt-picker-group"><legend class="sr-only">Quy tắc riêng áp dụng cho lần rà soát này</legend><div class="prompt-picker-group__header"><div><strong>${count.toLocaleString("vi-VN")} quy tắc riêng</strong><span>${summary}</span></div><div class="button-row"><button class="button button--secondary" id="manage-custom-rules" type="button">Quản lý prompt</button><button class="button button--quiet" id="manage-review-rules" type="button">Xem quy tắc rà soát</button></div></div>${picker}</fieldset>${count > 0 && !applies ? `<p class="settings-message settings-message--error" role="alert">${cloud ? "Bật AI để áp dụng các quy tắc riêng." : "Bật AI cục bộ để áp dụng các quy tắc riêng."} <button class="inline-button" id="open-model-settings" type="button">Thiết lập AI</button></p>` : ""}`;
+  return `<fieldset class="prompt-picker-group"><legend class="sr-only">Quy tắc riêng áp dụng cho lần rà soát này</legend><div class="prompt-picker-group__header"><div><strong>${count.toLocaleString("vi-VN")} quy tắc riêng</strong><span>${summary}</span></div></div>${picker}</fieldset>${count > 0 && !applies ? `<p class="settings-message settings-message--error" role="alert">${cloud ? "Bật AI để áp dụng các quy tắc riêng." : "Bật AI cục bộ để áp dụng các quy tắc riêng."} <button class="inline-button" id="open-model-settings" type="button">Thiết lập AI</button></p>` : ""}`;
 }
 
 function render(preferredFocus?: string): void {
@@ -344,7 +326,7 @@ function render(preferredFocus?: string): void {
     </nav>
     <main class="workflow-shell">
       ${state.step === "file" ? `<section class="workflow-card workflow-card--file"><div class="section-copy"><h1>Chọn tệp Word cần kiểm tra</h1><p>Ứng dụng tạo một bản kết quả mới và luôn giữ nguyên tệp gốc.</p></div><button class="drop-zone" id="choose"><strong>Chọn hoặc kéo thả tệp .docx</strong><span>Nhấn Ctrl+O để mở nhanh</span></button>${errorHtml()}</section>` : ""}
-      ${state.step === "rules" && doc ? `<section class="workflow-card"><div class="workflow-context"><button class="back-button" id="back">← Chọn tệp khác</button><div class="file-chip"><strong>${escape(doc.name)}</strong><span>${documentMetadata(doc)}</span></div></div><div class="workflow-lead"><div class="section-copy"><div class="ai-provider-badge" id="workflow-ai-badge"><span class="badge-dot ${isCloudActive() ? "badge-dot--cloud" : "badge-dot--local"}"></span><span>${escape(activeAiLabel())}</span></div><h1>Chuẩn bị rà soát</h1><p>${reviewModeDescription()}</p></div><div class="workflow-actions workflow-actions--lead"><button class="button button--primary" id="start">Bắt đầu xử lý</button></div></div>${customRuleSelectionHtml()}${fullReviewOptionHtml()}${errorHtml()}</section>` : ""}
+      ${state.step === "rules" && doc ? `<section class="workflow-card"><div class="workflow-context"><button class="back-button" id="back">← Chọn tệp khác</button><div class="file-chip"><strong>${escape(doc.name)}</strong><span>${documentMetadata(doc)}</span></div></div><div class="workflow-lead"><div class="section-copy"><div class="ai-provider-badge" id="workflow-ai-badge"><span class="badge-dot ${isCloudActive() ? "badge-dot--cloud" : "badge-dot--local"}"></span><span>${escape(activeAiLabel())}</span></div><h1>Chuẩn bị rà soát</h1><p>${reviewModeDescription()}</p></div><div class="workflow-actions workflow-actions--lead"><button class="button button--primary" id="start">Bắt đầu xử lý</button></div></div>${customRuleSelectionHtml()}${errorHtml()}</section>` : ""}
       ${state.step === "processing" ? `<section class="workflow-card processing-panel"><div class="processing-status"><span class="spinner" aria-hidden="true"></span><div class="section-copy"><h1>${progressTitle()}</h1><p>${isCloudActive() ? "Đang xử lý phân tích văn bản qua API AI." : "Mọi xử lý tài liệu diễn ra trên máy này."}</p></div></div><div class="progress-row"><div class="progress" role="progressbar" aria-label="Tiến độ xử lý" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${state.progress}"><span style="--progress-scale:${state.progress / 100}"></span></div><strong class="progress-value">${state.progress}%</strong></div><p class="sr-only progress-announcement" aria-live="polite" aria-atomic="true">${progressTitle()} ${state.progress}%</p><div class="workflow-actions"><button class="button button--secondary" id="cancel" ${state.jobStarting || state.cancelPending ? "disabled" : ""} ${state.jobStarting || state.cancelPending ? 'aria-busy="true"' : ""}>${state.jobStarting ? "Đang chuẩn bị…" : state.cancelPending ? "Đang dừng…" : "Dừng xử lý"}</button></div>${errorHtml()}</section>` : ""}
       ${(state.step === "result" || state.step === "no-findings") ? resultHtml() : ""}
     </main>` : settingsHtml()}
@@ -629,15 +611,6 @@ function bind(): void {
   document.querySelector("#manage-custom-rules")?.addEventListener("click", () => void openSettings("prompts", "#manage-custom-rules"));
   document.querySelector("#manage-review-rules")?.addEventListener("click", () => void openSettings("review-rules", "#manage-review-rules"));
   document.querySelector<HTMLInputElement>("#use-model")?.addEventListener("change", event => { void setModelEnabled((event.target as HTMLInputElement).checked); });
-  document.querySelector<HTMLInputElement>("#full-review")?.addEventListener("change", event => {
-    state.fullReview = fullReviewAvailable() && (event.target as HTMLInputElement).checked;
-    if (!state.fullReview) state.includeRuleFindings = false;
-    render("#full-review");
-  });
-  document.querySelector<HTMLInputElement>("#include-rule-findings")?.addEventListener("change", event => {
-    state.includeRuleFindings = state.fullReview && fullReviewAvailable() && (event.target as HTMLInputElement).checked;
-    render("#include-rule-findings");
-  });
   document.querySelectorAll<HTMLInputElement>("[data-select-rule]").forEach(input => input.addEventListener("change", () => {
     const id = input.dataset.selectRule!;
     state.selectedRuleIds = input.checked

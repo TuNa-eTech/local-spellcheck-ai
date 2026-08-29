@@ -22,3 +22,4 @@ apps/desktop/src-tauri/resources/engine/*
 *.gguf
 data-test/
 .tools
+.superpowers/

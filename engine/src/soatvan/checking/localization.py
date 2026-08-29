@@ -59,6 +59,25 @@ def _onset_only_substitution(source_text: str, suggestion: str) -> bool:
     )
 
 
+def _rime_only_substitution(source_text: str, suggestion: str) -> bool:
+    """True when one syllable keeps its onset and only the rime/dialect vowel moves."""
+    if any(character.isspace() for character in source_text + suggestion):
+        return False
+    source_cut = _syllable_onset_length(source_text)
+    suggestion_cut = _syllable_onset_length(suggestion)
+    if not source_cut and not suggestion_cut:
+        return _edit_distance(source_text, suggestion) <= 2
+    if not source_cut or not suggestion_cut:
+        return False
+    onset_source = source_text[:source_cut].casefold()
+    onset_sug = suggestion[:suggestion_cut].casefold()
+    if onset_source != onset_sug:
+        return False
+    rime_source = source_text[source_cut:]
+    rime_sug = suggestion[suggestion_cut:]
+    return bool(rime_source) and bool(rime_sug) and _edit_distance(rime_source, rime_sug) <= 2
+
+
 def localize_llm_edit(
     source_text: str, suggestion: str, reason_code: str
 ) -> tuple[int, str, str] | None:
@@ -260,12 +279,16 @@ def _validate_localized_edit(
         not source_text
         or len(source_text) > _MAX_LOCALIZED_SOURCE_LENGTH
         or len(WORD_PATTERN.findall(source_text)) > _MAX_LOCALIZED_SOURCE_WORDS
-        or _normalized(source_text) == _normalized(suggestion)
+        or _normalized(source_text).strip() == _normalized(suggestion).strip()
     ):
         return None
     if not suggestion and (
         reason_code not in _DELETION_REASON_CODES or len(source_text) > 16
     ):
+        return None
+    if reason_code == "capitalization" and source_text.isupper() and len(source_text) >= 2:
+        # All-caps text in headings, titles, or acronyms is standard administrative format.
+        # Converting all-caps words to lowercase is a false positive.
         return None
     if reason_code in _ORTHOGRAPHIC_REASON_CODES:
         distance_source = _normalized(source_text)
@@ -275,6 +298,7 @@ def _validate_localized_edit(
             != _without_diacritics(distance_suggestion).casefold()
             and _edit_distance(distance_source, distance_suggestion) > 1
             and not _onset_only_substitution(distance_source, distance_suggestion)
+            and not _rime_only_substitution(distance_source, distance_suggestion)
         ):
             # A spelling-like proposal such as "trể" -> "tệ" changes both
             # letters and diacritics. Without lexical evidence this is a

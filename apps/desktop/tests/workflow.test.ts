@@ -887,35 +887,25 @@ describe("four-step desktop workflow", () => {
     await chooseDocument();
     await vi.waitFor(() => expect(document.body.textContent).toContain("1 quy tắc riêng"));
 
-    const cases = [
-      ["manage-custom-rules", "settings-prompts-title"],
-      ["manage-review-rules", "settings-review-rules-title"],
-      ["open-model-settings", "settings-models-title"],
-    ] as const;
-
-    for (const [openerId, headingId] of cases) {
-      const opener = document.querySelector<HTMLButtonElement>(`#${openerId}`)!;
-      expect(opener).not.toBeNull();
-      opener.focus();
-      opener.click();
-      await vi.waitFor(() => expect(document.querySelector("#settings-page")).not.toBeNull());
-      await vi.waitFor(() => expect((document.activeElement as HTMLElement | null)?.id).toBe(headingId));
-      await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>("#settings-back")?.disabled).toBe(false));
-      document.querySelector<HTMLButtonElement>("#settings-back")!.click();
-      await vi.waitFor(() => expect((document.activeElement as HTMLElement | null)?.id).toBe(openerId));
-      expect(document.querySelector("#start")).not.toBeNull();
-      expect(document.body.textContent).toContain("nguồn.docx");
-    }
+    const opener = document.querySelector<HTMLButtonElement>("#open-model-settings")!;
+    expect(opener).not.toBeNull();
+    opener.focus();
+    opener.click();
+    await vi.waitFor(() => expect(document.querySelector("#settings-page")).not.toBeNull());
+    await vi.waitFor(() => expect((document.activeElement as HTMLElement | null)?.id).toBe("settings-models-title"));
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>("#settings-back")?.disabled).toBe(false));
+    document.querySelector<HTMLButtonElement>("#settings-back")!.click();
+    await vi.waitFor(() => expect((document.activeElement as HTMLElement | null)?.id).toBe("open-model-settings"));
+    expect(document.querySelector("#start")).not.toBeNull();
+    expect(document.body.textContent).toContain("nguồn.docx");
   });
 
   it("keeps the fixed review-rule inventory read-only and preserves workflow review state", async () => {
     const api = await loadApp({ modelStatus: () => Promise.resolve(signedReadyModel) });
     await chooseDocument();
-    await vi.waitFor(() => expect(document.querySelector("#include-rule-findings")).not.toBeNull());
-    document.querySelector<HTMLInputElement>("#include-rule-findings")!.click();
-    expect(document.querySelector<HTMLInputElement>("#include-rule-findings")!.checked).toBe(true);
-
-    document.querySelector<HTMLButtonElement>("#manage-review-rules")!.click();
+    document.querySelector<HTMLButtonElement>("#settings")!.click();
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-settings-section="review-rules"]')?.disabled).toBe(false));
+    document.querySelector<HTMLButtonElement>('[data-settings-section="review-rules"]')!.click();
     await vi.waitFor(() => expect((document.activeElement as HTMLElement | null)?.id).toBe("settings-review-rules-title"));
     await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>("#settings-back")?.disabled).toBe(false));
     const inventory = document.querySelector<HTMLElement>("#settings-review-rules")!;
@@ -930,11 +920,9 @@ describe("four-step desktop workflow", () => {
     expect(document.querySelector("#full-review, #include-rule-findings")).toBeNull();
 
     document.querySelector<HTMLButtonElement>("#settings-back")!.click();
-    await vi.waitFor(() => expect((document.activeElement as HTMLElement | null)?.id).toBe("manage-review-rules"));
+    await vi.waitFor(() => expect((document.activeElement as HTMLElement | null)?.id).toBe("settings"));
     expect(document.querySelector('.stepper li[aria-current="step"]')?.textContent).toContain("Chuẩn bị");
     expect(document.body.textContent).toContain("nguồn.docx");
-    expect(document.querySelector<HTMLInputElement>("#full-review")?.checked).toBe(true);
-    expect(document.querySelector<HTMLInputElement>("#include-rule-findings")?.checked).toBe(true);
     expect(api.chooseDocument).toHaveBeenCalledOnce();
     expect(api.inspectDropped).not.toHaveBeenCalled();
   });
@@ -1043,26 +1031,12 @@ describe("four-step desktop workflow", () => {
     const start = card.querySelector<HTMLButtonElement>(".workflow-lead .workflow-actions--lead #start")!;
     expect(start).not.toBeNull();
     expect(start.compareDocumentPosition(card.querySelector(".prompt-picker")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    const fullReview = document.querySelector<HTMLInputElement>("#full-review")!;
-    expect(fullReview).not.toBeNull();
-    expect(fullReview.checked).toBe(true);
-    expect(document.body.textContent).toContain("Chỉ dùng AI để rà soát");
-    const includeRuleFindings = document.querySelector<HTMLInputElement>("#include-rule-findings")!;
-    expect(includeRuleFindings).not.toBeNull();
-    expect(includeRuleFindings.checked).toBe(false);
-    expect(document.body.textContent).toContain("Bổ sung cảnh báo từ bộ quy tắc code");
-    expect(document.body.textContent).toContain("AI vẫn rà toàn văn");
-    includeRuleFindings.click();
-    expect(document.querySelector<HTMLInputElement>("#include-rule-findings")!.checked).toBe(true);
-    expect(document.body.textContent).toContain("AI rà soát toàn văn");
-    expect(document.body.textContent).not.toContain("Chỉ dùng AI để rà soát");
-    expect(document.body.textContent).toContain("AI là lớp rà soát chính");
+    expect(document.querySelector("#full-review")).toBeNull();
     document.querySelector<HTMLButtonElement>("#start")!.click();
     await vi.waitFor(() => expect(api.startJob).toHaveBeenCalled());
     expect(api.startJob.mock.calls[0][3]).toBe("Giữ nguyên tên SoátVăn.\n\nDùng thuật ngữ khách hàng.");
     expect(api.startJob.mock.calls[0][4]).toBe(true);
     expect(api.startJob.mock.calls[0][7]).toBe(true);
-    expect(api.startJob.mock.calls[0][8]).toBe(true);
   });
 
   it("only compiles the prompts ticked in the review step", async () => {
@@ -1105,21 +1079,6 @@ describe("four-step desktop workflow", () => {
     expect(api.startJob.mock.calls[0][3]).toBe("");
   });
 
-  it("resets the optional code-rule findings when full review is switched off", async () => {
-    await loadApp({ modelStatus: () => Promise.resolve(signedReadyModel) });
-    await chooseDocument();
-    await vi.waitFor(() => expect(document.querySelector("#include-rule-findings")).not.toBeNull());
-    document.querySelector<HTMLInputElement>("#include-rule-findings")!.click();
-    expect(document.querySelector<HTMLInputElement>("#include-rule-findings")!.checked).toBe(true);
-
-    document.querySelector<HTMLInputElement>("#full-review")!.click();
-    expect(document.querySelector("#include-rule-findings")).toBeNull();
-    expect(document.body.textContent).toContain("Bộ kiểm tra cơ bản sẽ tạo candidate");
-
-    document.querySelector<HTMLInputElement>("#full-review")!.click();
-    expect(document.querySelector<HTMLInputElement>("#include-rule-findings")!.checked).toBe(false);
-  });
-
   it("deactivates the model runtime when AI is switched off", async () => {
     const api = await loadApp({
       modelStatus: () => Promise.resolve(signedReadyModel),
@@ -1127,9 +1086,6 @@ describe("four-step desktop workflow", () => {
     });
     await vi.waitFor(() => expect(api.customRuleList).toHaveBeenCalled());
     await chooseDocument();
-    await vi.waitFor(() => expect(document.querySelector("#include-rule-findings")).not.toBeNull());
-    document.querySelector<HTMLInputElement>("#include-rule-findings")!.click();
-    expect(document.querySelector<HTMLInputElement>("#include-rule-findings")!.checked).toBe(true);
     document.querySelector<HTMLButtonElement>("#settings")!.click();
     await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')?.disabled).toBe(false));
     document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')!.click();
@@ -1142,7 +1098,6 @@ describe("four-step desktop workflow", () => {
     expect(document.querySelector<HTMLInputElement>("#use-model")!.checked).toBe(false);
     document.querySelector<HTMLButtonElement>("#settings-back")!.click();
     expect(document.querySelector("#full-review")).toBeNull();
-    expect(document.querySelector("#include-rule-findings")).toBeNull();
     expect(document.body.textContent).toContain("Chưa được áp dụng vì AI cục bộ đang tắt");
     document.querySelector<HTMLButtonElement>("#start")!.click();
     await vi.waitFor(() => expect(api.startJob).toHaveBeenCalled());
@@ -1167,10 +1122,6 @@ describe("four-step desktop workflow", () => {
     });
     await vi.waitFor(() => expect(api.customRuleList).toHaveBeenCalled());
     await chooseDocument();
-    const fullReview = document.querySelector<HTMLInputElement>("#full-review")!;
-    expect(fullReview).not.toBeNull();
-    expect(fullReview.checked).toBe(true);
-    expect(document.body.textContent).toContain("chế độ thử nghiệm");
     document.querySelector<HTMLButtonElement>("#settings")!.click();
     await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')?.disabled).toBe(false));
     document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')!.click();
@@ -1363,12 +1314,7 @@ describe("four-step desktop workflow", () => {
     await chooseDocument();
     await vi.waitFor(() => expect(document.querySelector("#workflow-ai-badge")).not.toBeNull());
     expect(document.querySelector("#workflow-ai-badge")?.textContent).toContain("AI Cloud: OpenAI (gpt-4o-mini)");
-    expect(document.body.textContent).toContain("AI Cloud: OpenAI (gpt-4o-mini) sẽ tự tìm lỗi trong toàn bộ nội dung");
-
-    // Full review should be available and checked
-    const fullReview = document.querySelector<HTMLInputElement>("#full-review")!;
-    expect(fullReview).not.toBeNull();
-    expect(fullReview.checked).toBe(true);
+    expect(document.body.textContent).toContain("AI Cloud: OpenAI (gpt-4o-mini) sẽ rà soát và tự tìm lỗi");
 
     // Custom rules should be enabled and selectable
     const ruleInput = document.querySelector<HTMLInputElement>('[data-select-rule="rule-1"]')!;

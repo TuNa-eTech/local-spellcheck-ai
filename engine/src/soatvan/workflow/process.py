@@ -311,7 +311,7 @@ def _apply_full_review(
             )
 
     merged = _merge_review_findings(accepted, blocks)
-    limited = _limit_review_findings(merged, blocks, 200)
+    limited = _limit_review_findings(merged, blocks, 1_000)
     exported_ids = {finding.id for finding in limited}
     failed_blocks.update(
         finding.block_id for finding in merged if finding.id not in exported_ids
