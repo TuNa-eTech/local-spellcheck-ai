@@ -491,7 +491,7 @@ function settingsContent(section: SettingsSection): { body: string; footer: stri
   }
   if (section === "review-rules") {
     return {
-      body: `<section class="settings-section settings-review-rules" id="settings-review-rules" aria-labelledby="settings-review-rules-title"><header class="settings-section__header"><div class="section-copy"><h2 id="settings-review-rules-title">Quy tắc rà soát</h2><p>Danh sách minh bạch của bộ kiểm tra cố định. Từng nhóm kiểm tra không thể bật hoặc tắt riêng tại đây.</p></div></header><ul class="review-rule-inventory">${fixedReviewRules.map(rule => `<li class="review-rule-row" data-review-rule="${rule.id}"><div><strong>${escape(rule.name)}</strong><p>${escape(rule.description)}</p></div><span class="review-rule-status">${defaultRuleOptions[rule.id] ? "Áp dụng trong kiểm tra cơ bản" : "Không chạy trong cấu hình chuẩn"}</span></li>`).join("")}</ul><p class="notice">Khi dùng AI rà soát toàn văn, bạn có thể chọn chạy bổ sung toàn bộ bộ quy tắc code ở bước Chuẩn bị rà soát. Mục này chỉ cung cấp thông tin và không thay đổi lượt xử lý.</p></section>`,
+      body: `<section class="settings-section settings-review-rules" id="settings-review-rules" aria-labelledby="settings-review-rules-title"><header class="settings-section__header"><div class="section-copy"><h2 id="settings-review-rules-title">Quy tắc rà soát</h2><p>Bộ quy tắc cố định, luôn chạy khi kiểm tra.</p></div></header><ul class="review-rule-inventory">${fixedReviewRules.map(rule => `<li class="review-rule-row" data-review-rule="${rule.id}"><strong>${escape(rule.name)}</strong><span class="review-rule-status">${escape(rule.description)}</span></li>`).join("")}</ul></section>`,
       footer: "",
     };
   }
