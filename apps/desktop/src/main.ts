@@ -527,8 +527,8 @@ function settingsContent(section: SettingsSection): { body: string; footer: stri
         ${state.modelRemovalPending ? `<div class="destructive-confirm" role="alert"><p>Gỡ model sẽ giải phóng dung lượng, nhưng bạn phải nhập lại gói nếu muốn dùng AI sau này.</p><div class="button-row"><button class="button button--secondary button--small" id="cancel-model-remove" type="button" ${state.modelRemovalRunning ? "disabled" : ""}>Giữ lại</button><button class="button button--danger button--small" id="confirm-model-remove" type="button" ${state.modelRemovalRunning ? 'disabled aria-busy="true"' : ""}>${state.modelRemovalRunning ? "Đang gỡ…" : "Gỡ model"}</button></div></div>` : ""}
       </div>
       ${installed && state.model.trust === "local_unverified" ? `<p class="settings-message settings-message--error" role="status">Model GGUF nhập cục bộ chưa có chữ ký và benchmark phát hành. Có thể rà soát sâu để đánh giá trên máy này, nhưng kết quả chưa được phê duyệt cho phát hành.</p>` : ""}
-      ${installed ? `<label class="setting-row"><span><strong>Bật mô hình AI cục bộ</strong><small>Nạp mô hình vào bộ nhớ RAM để rà soát. Tắt để giải phóng RAM cho máy tính.</small></span><input type="checkbox" id="use-model" ${state.useModel ? "checked" : ""} ${controlsLocked ? "disabled" : ""}></label>` : ""}
-      ${!isLocalActive ? `<div class="activate-provider-row"><button class="button button--primary" id="activate-local-provider" type="button" ${controlsLocked ? "disabled" : ""}>Kích hoạt mô hình cục bộ</button></div>` : ""}
+      ${installed && isLocalActive ? `<p class="settings-message settings-message--status" role="status">✓ Đang sử dụng mô hình AI cục bộ này để rà soát.</p>` : ""}
+      ${installed && !isLocalActive ? `<div class="activate-provider-row"><button class="button button--primary" id="activate-local-provider" type="button" ${controlsLocked ? "disabled" : ""}>Kích hoạt mô hình cục bộ</button></div>` : ""}
       <div class="section-copy model-section-copy">
         <h3>Nhập gói model</h3>
         <p>Chấp nhận gói <code>.svmodel</code> đã ký hoặc tệp <code>.gguf</code> nhập cục bộ. Gói ký số mới được coi là đã phê duyệt phát hành.</p>

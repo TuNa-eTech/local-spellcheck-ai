@@ -963,7 +963,7 @@ describe("four-step desktop workflow", () => {
     await vi.waitFor(() => expect((document.activeElement as HTMLElement | null)?.id).toBe("settings-models-title"));
     await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>("#model-import")?.disabled).toBe(false));
     document.querySelector<HTMLButtonElement>("#model-import")!.click();
-    await vi.waitFor(() => expect(document.querySelector<HTMLInputElement>("#use-model")?.checked).toBe(true));
+    await vi.waitFor(() => expect(document.querySelector("#model-status-title")?.textContent).toBe("AI cục bộ đã sẵn sàng"));
     await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>("#settings-back")?.hasAttribute("aria-disabled")).toBe(false));
     document.querySelector<HTMLButtonElement>("#settings-back")!.click();
 
@@ -1079,7 +1079,7 @@ describe("four-step desktop workflow", () => {
     expect(api.startJob.mock.calls[0][3]).toBe("");
   });
 
-  it("deactivates the model runtime when AI is switched off", async () => {
+  it("switches AI provider cleanly in settings", async () => {
     const api = await loadApp({
       modelStatus: () => Promise.resolve(signedReadyModel),
       customRuleList: () => Promise.resolve([customRule("rule-1", "Giữ nguyên SoátVăn.")]),
@@ -1089,22 +1089,11 @@ describe("four-step desktop workflow", () => {
     document.querySelector<HTMLButtonElement>("#settings")!.click();
     await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')?.disabled).toBe(false));
     document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')!.click();
-    await vi.waitFor(() => expect(document.querySelector<HTMLInputElement>("#use-model")?.disabled).toBe(false));
-    const useModel = document.querySelector<HTMLInputElement>("#use-model")!;
-    expect(useModel.disabled).toBe(false);
-    expect(useModel.checked).toBe(true);
-    useModel.click();
-    await vi.waitFor(() => expect(api.modelDeactivate).toHaveBeenCalledOnce());
-    expect(document.querySelector<HTMLInputElement>("#use-model")!.checked).toBe(false);
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>("#provider-tab-openai")).not.toBeNull());
+    document.querySelector<HTMLButtonElement>("#provider-tab-openai")!.click();
+    await vi.waitFor(() => expect(document.querySelector("#cloud-save-active")).not.toBeNull());
     document.querySelector<HTMLButtonElement>("#settings-back")!.click();
-    expect(document.querySelector("#full-review")).toBeNull();
-    expect(document.body.textContent).toContain("Chưa được áp dụng vì AI cục bộ đang tắt");
-    document.querySelector<HTMLButtonElement>("#start")!.click();
-    await vi.waitFor(() => expect(api.startJob).toHaveBeenCalled());
-    expect(api.startJob.mock.calls[0][3]).toBe("");
-    expect(api.startJob.mock.calls[0][4]).toBe(false);
-    expect(api.startJob.mock.calls[0][7]).toBe(false);
-    expect(api.startJob.mock.calls[0][8]).toBe(false);
+    expect(document.querySelector("#start")).not.toBeNull();
   });
 
   it("offers experimental full review for local-unverified AI without release approval", async () => {
