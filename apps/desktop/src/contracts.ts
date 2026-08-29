@@ -74,3 +74,28 @@ export interface ModelStatus {
   release_approved?: boolean;
   capabilities?: ModelCapabilities;
 }
+
+export interface AiConfigEntry {
+  provider: "local" | "openai" | "gemini" | string;
+  api_key?: string;
+  masked_key?: string;
+  base_url?: string;
+  model_name?: string;
+  temperature?: number;
+  timeout_seconds?: number;
+  is_active?: boolean;
+}
+
+export interface AiConfigState {
+  active_provider: "local" | "openai" | "gemini" | string;
+  configs: AiConfigEntry[];
+}
+
+export interface AiTestConnectionResult {
+  ok: boolean;
+  provider?: string;
+  model?: string;
+  error?: string;
+  message?: string;
+}
+

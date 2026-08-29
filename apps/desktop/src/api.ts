@@ -2,7 +2,18 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import type { CustomRule, DocumentInfo, JobResult, ModelStatus, Preset, ProgressEvent, RuleOptions } from "./contracts";
+import type {
+  AiConfigEntry,
+  AiConfigState,
+  AiTestConnectionResult,
+  CustomRule,
+  DocumentInfo,
+  JobResult,
+  ModelStatus,
+  Preset,
+  ProgressEvent,
+  RuleOptions,
+} from "./contracts";
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
 
@@ -46,4 +57,86 @@ export const api = {
   modelImport(): Promise<ModelStatus | null> { return invoke("model_import"); },
   modelCancel(): Promise<boolean> { return invoke("model_cancel"); },
   modelRemove(modelId?: string): Promise<ModelStatus> { return invoke("model_remove", { modelId }); },
+  aiConfigGet(): Promise<AiConfigState> {
+    if (!isTauri()) {
+      return Promise.resolve({
+        active_provider: "local",
+        configs: [
+          {
+            provider: "openai",
+            masked_key: "sk-proj...1234",
+            base_url: "https://api.openai.com/v1",
+            model_name: "gpt-4o-mini",
+            temperature: 0.0,
+            timeout_seconds: 60,
+            is_active: false,
+          },
+          {
+            provider: "gemini",
+            masked_key: "AIza...5678",
+            base_url: "https://generativelanguage.googleapis.com/v1beta",
+            model_name: "gemini-2.5-flash",
+            temperature: 0.0,
+            timeout_seconds: 60,
+            is_active: false,
+          },
+        ],
+      });
+    }
+    return invoke("ai_config_get");
+  },
+  aiConfigUpdate(params: {
+    provider: string;
+    apiKey?: string;
+    api_key?: string;
+    baseUrl?: string;
+    base_url?: string;
+    modelName?: string;
+    model_name?: string;
+    temperature?: number;
+    timeoutSeconds?: number;
+    timeout_seconds?: number;
+    isActive?: boolean;
+    is_active?: boolean;
+  }): Promise<{ updated: boolean; config?: AiConfigEntry }> {
+    if (!isTauri()) return Promise.resolve({ updated: true });
+    return invoke("ai_config_update", {
+      request: {
+        provider: params.provider,
+        apiKey: params.apiKey ?? params.api_key ?? "",
+        baseUrl: params.baseUrl ?? params.base_url ?? "",
+        modelName: params.modelName ?? params.model_name ?? "",
+        temperature: params.temperature ?? 0.0,
+        timeoutSeconds: params.timeoutSeconds ?? params.timeout_seconds ?? 60,
+        isActive: params.isActive ?? params.is_active ?? false,
+      },
+    });
+  },
+  aiConfigSetActive(provider: string): Promise<{ active_provider: string }> {
+    if (!isTauri()) return Promise.resolve({ active_provider: provider });
+    return invoke("ai_config_set_active", { provider });
+  },
+  aiConfigTestConnection(params: {
+    provider: string;
+    apiKey?: string;
+    api_key?: string;
+    baseUrl?: string;
+    base_url?: string;
+    modelName?: string;
+    model_name?: string;
+  }): Promise<AiTestConnectionResult> {
+    if (!isTauri()) {
+      return Promise.resolve({
+        ok: true,
+        provider: params.provider,
+        model: params.modelName ?? params.model_name ?? "mock-model",
+      });
+    }
+    return invoke("ai_config_test_connection", {
+      provider: params.provider,
+      apiKey: params.apiKey ?? params.api_key,
+      baseUrl: params.baseUrl ?? params.base_url,
+      modelName: params.modelName ?? params.model_name,
+    });
+  },
 };

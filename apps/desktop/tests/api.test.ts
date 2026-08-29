@@ -97,4 +97,64 @@ describe("desktop API", () => {
       expect(eventName).not.toContain(".");
     }
   });
+
+  it("bridges aiConfig methods to Tauri commands", async () => {
+    const configState = {
+      active_provider: "openai",
+      configs: [
+        {
+          provider: "openai",
+          masked_key: "sk-...",
+          base_url: "https://api.openai.com/v1",
+          model_name: "gpt-4o-mini",
+        },
+      ],
+    };
+    mocks.invoke
+      .mockResolvedValueOnce(configState)
+      .mockResolvedValueOnce({ updated: true })
+      .mockResolvedValueOnce({ active_provider: "openai" })
+      .mockResolvedValueOnce({ ok: true, provider: "openai", model: "gpt-4o-mini" });
+
+    await expect(api.aiConfigGet()).resolves.toEqual(configState);
+    await expect(
+      api.aiConfigUpdate({
+        provider: "openai",
+        apiKey: "sk-123456",
+        baseUrl: "https://api.openai.com/v1",
+        modelName: "gpt-4o-mini",
+        isActive: true,
+      }),
+    ).resolves.toEqual({ updated: true });
+    await expect(api.aiConfigSetActive("openai")).resolves.toEqual({ active_provider: "openai" });
+    await expect(
+      api.aiConfigTestConnection({
+        provider: "openai",
+        apiKey: "sk-123456",
+        baseUrl: "https://api.openai.com/v1",
+        modelName: "gpt-4o-mini",
+      }),
+    ).resolves.toEqual({ ok: true, provider: "openai", model: "gpt-4o-mini" });
+
+    expect(mocks.invoke).toHaveBeenNthCalledWith(1, "ai_config_get");
+    expect(mocks.invoke).toHaveBeenNthCalledWith(2, "ai_config_update", {
+      request: {
+        provider: "openai",
+        apiKey: "sk-123456",
+        baseUrl: "https://api.openai.com/v1",
+        modelName: "gpt-4o-mini",
+        temperature: 0,
+        timeoutSeconds: 60,
+        isActive: true,
+      },
+    });
+    expect(mocks.invoke).toHaveBeenNthCalledWith(3, "ai_config_set_active", { provider: "openai" });
+    expect(mocks.invoke).toHaveBeenNthCalledWith(4, "ai_config_test_connection", {
+      provider: "openai",
+      apiKey: "sk-123456",
+      baseUrl: "https://api.openai.com/v1",
+      modelName: "gpt-4o-mini",
+    });
+  });
 });
+

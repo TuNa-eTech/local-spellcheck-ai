@@ -164,6 +164,63 @@ struct CustomRule {
     updated_at: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct AiConfigEntry {
+    provider: String,
+    #[serde(default)]
+    api_key: Option<String>,
+    #[serde(default)]
+    masked_key: Option<String>,
+    #[serde(default)]
+    base_url: Option<String>,
+    #[serde(default)]
+    model_name: Option<String>,
+    #[serde(default)]
+    temperature: Option<f64>,
+    #[serde(default)]
+    timeout_seconds: Option<u64>,
+    #[serde(default)]
+    is_active: Option<bool>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct AiConfigState {
+    active_provider: String,
+    configs: Vec<AiConfigEntry>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct AiTestConnectionResult {
+    ok: bool,
+    #[serde(default)]
+    provider: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    message: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AiConfigUpdateRequest {
+    provider: String,
+    #[serde(default, alias = "apiKey")]
+    api_key: Option<String>,
+    #[serde(default, alias = "baseUrl")]
+    base_url: Option<String>,
+    #[serde(default, alias = "modelName")]
+    model_name: Option<String>,
+    #[serde(default)]
+    temperature: Option<f64>,
+    #[serde(default, alias = "timeoutSeconds")]
+    timeout_seconds: Option<u64>,
+    #[serde(default, alias = "isActive")]
+    is_active: Option<bool>,
+}
+
+
+
 #[tauri::command]
 async fn choose_document(
     app: AppHandle,
@@ -485,6 +542,82 @@ async fn custom_rule_delete(id: String, state: State<'_, AppState>) -> AppResult
         .as_bool()
         .unwrap_or(false))
 }
+
+#[tauri::command]
+async fn ai_config_get(state: State<'_, AppState>) -> AppResult<AiConfigState> {
+    let value = state
+        .engine
+        .call("ai_config.get", json!({}), Duration::from_secs(5))?;
+    Ok(serde_json::from_value(value)?)
+}
+
+#[tauri::command]
+async fn ai_config_update(
+    request: AiConfigUpdateRequest,
+    state: State<'_, AppState>,
+) -> AppResult<Value> {
+    let mut params = json!({
+        "provider": request.provider,
+    });
+    if let Some(key) = request.api_key {
+        params["api_key"] = json!(key);
+    }
+    if let Some(url) = request.base_url {
+        params["base_url"] = json!(url);
+    }
+    if let Some(model) = request.model_name {
+        params["model_name"] = json!(model);
+    }
+    if let Some(temp) = request.temperature {
+        params["temperature"] = json!(temp);
+    }
+    if let Some(timeout) = request.timeout_seconds {
+        params["timeout_seconds"] = json!(timeout);
+    }
+    if let Some(active) = request.is_active {
+        params["is_active"] = json!(active);
+    }
+    state.engine.call("ai_config.update", params, Duration::from_secs(5))
+}
+
+#[tauri::command]
+async fn ai_config_set_active(
+    provider: String,
+    state: State<'_, AppState>,
+) -> AppResult<Value> {
+    state.engine.call(
+        "ai_config.set_active",
+        json!({"provider": provider}),
+        Duration::from_secs(5),
+    )
+}
+
+#[tauri::command]
+async fn ai_config_test_connection(
+    provider: String,
+    api_key: Option<String>,
+    base_url: Option<String>,
+    model_name: Option<String>,
+    state: State<'_, AppState>,
+) -> AppResult<AiTestConnectionResult> {
+    let mut params = json!({
+        "provider": provider,
+    });
+    if let Some(key) = api_key {
+        params["api_key"] = json!(key);
+    }
+    if let Some(url) = base_url {
+        params["base_url"] = json!(url);
+    }
+    if let Some(model) = model_name {
+        params["model_name"] = json!(model);
+    }
+    let value = state
+        .engine
+        .call("ai_config.test_connection", params, Duration::from_secs(20))?;
+    Ok(serde_json::from_value(value)?)
+}
+
 
 #[tauri::command]
 async fn model_status(activate: bool, state: State<'_, AppState>) -> AppResult<ModelStatus> {
@@ -1025,6 +1158,10 @@ pub fn run() {
             custom_rule_list,
             custom_rule_upsert,
             custom_rule_delete,
+            ai_config_get,
+            ai_config_update,
+            ai_config_set_active,
+            ai_config_test_connection,
             model_status,
             model_deactivate,
             model_import,
