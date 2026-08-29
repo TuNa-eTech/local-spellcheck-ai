@@ -1,18 +1,20 @@
+"""Cloud AI reviewer — thin orchestrator.
+
+Builds review chunks, delegates HTTP calls to ``llm_transport``, delegates
+response parsing to ``response_parser``, and aggregates the results.
+"""
+
 from __future__ import annotations
 
-import json
 import sys
-import urllib.error
-import urllib.request
 from collections.abc import Callable
-from typing import Any
 
 from soatvan.checking.domain import Block
-from soatvan.checking.localization import canonicalize_llm_edit, localize_llm_edits
 from soatvan.custom_rules.ai_config_repository import AiConfigEntry
+from soatvan.models.llm_transport import call_llm
+from soatvan.models.llm_transport import test_connection as test_ai_connection
+from soatvan.models.response_parser import parse_llm_response
 from soatvan.models.review import (
-    DISCOVERY_CATEGORIES,
-    DISCOVERY_REASON_CODES,
     LLM_ONLY_REVIEW_SYSTEM_PROMPT,
     REVIEW_SYSTEM_PROMPT,
 )
@@ -25,6 +27,12 @@ from soatvan.workflow.ports import (
     ReviewCandidate,
 )
 
+__all__ = [
+    "CloudAiError",
+    "CloudAiReviewer",
+    "test_ai_connection",
+]
+
 
 class CloudAiError(RuntimeError):
     def __init__(self, code: str, message: str) -> None:
@@ -32,190 +40,9 @@ class CloudAiError(RuntimeError):
         self.code = code
 
 
-def _normalize_base_url(provider: str, base_url: str) -> str:
-    url = base_url.strip().rstrip("/")
-    if provider == "gemini":
-        if url == "https://generativelanguage.googleapis.com":
-            url = "https://generativelanguage.googleapis.com/v1beta"
-    elif provider == "openai":
-        if url.endswith("/chat/completions"):
-            url = url[:-len("/chat/completions")].rstrip("/")
-        elif url in {"https://api.openai.com", "https://api.deepseek.com"}:
-            url = f"{url}/v1"
-    return url
-
-
-def _parse_openai_text_response(raw_body: str) -> str:
-    raw_body = raw_body.strip()
-    if not raw_body:
-        return ""
-    if raw_body.startswith("data:"):
-        chunks: list[str] = []
-        for line in raw_body.splitlines():
-            line = line.strip()
-            if not line or not line.startswith("data:"):
-                continue
-            data_part = line[len("data:") :].strip()
-            if data_part == "[DONE]":
-                continue
-            try:
-                chunk_obj = json.loads(data_part)
-                choices = chunk_obj.get("choices", [])
-                if choices:
-                    delta = choices[0].get("delta", {})
-                    content = delta.get("content") or choices[0].get("message", {}).get(
-                        "content", ""
-                    )
-                    if content:
-                        chunks.append(str(content))
-            except Exception:
-                continue
-        return "".join(chunks)
-
-    obj = json.loads(raw_body)
-    if isinstance(obj, dict):
-        choices = obj.get("choices", [])
-        if choices and isinstance(choices, list) and len(choices) > 0:
-            msg = choices[0].get("message", {})
-            return str(msg.get("content", ""))
-    return ""
-
-
-def test_ai_connection(config: AiConfigEntry) -> dict[str, Any]:
-    if not config.api_key:
-        return {
-            "ok": False,
-            "error": "API_KEY_REQUIRED",
-            "message": "API key không được để trống",
-        }
-
-    base_url = _normalize_base_url(config.provider, config.base_url)
-    default_headers = {
-        "Content-Type": "application/json",
-        "Accept": "application/json, text/event-stream",
-        "User-Agent": "SoatVan/0.1.5 (Desktop; vi-VN)",
-    }
-
-    try:
-        if config.provider == "gemini":
-            url = (
-                f"{base_url}/models/{config.model_name}:generateContent"
-                f"?key={config.api_key}"
-            )
-            payload: dict[str, Any] = {
-                "contents": [{"role": "user", "parts": [{"text": "Ping"}]}],
-                "generationConfig": {"temperature": 0.0, "maxOutputTokens": 10},
-            }
-            req = urllib.request.Request(
-                url,
-                data=json.dumps(payload).encode("utf-8"),
-                headers=default_headers,
-                method="POST",
-            )
-        else:
-            url = f"{base_url}/chat/completions"
-            payload = {
-                "model": config.model_name,
-                "messages": [{"role": "user", "content": "Ping"}],
-                "temperature": 0.0,
-                "max_tokens": 10,
-                "stream": False,
-            }
-            headers = dict(default_headers)
-            headers["Authorization"] = f"Bearer {config.api_key}"
-            req = urllib.request.Request(
-                url,
-                data=json.dumps(payload).encode("utf-8"),
-                headers=headers,
-                method="POST",
-            )
-
-        with urllib.request.urlopen(req, timeout=15) as response:
-            raw_body = response.read().decode("utf-8", errors="replace")
-            if not raw_body.strip():
-                return {
-                    "ok": False,
-                    "error": "EMPTY_RESPONSE",
-                    "message": "Máy chủ phản hồi rỗng (vui lòng kiểm tra lại Base URL).",
-                }
-            if config.provider == "gemini":
-                try:
-                    _ = json.loads(raw_body)
-                except json.JSONDecodeError:
-                    snippet = raw_body[:120].replace("\n", " ")
-                    return {
-                        "ok": False,
-                        "error": "INVALID_JSON",
-                        "message": f"Máy chủ không trả về JSON hợp lệ: {snippet}",
-                    }
-            else:
-                text_content = _parse_openai_text_response(raw_body)
-                if not text_content and not raw_body.strip().startswith("{"):
-                    snippet = raw_body[:120].replace("\n", " ")
-                    return {
-                        "ok": False,
-                        "error": "INVALID_JSON",
-                        "message": f"Máy chủ không trả về JSON hợp lệ: {snippet}",
-                    }
-            return {
-                "ok": True,
-                "provider": config.provider,
-                "model": config.model_name,
-            }
-    except urllib.error.HTTPError as err:
-        err_msg = err.read().decode("utf-8", errors="ignore")
-        if err.code in (401, 403):
-            return {
-                "ok": False,
-                "error": "API_KEY_INVALID",
-                "message": "API key không hợp lệ hoặc không có quyền truy cập",
-            }
-        if err.code == 404:
-            return {
-                "ok": False,
-                "error": "MODEL_NOT_FOUND",
-                "message": f"Không tìm thấy model '{config.model_name}' hoặc sai URL ({err.url})",
-            }
-        return {
-            "ok": False,
-            "error": f"HTTP_{err.code}",
-            "message": f"Lỗi HTTP {err.code}: {err_msg[:200]}",
-        }
-    except Exception as exc:
-        return {
-            "ok": False,
-            "error": "CONNECTION_FAILED",
-            "message": f"Không thể kết nối đến máy chủ AI: {exc}",
-        }
-
-
-test_ai_connection.__test__ = False  # type: ignore[attr-defined]
-
-
-
-def _extract_json_text(text: str) -> str:
-    text = text.strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        return "\n".join(lines).strip()
-    return text
-
-
-def _nth_occurrence(text: str, needle: str, occurrence: int) -> int | None:
-    start = 0
-    for _ in range(occurrence + 1):
-        found = text.find(needle, start)
-        if found < 0:
-            return None
-        start = found + len(needle)
-    return found
-
-
 class CloudAiReviewer:
+    """Orchestrates chunk-based LLM review of Vietnamese documents."""
+
     def __init__(self, config: AiConfigEntry) -> None:
         self._config = config
 
@@ -226,6 +53,10 @@ class CloudAiReviewer:
     @property
     def minimum_confidence(self) -> float:
         return 0.55
+
+    # ------------------------------------------------------------------
+    # Candidate classification (pass-through for cloud — keeps all)
+    # ------------------------------------------------------------------
 
     def classify(
         self,
@@ -240,6 +71,10 @@ class CloudAiReviewer:
             ClassifierVerdict(candidate.candidate_id, "keep", 0.95)
             for candidate in candidates
         )
+
+    # ------------------------------------------------------------------
+    # Full-text review
+    # ------------------------------------------------------------------
 
     def review(
         self,
@@ -281,21 +116,28 @@ class CloudAiReviewer:
             )
             sys.stderr.flush()
             try:
-                raw_json = self._call_ai(
-                    system_prompt, chunk_blocks, chunk_candidates, cancellation
+                # 1. Call LLM (transport layer)
+                user_content = self._format_user_content(
+                    chunk_blocks, chunk_candidates
                 )
+                raw_json = call_llm(self._config, system_prompt, user_content)
+
                 sys.stderr.write(
                     f"[SoatVan-CloudAI] Chunk {chunk_id} raw response: {raw_json}\n"
                 )
                 sys.stderr.flush()
-                verdicts, discoveries = self._parse_response(
+
+                # 2. Parse response (parser layer)
+                verdicts, discoveries = parse_llm_response(
                     raw_json, chunk_blocks, chunk_candidates
                 )
+
                 sys.stderr.write(
-                    f"[SoatVan-CloudAI] Chunk {chunk_id} parsed: {len(discoveries)} discoveries, "
-                    f"{len(verdicts)} verdicts\n"
+                    f"[SoatVan-CloudAI] Chunk {chunk_id} parsed: "
+                    f"{len(discoveries)} discoveries, {len(verdicts)} verdicts\n"
                 )
                 sys.stderr.flush()
+
                 all_verdicts.extend(verdicts)
                 all_discoveries.extend(discoveries)
                 reviewed_chunks += 1
@@ -317,14 +159,42 @@ class CloudAiReviewer:
             failed_chunk_ids=tuple(failed_chunk_ids),
         )
 
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _format_user_content(
+        blocks: list[Block],
+        candidates: list[ReviewCandidate],
+    ) -> str:
+        """Build the ``user`` message content from blocks and candidates."""
+        content_lines = [
+            f'<segment id="{b.id}" role="target">{b.text}</segment>'
+            for b in blocks
+        ]
+        user_content = "\n".join(content_lines)
+        if candidates:
+            cand_lines = [
+                f'<candidate id="{c.candidate_id}" segment_id="{c.block_id}" '
+                f'source_text="{c.source_text}" suggestion="{c.suggestion}" '
+                f'reason_code="{c.reason_code}" />'
+                for c in candidates
+            ]
+            user_content += "\n\nDanh sách candidate:\n" + "\n".join(cand_lines)
+        return user_content
+
+    @staticmethod
     def _build_chunks(
-        self,
         blocks: tuple[Block, ...],
         candidates: tuple[ReviewCandidate, ...],
     ) -> list[tuple[str, list[Block], list[ReviewCandidate]]]:
+        """Split blocks into ≤4000-char chunks for the LLM context window."""
         candidates_by_block: dict[str, list[ReviewCandidate]] = {}
         for candidate in candidates:
-            candidates_by_block.setdefault(candidate.block_id, []).append(candidate)
+            candidates_by_block.setdefault(candidate.block_id, []).append(
+                candidate
+            )
 
         chunks: list[tuple[str, list[Block], list[ReviewCandidate]]] = []
         current_blocks: list[Block] = []
@@ -343,7 +213,9 @@ class CloudAiReviewer:
                 current_candidates = []
                 current_len = 0
             current_blocks.append(block)
-            current_candidates.extend(candidates_by_block.get(block.id, []))
+            current_candidates.extend(
+                candidates_by_block.get(block.id, [])
+            )
             current_len += text_len
 
         if current_blocks:
@@ -352,231 +224,6 @@ class CloudAiReviewer:
             )
         return chunks
 
-    def _call_ai(
-        self,
-        system_prompt: str,
-        blocks: list[Block],
-        candidates: list[ReviewCandidate],
-        cancellation: CancellationToken,
-    ) -> dict[str, Any]:
-        cancellation.raise_if_cancelled()
-        content_lines = [
-            f'<segment id="{b.id}" role="target">{b.text}</segment>'
-            for b in blocks
-        ]
-        user_content = "\n".join(content_lines)
-        if candidates:
-            cand_lines = [
-                f'<candidate id="{c.candidate_id}" segment_id="{c.block_id}" '
-                f'source_text="{c.source_text}" suggestion="{c.suggestion}" '
-                f'reason_code="{c.reason_code}" />'
-                for c in candidates
-            ]
-            user_content += "\n\nDanh sách candidate:\n" + "\n".join(cand_lines)
 
-        base_url = _normalize_base_url(self._config.provider, self._config.base_url)
-        default_headers = {
-            "Content-Type": "application/json",
-            "Accept": "application/json, text/event-stream",
-            "User-Agent": "SoatVan/0.1.5 (Desktop; vi-VN)",
-        }
-
-        if self._config.provider == "gemini":
-            url = (
-                f"{base_url}/models/{self._config.model_name}:generateContent"
-                f"?key={self._config.api_key}"
-            )
-            payload: dict[str, Any] = {
-                "contents": [
-                    {
-                        "role": "user",
-                        "parts": [
-                            {"text": f"{system_prompt}\n\n{user_content}"}
-                        ],
-                    }
-                ],
-                "generationConfig": {
-                    "temperature": self._config.temperature,
-                    "responseMimeType": "application/json",
-                },
-            }
-            req = urllib.request.Request(
-                url,
-                data=json.dumps(payload).encode("utf-8"),
-                headers=default_headers,
-                method="POST",
-            )
-        else:
-            url = f"{base_url}/chat/completions"
-            payload = {
-                "model": self._config.model_name,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_content},
-                ],
-                "temperature": self._config.temperature,
-                "response_format": {"type": "json_object"},
-                "stream": False,
-            }
-            headers = dict(default_headers)
-            headers["Authorization"] = f"Bearer {self._config.api_key}"
-            req = urllib.request.Request(
-                url,
-                data=json.dumps(payload).encode("utf-8"),
-                headers=headers,
-                method="POST",
-            )
-
-        try:
-            with urllib.request.urlopen(
-                req, timeout=self._config.timeout_seconds
-            ) as resp:
-                raw_body = resp.read().decode("utf-8", errors="replace")
-        except urllib.error.HTTPError as err:
-            if (
-                err.code == 400
-                and self._config.provider != "gemini"
-                and "response_format" in payload
-            ):
-                payload_no_rf = dict(payload)
-                del payload_no_rf["response_format"]
-                req_retry = urllib.request.Request(
-                    url,
-                    data=json.dumps(payload_no_rf).encode("utf-8"),
-                    headers=headers,
-                    method="POST",
-                )
-                with urllib.request.urlopen(
-                    req_retry, timeout=self._config.timeout_seconds
-                ) as resp:
-                    raw_body = resp.read().decode("utf-8", errors="replace")
-            else:
-                raise
-
-        if self._config.provider == "gemini":
-            data = json.loads(raw_body)
-            text = data["candidates"][0]["content"]["parts"][0]["text"]
-        else:
-            text = _parse_openai_text_response(raw_body)
-        parsed = json.loads(_extract_json_text(text))
-        if isinstance(parsed, dict):
-            return parsed
-        return {}
-
-    def _parse_response(
-        self,
-        data: dict[str, Any],
-        blocks: list[Block],
-        candidates: list[ReviewCandidate],
-    ) -> tuple[list[ClassifierVerdict], list[DiscoveryProposal]]:
-        block_map = {b.id: b for b in blocks}
-        discoveries: list[DiscoveryProposal] = []
-        verdicts: list[ClassifierVerdict] = []
-        seen_discoveries: set[tuple[str, int, int, str]] = set()
-
-        for item in data.get("discoveries", []):
-            if not isinstance(item, dict):
-                continue
-            source_text = str(item.get("source_text", ""))
-            suggestion = str(item.get("suggestion", ""))
-            if not source_text or not suggestion:
-                continue
-
-            category = str(item.get("category", "spelling"))
-            reason_code = str(item.get("reason_code", category))
-            if category not in DISCOVERY_CATEGORIES:
-                category = "spelling"
-            if reason_code not in DISCOVERY_REASON_CODES:
-                reason_code = category
-
-            category, reason_code = canonicalize_llm_edit(
-                source_text, suggestion, category, reason_code
-            )
-            localized_edits = localize_llm_edits(
-                source_text, suggestion, reason_code
-            )
-            if not localized_edits:
-                sys.stderr.write(f"[SoatVan-CloudAI] Ignored item: localization rejected edit {source_text!r} -> {suggestion!r} ({reason_code})\n")
-                continue
-
-            seg_id = str(item.get("segment_id", ""))
-            block = block_map.get(seg_id)
-            if block is None:
-                # If segment_id was omitted by LLM, locate the matching block in the chunk
-                for candidate_block in blocks:
-                    if source_text in candidate_block.text or (localized_edits and localized_edits[0][1] in candidate_block.text):
-                        block = candidate_block
-                        seg_id = candidate_block.id
-                        break
-
-            if block is None:
-                sys.stderr.write(f"[SoatVan-CloudAI] Ignored item: source_text {source_text!r} not found in any chunk block\n")
-                continue
-
-            occ_idx = int(item.get("occurrence_index", 0))
-            anchor_start = _nth_occurrence(block.text, source_text, occ_idx)
-            if anchor_start is None:
-                anchor_start = block.text.find(source_text)
-            if anchor_start < 0:
-                # If original broad source_text not found, try searching by first localized source
-                first_local_src = localized_edits[0][1]
-                anchor_start = block.text.find(first_local_src)
-                if anchor_start < 0:
-                    continue
-                # Offset relative to first local src
-                rel_offset = localized_edits[0][0]
-                base_start = anchor_start - rel_offset
-            else:
-                base_start = anchor_start
-
-            for rel_start, local_src, local_sug in localized_edits:
-                start = base_start + rel_start
-                end = start + len(local_src)
-                if start < 0 or end > len(block.text):
-                    continue
-                # Sanity check text at position
-                if block.text[start:end] != local_src:
-                    # Fallback locate
-                    loc_find = block.text.find(local_src, max(0, start - 10))
-                    if loc_find < 0:
-                        loc_find = block.text.find(local_src)
-                    if loc_find < 0:
-                        continue
-                    start = loc_find
-                    end = start + len(local_src)
-
-                key = (seg_id, start, end, local_sug)
-                if key in seen_discoveries:
-                    continue
-                seen_discoveries.add(key)
-
-                discoveries.append(
-                    DiscoveryProposal(
-                        block_id=seg_id,
-                        start=start,
-                        end=end,
-                        source_text=local_src,
-                        suggestion=local_sug,
-                        category=category,
-                        reason_code=reason_code,
-                        confidence=float(item.get("confidence", 0.9)),
-                    )
-                )
-
-        candidate_ids = {c.candidate_id for c in candidates}
-        for v in data.get("verdicts", []):
-            if isinstance(v, dict) and "candidate_id" in v and "verdict" in v:
-                cid = str(v["candidate_id"])
-                verdict_str = str(v["verdict"])
-                if verdict_str in ("keep", "drop") and (
-                    not candidate_ids or cid in candidate_ids
-                ):
-                    verdicts.append(
-                        ClassifierVerdict(
-                            candidate_id=cid,
-                            verdict=verdict_str,
-                            confidence=float(v.get("confidence", 0.9)),
-                        )
-                    )
-
-        return verdicts, discoveries
+def supports_full_review() -> bool:
+    return True
