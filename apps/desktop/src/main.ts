@@ -218,8 +218,8 @@ function modelFilterAvailable(): boolean {
   return modelCanFilter(state.model);
 }
 function fullReviewAvailable(): boolean {
-  if (!state.useModel) return false;
   if (isCloudActive()) return true;
+  if (!state.useModel) return false;
   return modelCanFilter(state.model) && state.model.capabilities?.full_review === true;
 }
 function clearUnavailableFullReview(): void {
@@ -249,7 +249,7 @@ function reviewModeDescription(): string {
 }
 
 function selectedCustomRules(): CustomRule[] { return state.customRules.filter(rule => state.selectedRuleIds.includes(rule.id)); }
-function compiledCustomPrompt(): string { return state.useModel ? selectedCustomRules().map(rule => rule.prompt).join("\n\n") : ""; }
+function compiledCustomPrompt(): string { return (isCloudActive() || state.useModel) ? selectedCustomRules().map(rule => rule.prompt).join("\n\n") : ""; }
 
 function syncDefaultRuleSelection(): void { state.selectedRuleIds = state.customRules.filter(rule => rule.is_default).map(rule => rule.id); }
 function customRuleCharacterCount(): number { return state.customRules.reduce((total, rule) => total + [...rule.prompt].length, 0); }
@@ -780,7 +780,9 @@ function reset(): void {
 async function start(): Promise<void> {
   if (!state.document) return;
   const cloudActive = isCloudActive();
-  if (state.fullReview && !fullReviewAvailable()) {
+  const effectiveUseModel = cloudActive || (state.useModel && modelFilterAvailable());
+  const effectiveFullReview = cloudActive || (state.fullReview && fullReviewAvailable());
+  if (effectiveFullReview && !fullReviewAvailable()) {
     clearUnavailableFullReview();
     state.error = cloudActive
       ? "Rà soát sâu cần AI Cloud được cấu hình hợp lệ. Hãy kiểm tra cài đặt AI rồi thử lại."
@@ -792,7 +794,6 @@ async function start(): Promise<void> {
   settingsRequestSequence += 1;
   state.settingsLoading = false;
   const currentJobId = crypto.randomUUID();
-  const effectiveUseModel = state.useModel && (cloudActive || modelFilterAvailable());
   const customPrompt = effectiveUseModel ? compiledCustomPrompt() : "";
   state.step = "processing";
   state.progress = 0;
@@ -824,7 +825,7 @@ async function start(): Promise<void> {
   state.jobStarting = false;
   updateCancelControl();
   try {
-    const result = await api.startJob(currentJobId, state.document.path, defaultPreset, customPrompt, effectiveUseModel, defaultRuleOptions, [], state.fullReview, state.fullReview && state.includeRuleFindings);
+    const result = await api.startJob(currentJobId, state.document.path, defaultPreset, customPrompt, effectiveUseModel, defaultRuleOptions, [], effectiveFullReview, effectiveFullReview && state.includeRuleFindings);
     if (state.jobId === currentJobId && state.step === "processing") {
       state.jobId = "";
       state.cancelPending = false;

@@ -358,6 +358,7 @@ class CloudAiReviewer:
         base_url = _normalize_base_url(self._config.provider, self._config.base_url)
         default_headers = {
             "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
             "User-Agent": "SoatVan/0.1.5 (Desktop; vi-VN)",
         }
 
