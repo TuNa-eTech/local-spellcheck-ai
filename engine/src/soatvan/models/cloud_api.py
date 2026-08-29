@@ -31,6 +31,19 @@ class CloudAiError(RuntimeError):
         self.code = code
 
 
+def _normalize_base_url(provider: str, base_url: str) -> str:
+    url = base_url.strip().rstrip("/")
+    if provider == "gemini":
+        if url == "https://generativelanguage.googleapis.com":
+            url = "https://generativelanguage.googleapis.com/v1beta"
+    elif provider == "openai":
+        if url.endswith("/chat/completions"):
+            url = url[:-len("/chat/completions")].rstrip("/")
+        elif url in {"https://api.openai.com", "https://api.deepseek.com"}:
+            url = f"{url}/v1"
+    return url
+
+
 def test_ai_connection(config: AiConfigEntry) -> dict[str, Any]:
     if not config.api_key:
         return {
@@ -39,10 +52,16 @@ def test_ai_connection(config: AiConfigEntry) -> dict[str, Any]:
             "message": "API key không được để trống",
         }
 
+    base_url = _normalize_base_url(config.provider, config.base_url)
+    default_headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "SoatVan/0.1.5 (Desktop; vi-VN)",
+    }
+
     try:
         if config.provider == "gemini":
             url = (
-                f"{config.base_url.rstrip('/')}/models/{config.model_name}:generateContent"
+                f"{base_url}/models/{config.model_name}:generateContent"
                 f"?key={config.api_key}"
             )
             payload: dict[str, Any] = {
@@ -52,29 +71,43 @@ def test_ai_connection(config: AiConfigEntry) -> dict[str, Any]:
             req = urllib.request.Request(
                 url,
                 data=json.dumps(payload).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
+                headers=default_headers,
                 method="POST",
             )
         else:
-            url = f"{config.base_url.rstrip('/')}/chat/completions"
+            url = f"{base_url}/chat/completions"
             payload = {
                 "model": config.model_name,
                 "messages": [{"role": "user", "content": "Ping"}],
                 "temperature": 0.0,
                 "max_tokens": 10,
             }
+            headers = dict(default_headers)
+            headers["Authorization"] = f"Bearer {config.api_key}"
             req = urllib.request.Request(
                 url,
                 data=json.dumps(payload).encode("utf-8"),
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {config.api_key}",
-                },
+                headers=headers,
                 method="POST",
             )
 
         with urllib.request.urlopen(req, timeout=15) as response:
-            _ = json.loads(response.read().decode("utf-8"))
+            raw_body = response.read().decode("utf-8", errors="replace")
+            if not raw_body.strip():
+                return {
+                    "ok": False,
+                    "error": "EMPTY_RESPONSE",
+                    "message": "Máy chủ phản hồi rỗng (vui lòng kiểm tra lại Base URL).",
+                }
+            try:
+                _ = json.loads(raw_body)
+            except json.JSONDecodeError:
+                snippet = raw_body[:120].replace("\n", " ")
+                return {
+                    "ok": False,
+                    "error": "INVALID_JSON",
+                    "message": f"Máy chủ không trả về JSON hợp lệ (có thể do sai Base URL). Nội dung: {snippet}",
+                }
             return {
                 "ok": True,
                 "provider": config.provider,
@@ -92,7 +125,7 @@ def test_ai_connection(config: AiConfigEntry) -> dict[str, Any]:
             return {
                 "ok": False,
                 "error": "MODEL_NOT_FOUND",
-                "message": f"Không tìm thấy model '{config.model_name}' hoặc sai URL",
+                "message": f"Không tìm thấy model '{config.model_name}' hoặc sai URL ({err.url})",
             }
         return {
             "ok": False,
@@ -274,9 +307,15 @@ class CloudAiReviewer:
             ]
             user_content += "\n\nDanh sách candidate:\n" + "\n".join(cand_lines)
 
+        base_url = _normalize_base_url(self._config.provider, self._config.base_url)
+        default_headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "SoatVan/0.1.5 (Desktop; vi-VN)",
+        }
+
         if self._config.provider == "gemini":
             url = (
-                f"{self._config.base_url.rstrip('/')}/models/{self._config.model_name}:generateContent"
+                f"{base_url}/models/{self._config.model_name}:generateContent"
                 f"?key={self._config.api_key}"
             )
             payload: dict[str, Any] = {
@@ -296,11 +335,11 @@ class CloudAiReviewer:
             req = urllib.request.Request(
                 url,
                 data=json.dumps(payload).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
+                headers=default_headers,
                 method="POST",
             )
         else:
-            url = f"{self._config.base_url.rstrip('/')}/chat/completions"
+            url = f"{base_url}/chat/completions"
             payload = {
                 "model": self._config.model_name,
                 "messages": [
@@ -310,13 +349,12 @@ class CloudAiReviewer:
                 "temperature": self._config.temperature,
                 "response_format": {"type": "json_object"},
             }
+            headers = dict(default_headers)
+            headers["Authorization"] = f"Bearer {self._config.api_key}"
             req = urllib.request.Request(
                 url,
                 data=json.dumps(payload).encode("utf-8"),
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {self._config.api_key}",
-                },
+                headers=headers,
                 method="POST",
             )
 
