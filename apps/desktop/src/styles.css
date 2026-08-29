@@ -42,8 +42,7 @@ button,
 .back-button,
 .delete-button,
 .inline-button,
-.settings-nav__item,
-.prompt-row {
+.settings-nav__item {
   white-space: nowrap;
 }
 
@@ -966,7 +965,8 @@ button:not(:disabled):not([aria-disabled="true"]):active,
   min-block-size: 0;
   display: flex;
   flex-direction: column;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
 }
@@ -988,8 +988,8 @@ button:not(:disabled):not([aria-disabled="true"]):active,
   min-inline-size: 0;
   display: grid;
   align-content: start;
-  gap: var(--space-xs);
-  padding: var(--space-xs);
+  gap: var(--space-sm);
+  padding: var(--space-sm);
 }
 
 .settings-section__header {
@@ -1021,7 +1021,7 @@ button:not(:disabled):not([aria-disabled="true"]):active,
   display: flex;
   justify-content: flex-end;
   margin-block-start: auto;
-  padding: var(--space-2xs) var(--space-xs);
+  padding: var(--space-xs) var(--space-sm);
   border-block-start: var(--rule-thin) solid var(--color-rule);
   background: var(--color-paper-raised);
   color: var(--color-ink);
@@ -1049,18 +1049,19 @@ button:not(:disabled):not([aria-disabled="true"]):active,
 .prompt-manager {
   min-inline-size: 0;
   display: grid;
-  gap: var(--space-xs);
+  gap: var(--space-sm);
 }
 
 .prompt-manager__master,
 .prompt-manager__detail {
   min-inline-size: 0;
+  min-block-size: 0;
 }
 
 .prompt-manager__detail {
   display: grid;
   align-content: start;
-  gap: var(--space-xs);
+  gap: var(--space-sm);
 }
 
 .prompt-list,
@@ -1086,6 +1087,7 @@ button:not(:disabled):not([aria-disabled="true"]):active,
 
 .prompt-row {
   min-inline-size: 0;
+  inline-size: 100%;
   display: grid;
   align-content: center;
   gap: var(--space-3xs);
@@ -1096,16 +1098,50 @@ button:not(:disabled):not([aria-disabled="true"]):active,
   color: var(--color-ink);
   cursor: pointer;
   text-align: start;
+  white-space: normal;
+  overflow: hidden;
 }
 
-.prompt-row span {
+.prompt-row__title {
+  min-inline-size: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2xs);
+  overflow: hidden;
+  font-size: var(--text-sm);
+  font-weight: 700;
+  color: var(--color-ink);
+}
+
+.prompt-row__title > span {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 auto;
+}
+
+.prompt-row__badge {
+  flex: 0 0 auto;
+  margin-inline-start: var(--space-2xs);
+  color: var(--color-accent);
+  font-style: normal;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.prompt-row span.prompt-row__snippet,
+.prompt-row > span {
   min-inline-size: 0;
   margin: 0;
   overflow: hidden;
   color: var(--color-muted);
-  font-size: var(--text-sm);
+  font-size: var(--text-xs);
   text-overflow: ellipsis;
   white-space: nowrap;
+  display: block;
 }
 
 .prompt-row[aria-current="true"] {
@@ -1114,9 +1150,15 @@ button:not(:disabled):not([aria-disabled="true"]):active,
   color: var(--color-accent);
 }
 
+.prompt-row[aria-current="true"] .prompt-row__title {
+  color: var(--color-accent);
+}
+
 .prompt-list__item > .delete-button {
+  flex: 0 0 auto;
   align-self: stretch;
   padding-inline: var(--space-2xs);
+  white-space: nowrap;
 }
 
 .review-rule-row {
@@ -1830,20 +1872,25 @@ button:not(:disabled):not([aria-disabled="true"]):active,
   }
 
   .prompt-manager {
-    grid-template-columns: var(--layout-prompt-index) minmax(0, 1fr);
+    grid-template-columns: minmax(14rem, var(--layout-prompt-index)) minmax(0, 1fr);
     align-items: start;
-    gap: 0;
+    gap: var(--space-md);
   }
 
   .prompt-manager__master {
-    min-block-size: 100%;
+    min-block-size: 0;
     align-self: stretch;
-    padding-inline-end: var(--space-xs);
+    padding-inline-end: var(--space-sm);
     border-inline-end: var(--rule-thin) solid var(--color-rule);
+    max-block-size: calc(100vh - 16rem);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
   }
 
   .prompt-manager__detail {
-    padding-inline-start: var(--space-xs);
+    min-inline-size: 0;
+    padding-inline-start: 0;
   }
 
   .review-rule-row {

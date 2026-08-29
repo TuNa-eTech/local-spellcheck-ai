@@ -467,7 +467,7 @@ function settingsContent(section: SettingsSection): { body: string; footer: stri
           const id = escape(rule.id);
           const selected = rule.id === state.editingCustomRuleId;
           const badge = rule.is_default ? `<em class="prompt-row__badge">Chọn sẵn</em>` : "";
-          return `<div class="prompt-list__item"><button class="prompt-row" type="button" data-prompt-id="${id}" data-edit-rule="${id}" aria-label="Sửa prompt ${index + 1}: ${escape(rule.title)}" ${selected ? 'aria-current="true"' : ""} ${controlsLocked ? "disabled" : ""}><strong>${escape(rule.title)}${badge}</strong><span>${escape(rule.prompt)}</span></button><button class="delete-button" type="button" data-delete-rule="${id}" aria-label="Xoá prompt ${index + 1}: ${escape(rule.title)}" ${controlsLocked ? "disabled" : ""}>Xoá</button></div>`;
+          return `<div class="prompt-list__item"><button class="prompt-row" type="button" data-prompt-id="${id}" data-edit-rule="${id}" aria-label="Sửa prompt ${index + 1}: ${escape(rule.title)}" ${selected ? 'aria-current="true"' : ""} ${controlsLocked ? "disabled" : ""}><strong class="prompt-row__title"><span>${escape(rule.title)}</span>${badge}</strong><span class="prompt-row__snippet">${escape(rule.prompt)}</span></button><button class="delete-button" type="button" data-delete-rule="${id}" aria-label="Xoá prompt ${index + 1}: ${escape(rule.title)}" ${controlsLocked ? "disabled" : ""}>Xoá</button></div>`;
         }).join("")
       : `<div class="empty-state"><strong>Chưa có prompt riêng.</strong><span>Tạo một prompt để cung cấp thuật ngữ, ngữ cảnh hoặc tiêu chí kiểm tra riêng cho AI.</span></div>`;
     return {
