@@ -5,6 +5,7 @@ import unicodedata
 from difflib import SequenceMatcher
 
 WORD_PATTERN = re.compile(r"[^\W_]+", flags=re.UNICODE)
+_TOKEN_SPLIT = re.compile(r"(\s+)")
 _DELETION_REASON_CODES = frozenset({"punctuation", "repetition", "spacing", "technical"})
 _WORD_LEVEL_REASON_CODES = frozenset(
     {"spelling", "capitalization", "word_choice"}
@@ -14,6 +15,37 @@ _ORTHOGRAPHIC_REASON_CODES = frozenset(
 )
 _MAX_LOCALIZED_SOURCE_LENGTH = 32
 _MAX_LOCALIZED_SOURCE_WORDS = 4
+_VIETNAMESE_VOWELS = frozenset("aăâeêioôơuưy")
+
+
+def _syllable_onset_length(value: str) -> int:
+    for index, character in enumerate(value):
+        if _without_diacritics(character).casefold() in _VIETNAMESE_VOWELS:
+            return index
+    return len(value)
+
+
+def _onset_only_substitution(source_text: str, suggestion: str) -> bool:
+    """True when one syllable keeps its rime and only the leading consonant moves.
+
+    The common Vietnamese spelling confusions are onset pairs — ch/tr, s/x,
+    d/gi/r, n/l — and several of them cost two character edits, so a plain
+    edit-distance limit of one rejects them. Requiring an identical rime keeps
+    the check just as strict about everything else: a proposal that also alters
+    the vowel or the tone is still treated as a guessed rewrite.
+    """
+    if any(character.isspace() for character in source_text + suggestion):
+        return False
+    source_cut = _syllable_onset_length(source_text)
+    suggestion_cut = _syllable_onset_length(suggestion)
+    if not source_cut or not suggestion_cut:
+        return False
+    rime = source_text[source_cut:]
+    return (
+        bool(rime)
+        and rime == suggestion[suggestion_cut:]
+        and source_text[:source_cut].casefold() != suggestion[:suggestion_cut].casefold()
+    )
 
 
 def localize_llm_edit(
@@ -99,9 +131,56 @@ def localize_llm_edits(
     return _decompose_edits(source_text, suggestion, reason_code)
 
 
+def _aligned_token_edits(
+    source_text: str, suggestion: str, reason_code: str
+) -> tuple[tuple[int, str, str], ...]:
+    """Pair the two strings token by token when the model kept the word count.
+
+    Character-level diffing is unreliable for Vietnamese, where two syllables
+    often share letters and a single onset change can be split across
+    non-adjacent regions. When the rewrite preserves the token count, matching
+    tokens positionally recovers one clean edit per changed word.
+    """
+    source_parts = _TOKEN_SPLIT.split(source_text)
+    suggestion_parts = _TOKEN_SPLIT.split(suggestion)
+    if len(source_parts) < 3 or len(source_parts) != len(suggestion_parts):
+        return ()
+    edits: list[tuple[int, str, str]] = []
+    offset = 0
+    for source_part, suggestion_part in zip(source_parts, suggestion_parts, strict=True):
+        if source_part != suggestion_part:
+            prefix = _common_prefix_length(source_part, suggestion_part)
+            suffix = _common_suffix_length(source_part[prefix:], suggestion_part[prefix:])
+            if reason_code in _WORD_LEVEL_REASON_CODES or reason_code == "compound_word":
+                src_start, src_end = _word_boundaries(
+                    source_part, prefix, len(source_part) - suffix if suffix else len(source_part)
+                )
+                sug_start, sug_end = _word_boundaries(
+                    suggestion_part, prefix, len(suggestion_part) - suffix if suffix else len(suggestion_part)
+                )
+                src_core = source_part[src_start:src_end]
+                sug_core = suggestion_part[sug_start:sug_end]
+                part_offset = offset + src_start
+            else:
+                src_core = source_part[prefix:len(source_part) - suffix if suffix else len(source_part)]
+                sug_core = suggestion_part[prefix:len(suggestion_part) - suffix if suffix else len(suggestion_part)]
+                part_offset = offset + prefix
+            validated = _validate_localized_edit(
+                part_offset, src_core, sug_core, reason_code
+            )
+            if validated is not None:
+                edits.append(validated)
+        offset += len(source_part)
+    return tuple(edits)
+
+
+
 def _decompose_edits(
     source_text: str, suggestion: str, reason_code: str
 ) -> tuple[tuple[int, str, str], ...]:
+    aligned = _aligned_token_edits(source_text, suggestion, reason_code)
+    if aligned:
+        return aligned
     regions: list[tuple[int, int, int, int]] = []
     for tag, start, end, other_start, other_end in SequenceMatcher(
         None, source_text, suggestion, autojunk=False
@@ -184,6 +263,7 @@ def _validate_localized_edit(
             _without_diacritics(distance_source).casefold()
             != _without_diacritics(distance_suggestion).casefold()
             and _edit_distance(distance_source, distance_suggestion) > 1
+            and not _onset_only_substitution(distance_source, distance_suggestion)
         ):
             # A spelling-like proposal such as "trể" -> "tệ" changes both
             # letters and diacritics. Without lexical evidence this is a
