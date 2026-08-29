@@ -1300,6 +1300,7 @@ async function saveAndActivateCloud(): Promise<void> {
     await api.aiConfigSetActive(provider);
     const updatedState = await api.aiConfigGet();
     state.aiConfig = updatedState;
+    state.model = await api.modelStatus(true);
     state.useModel = true;
     state.fullReview = true;
     saveModelPreference(true);
@@ -1332,6 +1333,7 @@ async function activateLocalProvider(): Promise<void> {
     await api.aiConfigSetActive("local");
     const updatedState = await api.aiConfigGet();
     state.aiConfig = updatedState;
+    state.model = await api.modelStatus(true);
     state.useModel = modelCanFilter(state.model);
     state.fullReview = state.useModel && state.model.capabilities?.full_review === true;
     state.settingsMessage = {

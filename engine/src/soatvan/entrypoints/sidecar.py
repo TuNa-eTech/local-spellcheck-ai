@@ -321,15 +321,6 @@ class Sidecar:
         provider = params.get("provider")
         if not isinstance(provider, str) or provider not in {"openai", "gemini"}:
             raise ValueError("INVALID_PARAMS")
-        api_key = params.get("api_key", "")
-        if not isinstance(api_key, str):
-            raise ValueError("INVALID_PARAMS")
-        base_url = params.get("base_url", "")
-        if not isinstance(base_url, str):
-            raise ValueError("INVALID_PARAMS")
-        model_name = params.get("model_name", "")
-        if not isinstance(model_name, str):
-            raise ValueError("INVALID_PARAMS")
         temperature = params.get("temperature", 0.0)
         if not isinstance(temperature, (int, float)):
             raise ValueError("INVALID_PARAMS")
@@ -338,6 +329,49 @@ class Sidecar:
             raise ValueError("INVALID_PARAMS")
         is_active = params.get("is_active", False)
         if not isinstance(is_active, bool):
+            raise ValueError("INVALID_PARAMS")
+
+        stored = self.ai_config.get_config(provider)
+        api_key_param = params.get("api_key")
+        if api_key_param is None:
+            api_key = stored.api_key if stored else ""
+        elif isinstance(api_key_param, str):
+            api_key = api_key_param
+        else:
+            raise ValueError("INVALID_PARAMS")
+
+        base_url_param = params.get("base_url")
+        if base_url_param is None:
+            base_url = (
+                stored.base_url
+                if stored and stored.base_url
+                else (
+                    "https://generativelanguage.googleapis.com/v1beta"
+                    if provider == "gemini"
+                    else "https://api.openai.com/v1"
+                )
+            )
+        elif isinstance(base_url_param, str):
+            base_url = base_url_param or (
+                "https://generativelanguage.googleapis.com/v1beta"
+                if provider == "gemini"
+                else "https://api.openai.com/v1"
+            )
+        else:
+            raise ValueError("INVALID_PARAMS")
+
+        model_name_param = params.get("model_name")
+        if model_name_param is None:
+            model_name = (
+                stored.model_name
+                if stored and stored.model_name
+                else ("gemini-2.5-flash" if provider == "gemini" else "gpt-4o-mini")
+            )
+        elif isinstance(model_name_param, str):
+            model_name = model_name_param or (
+                "gemini-2.5-flash" if provider == "gemini" else "gpt-4o-mini"
+            )
+        else:
             raise ValueError("INVALID_PARAMS")
 
         entry = self.ai_config.upsert_config(
