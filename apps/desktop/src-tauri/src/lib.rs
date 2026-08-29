@@ -635,6 +635,10 @@ async fn model_status(activate: bool, state: State<'_, AppState>) -> AppResult<M
                 .rollback_activation()?;
             return engine_model_status(&state.engine, activate);
         }
+        let engine_status = engine_model_status(&state.engine, activate)?;
+        if engine_status.state != "not_installed" {
+            return Ok(engine_status);
+        }
         return Ok(host);
     }
     let status = engine_model_status(&state.engine, activate || pending)?;
