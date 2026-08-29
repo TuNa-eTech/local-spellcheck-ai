@@ -407,19 +407,41 @@ class CloudAiReviewer:
                 method="POST",
             )
 
-        with urllib.request.urlopen(
-            req, timeout=self._config.timeout_seconds
-        ) as resp:
-            raw_body = resp.read().decode("utf-8", errors="replace")
-            if self._config.provider == "gemini":
-                data = json.loads(raw_body)
-                text = data["candidates"][0]["content"]["parts"][0]["text"]
+        try:
+            with urllib.request.urlopen(
+                req, timeout=self._config.timeout_seconds
+            ) as resp:
+                raw_body = resp.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as err:
+            if (
+                err.code == 400
+                and self._config.provider != "gemini"
+                and "response_format" in payload
+            ):
+                payload_no_rf = dict(payload)
+                del payload_no_rf["response_format"]
+                req_retry = urllib.request.Request(
+                    url,
+                    data=json.dumps(payload_no_rf).encode("utf-8"),
+                    headers=headers,
+                    method="POST",
+                )
+                with urllib.request.urlopen(
+                    req_retry, timeout=self._config.timeout_seconds
+                ) as resp:
+                    raw_body = resp.read().decode("utf-8", errors="replace")
             else:
-                text = _parse_openai_text_response(raw_body)
-            parsed = json.loads(_extract_json_text(text))
-            if isinstance(parsed, dict):
-                return parsed
-            return {}
+                raise
+
+        if self._config.provider == "gemini":
+            data = json.loads(raw_body)
+            text = data["candidates"][0]["content"]["parts"][0]["text"]
+        else:
+            text = _parse_openai_text_response(raw_body)
+        parsed = json.loads(_extract_json_text(text))
+        if isinstance(parsed, dict):
+            return parsed
+        return {}
 
     def _parse_response(
         self,
