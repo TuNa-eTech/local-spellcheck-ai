@@ -375,12 +375,11 @@ def test_review_chunk_failure_handling() -> None:
     reviewer = CloudAiReviewer(config)
     blocks = (Block(id="b1", text="Đoạn văn bị lỗi."),)
 
+    # When ALL chunks fail with a non-retryable error, the reviewer raises
+    # MODEL_FULL_REVIEW_FAILED rather than silently returning zero findings.
     with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("Connection refused")):
-        result = reviewer.review(blocks, (), "", DummyCancelToken())
-        assert result.status == "partial"
-        assert result.total_chunks == 1
-        assert result.reviewed_chunks == 0
-        assert result.failed_chunk_ids == ("chunk_0",)
+        with pytest.raises(ValueError, match="MODEL_FULL_REVIEW_FAILED"):
+            reviewer.review(blocks, (), "", DummyCancelToken())
 
 
 def test_gemini_markdown_fences_parsing() -> None:

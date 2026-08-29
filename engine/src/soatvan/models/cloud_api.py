@@ -2,11 +2,19 @@
 
 Builds review chunks, delegates HTTP calls to ``llm_transport``, delegates
 response parsing to ``response_parser``, and aggregates the results.
+
+Includes retry-with-split logic: when a chunk fails (timeout, HTTP 5xx,
+or invalid JSON), the orchestrator splits it in half and retries each sub-chunk
+independently, up to ``_MAX_SPLIT_DEPTH`` levels deep.
 """
 
 from __future__ import annotations
 
+import json
+import socket
 import sys
+import time
+import urllib.error
 from collections.abc import Callable
 
 from soatvan.checking.domain import Block
@@ -32,6 +40,41 @@ __all__ = [
     "CloudAiReviewer",
     "test_ai_connection",
 ]
+
+_MAX_SPLIT_DEPTH = 2
+_RETRY_BACKOFF_SECONDS = 2.0
+
+
+# ---------------------------------------------------------------------------
+# Error classification
+# ---------------------------------------------------------------------------
+
+def _classify_error(exc: Exception) -> str:
+    """Return a failure category: ``timeout``, ``invalid_output``, or
+    ``inference_error``."""
+    if isinstance(exc, (socket.timeout, TimeoutError)):
+        return "timeout"
+    if isinstance(exc, urllib.error.URLError):
+        cause = exc.reason
+        if isinstance(cause, (socket.timeout, TimeoutError)):
+            return "timeout"
+        return "inference_error"
+    if isinstance(exc, urllib.error.HTTPError):
+        if exc.code >= 500:
+            return "inference_error"
+        # 4xx = client error (bad key, bad model) — not retryable
+        return "inference_error"
+    if isinstance(exc, (json.JSONDecodeError, KeyError, ValueError)):
+        return "invalid_output"
+    return "inference_error"
+
+
+def _is_retryable(failure: str, exc: Exception) -> bool:
+    """Whether the failure category warrants a retry."""
+    if failure in ("timeout", "invalid_output"):
+        return True
+    # HTTP 5xx → retryable; 4xx → not
+    return isinstance(exc, urllib.error.HTTPError) and exc.code >= 500
 
 
 class CloudAiError(RuntimeError):
@@ -96,9 +139,14 @@ class CloudAiReviewer:
         chunks = self._build_chunks(blocks, candidates)
         total_chunks = len(chunks)
         reviewed_chunks = 0
+        successful_attempts = 0
         all_verdicts: list[ClassifierVerdict] = []
         all_discoveries: list[DiscoveryProposal] = []
         failed_chunk_ids: list[str] = []
+        failed_block_ids: set[str] = set()
+        failure_counts = {"timeout": 0, "invalid_output": 0, "inference_error": 0}
+        retried_chunks = 0
+        recovered_chunks = 0
 
         system_prompt = (
             LLM_ONLY_REVIEW_SYSTEM_PROMPT
@@ -115,41 +163,37 @@ class CloudAiReviewer:
                 f"with {len(chunk_blocks)} blocks, {len(chunk_candidates)} candidates...\n"
             )
             sys.stderr.flush()
-            try:
-                # 1. Call LLM (transport layer)
-                user_content = self._format_user_content(
-                    chunk_blocks, chunk_candidates
-                )
-                raw_json = call_llm(self._config, system_prompt, user_content)
 
-                sys.stderr.write(
-                    f"[SoatVan-CloudAI] Chunk {chunk_id} raw response: {raw_json}\n"
+            verdicts, discoveries, failures, chunk_retries, chunk_successes = (
+                self._review_chunk_with_retries(
+                    chunk_id,
+                    chunk_blocks,
+                    chunk_candidates,
+                    system_prompt,
+                    cancellation,
                 )
-                sys.stderr.flush()
+            )
 
-                # 2. Parse response (parser layer)
-                verdicts, discoveries = parse_llm_response(
-                    raw_json, chunk_blocks, chunk_candidates
-                )
+            all_verdicts.extend(verdicts)
+            all_discoveries.extend(discoveries)
+            retried_chunks += chunk_retries
+            successful_attempts += chunk_successes
 
-                sys.stderr.write(
-                    f"[SoatVan-CloudAI] Chunk {chunk_id} parsed: "
-                    f"{len(discoveries)} discoveries, {len(verdicts)} verdicts\n"
-                )
-                sys.stderr.flush()
-
-                all_verdicts.extend(verdicts)
-                all_discoveries.extend(discoveries)
+            if not failures:
                 reviewed_chunks += 1
-            except Exception as exc:
-                sys.stderr.write(
-                    f"[SoatVan-CloudAI] ERROR in chunk {chunk_id}: {exc}\n"
-                )
-                sys.stderr.flush()
+                if chunk_retries:
+                    recovered_chunks += 1
+            else:
                 failed_chunk_ids.append(chunk_id)
+                for failure_type, block_ids in failures:
+                    failed_block_ids.update(block_ids)
+                    failure_counts[failure_type] += 1
 
             if progress is not None:
                 progress(idx + 1, total_chunks)
+
+        if chunks and successful_attempts == 0:
+            raise ValueError("MODEL_FULL_REVIEW_FAILED")
 
         return FullReviewResult(
             verdicts=tuple(all_verdicts),
@@ -157,7 +201,159 @@ class CloudAiReviewer:
             total_chunks=total_chunks,
             reviewed_chunks=reviewed_chunks,
             failed_chunk_ids=tuple(failed_chunk_ids),
+            failed_block_ids=tuple(sorted(failed_block_ids)),
+            timeout_chunks=failure_counts["timeout"],
+            invalid_output_chunks=failure_counts["invalid_output"],
+            inference_error_chunks=failure_counts["inference_error"],
+            retried_chunks=retried_chunks,
+            recovered_chunks=recovered_chunks,
         )
+
+    # ------------------------------------------------------------------
+    # Retry logic
+    # ------------------------------------------------------------------
+
+    def _review_chunk_with_retries(
+        self,
+        chunk_id: str,
+        chunk_blocks: list[Block],
+        chunk_candidates: list[ReviewCandidate],
+        system_prompt: str,
+        cancellation: CancellationToken,
+        depth: int = 0,
+    ) -> tuple[
+        list[ClassifierVerdict],
+        list[DiscoveryProposal],
+        list[tuple[str, frozenset[str]]],
+        int,  # retry count
+        int,  # successful attempt count
+    ]:
+        """Try to review a chunk; on retryable failure, split in half and
+        recurse up to ``_MAX_SPLIT_DEPTH`` levels."""
+        # --- Attempt the chunk ---
+        verdicts, discoveries, failure, exc = self._try_single_chunk(
+            chunk_id, chunk_blocks, chunk_candidates, system_prompt, cancellation
+        )
+
+        if failure is None:
+            return verdicts, discoveries, [], 0, 1
+
+        block_ids = frozenset(b.id for b in chunk_blocks)
+
+        # Not retryable or max depth reached → give up
+        if exc is None or not _is_retryable(failure, exc) or depth >= _MAX_SPLIT_DEPTH:
+            return [], [], [(failure, block_ids)], 0, 0
+
+        # Cannot split a single-block chunk further
+        if len(chunk_blocks) <= 1:
+            return [], [], [(failure, block_ids)], 0, 0
+
+        # --- Split chunk in half and retry each sub-chunk ---
+        mid = len(chunk_blocks) // 2
+        left_blocks = chunk_blocks[:mid]
+        right_blocks = chunk_blocks[mid:]
+
+        candidates_by_block: dict[str, list[ReviewCandidate]] = {}
+        for c in chunk_candidates:
+            candidates_by_block.setdefault(c.block_id, []).append(c)
+        left_candidates = [
+            c for b in left_blocks for c in candidates_by_block.get(b.id, [])
+        ]
+        right_candidates = [
+            c for b in right_blocks for c in candidates_by_block.get(b.id, [])
+        ]
+
+        sys.stderr.write(
+            f"[SoatVan-CloudAI] Retrying {chunk_id}: splitting into "
+            f"{len(left_blocks)}+{len(right_blocks)} blocks (depth={depth+1})\n"
+        )
+        sys.stderr.flush()
+
+        all_verdicts: list[ClassifierVerdict] = []
+        all_discoveries: list[DiscoveryProposal] = []
+        all_failures: list[tuple[str, frozenset[str]]] = []
+        retry_count = 1
+        successful_attempts = 0
+
+        for sub_id, sub_blocks, sub_candidates in (
+            (f"{chunk_id}_L", left_blocks, left_candidates),
+            (f"{chunk_id}_R", right_blocks, right_candidates),
+        ):
+            cancellation.raise_if_cancelled()
+            v, d, f_list, nested_retries, sub_successes = (
+                self._review_chunk_with_retries(
+                    sub_id,
+                    sub_blocks,
+                    sub_candidates,
+                    system_prompt,
+                    cancellation,
+                    depth + 1,
+                )
+            )
+            all_verdicts.extend(v)
+            all_discoveries.extend(d)
+            all_failures.extend(f_list)
+            retry_count += nested_retries
+            successful_attempts += sub_successes
+
+        return all_verdicts, all_discoveries, all_failures, retry_count, successful_attempts
+
+    def _try_single_chunk(
+        self,
+        chunk_id: str,
+        chunk_blocks: list[Block],
+        chunk_candidates: list[ReviewCandidate],
+        system_prompt: str,
+        cancellation: CancellationToken,
+    ) -> tuple[
+        list[ClassifierVerdict],
+        list[DiscoveryProposal],
+        str | None,       # failure type or None on success
+        Exception | None,  # original exception or None
+    ]:
+        """Attempt a single LLM call for one chunk. Returns results + error info."""
+        try:
+            cancellation.raise_if_cancelled()
+            user_content = self._format_user_content(
+                chunk_blocks, chunk_candidates
+            )
+            raw_json = call_llm(self._config, system_prompt, user_content)
+
+            sys.stderr.write(
+                f"[SoatVan-CloudAI] Chunk {chunk_id} raw response: {raw_json}\n"
+            )
+            sys.stderr.flush()
+
+            verdicts, discoveries = parse_llm_response(
+                raw_json, chunk_blocks, chunk_candidates
+            )
+
+            sys.stderr.write(
+                f"[SoatVan-CloudAI] Chunk {chunk_id} parsed: "
+                f"{len(discoveries)} discoveries, {len(verdicts)} verdicts\n"
+            )
+            sys.stderr.flush()
+
+            return verdicts, discoveries, None, None
+
+        except Exception as exc:
+            # Re-raise cancellations — they must propagate immediately
+            try:
+                cancellation.raise_if_cancelled()
+            except Exception as cancel_exc:
+                raise cancel_exc from exc
+
+            failure = _classify_error(exc)
+            sys.stderr.write(
+                f"[SoatVan-CloudAI] ERROR in chunk {chunk_id} "
+                f"[{failure}]: {exc}\n"
+            )
+            sys.stderr.flush()
+
+            # Brief backoff before potential retry
+            time.sleep(_RETRY_BACKOFF_SECONDS)
+
+            return [], [], failure, exc
 
     # ------------------------------------------------------------------
     # Helpers
