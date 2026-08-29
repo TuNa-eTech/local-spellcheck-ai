@@ -1876,7 +1876,7 @@ button:not(:disabled):not([aria-disabled="true"]):active,
   }
 
   .prompt-manager {
-    grid-template-columns: minmax(14rem, var(--layout-prompt-index)) minmax(0, 1fr);
+    grid-template-columns: minmax(12rem, 0.35fr) minmax(0, 1fr);
     align-items: start;
     gap: var(--space-md);
   }
