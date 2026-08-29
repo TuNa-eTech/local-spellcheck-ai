@@ -477,13 +477,11 @@ class CloudAiReviewer:
         for item in data.get("discoveries", []):
             if not isinstance(item, dict):
                 continue
-            seg_id = str(item.get("segment_id", ""))
-            if seg_id not in block_map:
-                sys.stderr.write(f"[SoatVan-CloudAI] Ignored item: segment_id {seg_id!r} not in current chunk blocks\n")
-                continue
-            block = block_map[seg_id]
             source_text = str(item.get("source_text", ""))
             suggestion = str(item.get("suggestion", ""))
+            if not source_text or not suggestion:
+                continue
+
             category = str(item.get("category", "spelling"))
             reason_code = str(item.get("reason_code", category))
             if category not in DISCOVERY_CATEGORIES:
@@ -499,6 +497,20 @@ class CloudAiReviewer:
             )
             if not localized_edits:
                 sys.stderr.write(f"[SoatVan-CloudAI] Ignored item: localization rejected edit {source_text!r} -> {suggestion!r} ({reason_code})\n")
+                continue
+
+            seg_id = str(item.get("segment_id", ""))
+            block = block_map.get(seg_id)
+            if block is None:
+                # If segment_id was omitted by LLM, locate the matching block in the chunk
+                for candidate_block in blocks:
+                    if source_text in candidate_block.text or (localized_edits and localized_edits[0][1] in candidate_block.text):
+                        block = candidate_block
+                        seg_id = candidate_block.id
+                        break
+
+            if block is None:
+                sys.stderr.write(f"[SoatVan-CloudAI] Ignored item: source_text {source_text!r} not found in any chunk block\n")
                 continue
 
             occ_idx = int(item.get("occurrence_index", 0))

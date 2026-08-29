@@ -49,7 +49,7 @@ LLM_ONLY_REVIEW_SYSTEM_PROMPT = (
     "Mỗi lỗi là một discovery riêng; source_text phải sao chép nguyên văn đúng phần sai ngắn nhất và "
     "suggestion là cách sửa ngắn gọn. occurrence_index là số lần xuất hiện tính từ 0 trong "
     "đúng segment target. Không báo lỗi ở context, không sửa toàn đoạn, không tự bịa "
-    "segment_id và không dùng offset. Chỉ trả JSON theo schema với trường discoveries. "
+    "segment_id và không dùng offset. Chỉ trả JSON theo schema: {\"discoveries\": [{\"segment_id\": \"...\", \"source_text\": \"...\", \"suggestion\": \"...\", \"category\": \"spelling\", \"occurrence_index\": 0}]}. "
     'Nếu không có lỗi, trả {"discoveries":[]}. Dùng category=technical cho lỗi khoảng '
     "trắng, dấu câu hoặc lặp từ."
 )
