@@ -283,7 +283,7 @@ function settingsSectionHeading(section: SettingsSection): string {
 function customRuleSelectionHtml(): string {
   const count = state.customRules.length;
   const cloud = isCloudActive();
-  const applies = count > 0 && state.useModel && (cloud || modelFilterAvailable());
+  const applies = count > 0 && (cloud || (state.useModel && modelFilterAvailable()));
   const selected = state.selectedRuleIds.filter(id => state.customRules.some(rule => rule.id === id)).length;
   const summary = count === 0
     ? "Không có yêu cầu bổ sung; AI vẫn dùng prompt mặc định."
@@ -1400,37 +1400,36 @@ try {
   const initialModelPreference = loadModelPreference();
   const modelSequence = modelOperationSequence;
   const statusRequest = ++modelStatusRequestSequence;
-  void api.modelStatus(initialModelPreference).then(model => {
-    if (modelSequence !== modelOperationSequence || statusRequest !== modelStatusRequestSequence) return;
-    state.model = model;
-    state.useModel = initialModelPreference && modelCanFilter(model);
-    state.fullReview = state.useModel && model.capabilities?.full_review === true;
-    state.includeRuleFindings = false;
-    clearUnavailableFullReview();
-    render();
-  }).catch(() => {});
-} catch { /* noop */ }
-
-try {
-  void api.aiConfigGet().then(aiConfig => {
-    state.aiConfig = aiConfig;
-    syncCloudDraftsFromConfig();
-    if (isCloudActive()) {
-      state.selectedProviderTab = aiConfig.active_provider as ProviderTab;
-      state.useModel = true;
-      state.fullReview = true;
-    }
-    render();
-  }).catch(() => {});
-} catch { /* noop */ }
-
-try {
   const customRuleSequence = customRuleOperationSequence;
   const request = ++customRuleRequestSequence;
-  void api.customRuleList().then(rules => {
-    if (customRuleSequence !== customRuleOperationSequence || request !== customRuleRequestSequence) return;
-    state.customRules = rules;
-    syncDefaultRuleSelection();
+
+  void Promise.allSettled([
+    api.aiConfigGet(),
+    api.modelStatus(initialModelPreference),
+    api.customRuleList(),
+  ]).then(([aiConfigRes, modelRes, rulesRes]) => {
+    if (aiConfigRes.status === "fulfilled") {
+      state.aiConfig = aiConfigRes.value;
+      syncCloudDraftsFromConfig();
+      if (isCloudActive()) {
+        state.selectedProviderTab = state.aiConfig.active_provider as ProviderTab;
+        state.useModel = true;
+        state.fullReview = true;
+      }
+    }
+    if (modelRes.status === "fulfilled" && modelSequence === modelOperationSequence && statusRequest === modelStatusRequestSequence) {
+      state.model = modelRes.value;
+      if (!isCloudActive()) {
+        state.useModel = initialModelPreference && modelCanFilter(modelRes.value);
+        state.fullReview = state.useModel && modelRes.value.capabilities?.full_review === true;
+      }
+    }
+    if (rulesRes.status === "fulfilled" && customRuleSequence === customRuleOperationSequence && request === customRuleRequestSequence) {
+      state.customRules = rulesRes.value;
+      syncDefaultRuleSelection();
+    }
+    state.includeRuleFindings = false;
+    clearUnavailableFullReview();
     render();
   }).catch(() => {});
 } catch { /* noop */ }
