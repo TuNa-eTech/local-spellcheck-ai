@@ -479,6 +479,7 @@ class CloudAiReviewer:
                 continue
             seg_id = str(item.get("segment_id", ""))
             if seg_id not in block_map:
+                sys.stderr.write(f"[SoatVan-CloudAI] Ignored item: segment_id {seg_id!r} not in current chunk blocks\n")
                 continue
             block = block_map[seg_id]
             source_text = str(item.get("source_text", ""))
@@ -497,6 +498,7 @@ class CloudAiReviewer:
                 source_text, suggestion, reason_code
             )
             if not localized_edits:
+                sys.stderr.write(f"[SoatVan-CloudAI] Ignored item: localization rejected edit {source_text!r} -> {suggestion!r} ({reason_code})\n")
                 continue
 
             occ_idx = int(item.get("occurrence_index", 0))
