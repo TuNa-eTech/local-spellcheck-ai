@@ -44,6 +44,42 @@ def _normalize_base_url(provider: str, base_url: str) -> str:
     return url
 
 
+def _parse_openai_text_response(raw_body: str) -> str:
+    raw_body = raw_body.strip()
+    if not raw_body:
+        return ""
+    if raw_body.startswith("data:"):
+        chunks: list[str] = []
+        for line in raw_body.splitlines():
+            line = line.strip()
+            if not line or not line.startswith("data:"):
+                continue
+            data_part = line[len("data:") :].strip()
+            if data_part == "[DONE]":
+                continue
+            try:
+                chunk_obj = json.loads(data_part)
+                choices = chunk_obj.get("choices", [])
+                if choices:
+                    delta = choices[0].get("delta", {})
+                    content = delta.get("content") or choices[0].get("message", {}).get(
+                        "content", ""
+                    )
+                    if content:
+                        chunks.append(str(content))
+            except Exception:
+                continue
+        return "".join(chunks)
+
+    obj = json.loads(raw_body)
+    if isinstance(obj, dict):
+        choices = obj.get("choices", [])
+        if choices and isinstance(choices, list) and len(choices) > 0:
+            msg = choices[0].get("message", {})
+            return str(msg.get("content", ""))
+    return ""
+
+
 def test_ai_connection(config: AiConfigEntry) -> dict[str, Any]:
     if not config.api_key:
         return {
@@ -55,6 +91,7 @@ def test_ai_connection(config: AiConfigEntry) -> dict[str, Any]:
     base_url = _normalize_base_url(config.provider, config.base_url)
     default_headers = {
         "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
         "User-Agent": "SoatVan/0.1.5 (Desktop; vi-VN)",
     }
 
@@ -81,6 +118,7 @@ def test_ai_connection(config: AiConfigEntry) -> dict[str, Any]:
                 "messages": [{"role": "user", "content": "Ping"}],
                 "temperature": 0.0,
                 "max_tokens": 10,
+                "stream": False,
             }
             headers = dict(default_headers)
             headers["Authorization"] = f"Bearer {config.api_key}"
@@ -99,15 +137,25 @@ def test_ai_connection(config: AiConfigEntry) -> dict[str, Any]:
                     "error": "EMPTY_RESPONSE",
                     "message": "Máy chủ phản hồi rỗng (vui lòng kiểm tra lại Base URL).",
                 }
-            try:
-                _ = json.loads(raw_body)
-            except json.JSONDecodeError:
-                snippet = raw_body[:120].replace("\n", " ")
-                return {
-                    "ok": False,
-                    "error": "INVALID_JSON",
-                    "message": f"Máy chủ không trả về JSON hợp lệ (có thể do sai Base URL). Nội dung: {snippet}",
-                }
+            if config.provider == "gemini":
+                try:
+                    _ = json.loads(raw_body)
+                except json.JSONDecodeError:
+                    snippet = raw_body[:120].replace("\n", " ")
+                    return {
+                        "ok": False,
+                        "error": "INVALID_JSON",
+                        "message": f"Máy chủ không trả về JSON hợp lệ: {snippet}",
+                    }
+            else:
+                text_content = _parse_openai_text_response(raw_body)
+                if not text_content and not raw_body.strip().startswith("{"):
+                    snippet = raw_body[:120].replace("\n", " ")
+                    return {
+                        "ok": False,
+                        "error": "INVALID_JSON",
+                        "message": f"Máy chủ không trả về JSON hợp lệ: {snippet}",
+                    }
             return {
                 "ok": True,
                 "provider": config.provider,
@@ -348,6 +396,7 @@ class CloudAiReviewer:
                 ],
                 "temperature": self._config.temperature,
                 "response_format": {"type": "json_object"},
+                "stream": False,
             }
             headers = dict(default_headers)
             headers["Authorization"] = f"Bearer {self._config.api_key}"
@@ -361,11 +410,12 @@ class CloudAiReviewer:
         with urllib.request.urlopen(
             req, timeout=self._config.timeout_seconds
         ) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+            raw_body = resp.read().decode("utf-8", errors="replace")
             if self._config.provider == "gemini":
+                data = json.loads(raw_body)
                 text = data["candidates"][0]["content"]["parts"][0]["text"]
             else:
-                text = data["choices"][0]["message"]["content"]
+                text = _parse_openai_text_response(raw_body)
             parsed = json.loads(_extract_json_text(text))
             if isinstance(parsed, dict):
                 return parsed
