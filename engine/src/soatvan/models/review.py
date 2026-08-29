@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from soatvan.checking.domain import Block
-from soatvan.checking.localization import localize_llm_edit
+from soatvan.checking.localization import localize_llm_edits
 from soatvan.models.review_budget import (
     MIN_REVIEW_DOCUMENT_TOKENS,
     ReviewBudget,
@@ -437,28 +437,27 @@ def parse_review_content(
         local_start = _nth_occurrence(segment.text, source_text, occurrence_index)
         if local_start is None:
             continue
-        localized = localize_llm_edit(source_text, suggestion, reason_code)
-        if localized is None:
-            continue
-        relative_start, localized_source, localized_suggestion = localized
-        start = segment.source_start + local_start + relative_start
-        end = start + len(localized_source)
-        key = (segment.block_id, start, end, localized_suggestion)
-        if key in seen_discoveries:
-            continue
-        seen_discoveries.add(key)
-        discoveries.append(
-            DiscoveryProposal(
-                segment.block_id,
-                start,
-                end,
-                localized_source,
-                localized_suggestion,
-                category,
-                reason_code,
-                float(confidence),
+        for relative_start, localized_source, localized_suggestion in localize_llm_edits(
+            source_text, suggestion, reason_code
+        ):
+            start = segment.source_start + local_start + relative_start
+            end = start + len(localized_source)
+            key = (segment.block_id, start, end, localized_suggestion)
+            if key in seen_discoveries:
+                continue
+            seen_discoveries.add(key)
+            discoveries.append(
+                DiscoveryProposal(
+                    segment.block_id,
+                    start,
+                    end,
+                    localized_source,
+                    localized_suggestion,
+                    category,
+                    reason_code,
+                    float(confidence),
+                )
             )
-        )
     return tuple(verdicts), tuple(discoveries)
 
 

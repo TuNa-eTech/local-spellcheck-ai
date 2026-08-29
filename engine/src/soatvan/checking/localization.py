@@ -78,6 +78,68 @@ def localize_llm_edit(
     )
 
 
+def localize_llm_edits(
+    source_text: str, suggestion: str, reason_code: str
+) -> tuple[tuple[int, str, str], ...]:
+    """Return every safe local edit contained in one model replacement.
+
+    Small local models routinely ignore the "one discovery per error" rule and
+    answer with a rewritten clause that folds several corrections together.
+    ``localize_llm_edit`` refuses such a replacement wholesale, which throws
+    away corrections that are individually anchorable. This splits the rewrite
+    into its separate changed regions and validates each region on its own with
+    exactly the same rules, so nothing weaker than a single-edit proposal is
+    ever accepted.
+    """
+    single = localize_llm_edit(source_text, suggestion, reason_code)
+    if single is not None:
+        return (single,)
+    if not source_text or _normalized(source_text) == _normalized(suggestion):
+        return ()
+    return _decompose_edits(source_text, suggestion, reason_code)
+
+
+def _decompose_edits(
+    source_text: str, suggestion: str, reason_code: str
+) -> tuple[tuple[int, str, str], ...]:
+    regions: list[tuple[int, int, int, int]] = []
+    for tag, start, end, other_start, other_end in SequenceMatcher(
+        None, source_text, suggestion, autojunk=False
+    ).get_opcodes():
+        if tag == "equal":
+            continue
+        # A changed region rarely lines up with word edges, so grow it until the
+        # comment shows a whole word on both sides of the arrow.
+        source_span = _word_boundaries(source_text, start, end)
+        suggestion_span = _word_boundaries(suggestion, other_start, other_end)
+        regions.append((*source_span, *suggestion_span))
+
+    merged: list[tuple[int, int, int, int]] = []
+    for region in regions:
+        if merged and region[0] <= merged[-1][1]:
+            previous = merged[-1]
+            merged[-1] = (
+                previous[0],
+                max(previous[1], region[1]),
+                previous[2],
+                max(previous[3], region[3]),
+            )
+            continue
+        merged.append(region)
+
+    edits: list[tuple[int, str, str]] = []
+    for source_start, source_end, suggestion_start, suggestion_end in merged:
+        validated = _validate_localized_edit(
+            source_start,
+            source_text[source_start:source_end],
+            suggestion[suggestion_start:suggestion_end],
+            reason_code,
+        )
+        if validated is not None:
+            edits.append(validated)
+    return tuple(edits)
+
+
 def canonicalize_llm_edit(
     source_text: str, suggestion: str, category: str, reason_code: str
 ) -> tuple[str, str]:

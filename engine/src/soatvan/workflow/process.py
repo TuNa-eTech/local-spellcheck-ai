@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import cast
 
 from soatvan.checking.domain import Block, Finding, Preset, RuleConfig
-from soatvan.checking.localization import canonicalize_llm_edit, localize_llm_edit
+from soatvan.checking.localization import canonicalize_llm_edit, localize_llm_edits
 from soatvan.checking.rules import RuleEngine
 
 from .ports import (
@@ -244,15 +244,19 @@ def _apply_full_review(
     accepted: list[Finding] = []
     for finding in findings:
         verdict = verdicts.get(finding.id)
+        # A deterministic rule finding is never removed by the model here. The
+        # self-reported confidence is not calibrated — small local models answer
+        # with the same value for every response — so a `drop` verdict is not
+        # evidence of a false positive, and silently losing a real finding is
+        # the worse failure. The dedicated AI-filter mode still does filter.
         if (
             finding.block_id in failed_blocks
             or verdict is None
             or verdict.confidence < reviewer.minimum_confidence
+            or verdict.verdict != "keep"
         ):
-            # A failed/missing/uncertain model decision is not sufficient to
-            # discard a deterministic finding.
             accepted.append(finding)
-        elif verdict.verdict == "keep":
+        else:
             accepted.append(
                 replace(
                     finding,
@@ -260,54 +264,51 @@ def _apply_full_review(
                     rule_version=f"{finding.rule_version}+{reviewer.version}",
                 )
             )
-        elif verdict.verdict != "drop":
-            accepted.append(finding)
 
     block_text = {block.id: block.text for block in blocks}
     for proposal in result.discoveries:
         text = block_text.get(proposal.block_id)
+        # The discovery-side confidence gate is deliberately absent: the value is
+        # a constant for local models, so filtering on it dropped real findings
+        # without buying precision. Anchor equality and the localisation quality
+        # gate below are the checks that actually carry weight.
         if (
             text is None
-            or proposal.confidence < reviewer.minimum_confidence
             or proposal.start < 0
             or proposal.end > len(text)
             or proposal.start >= proposal.end
             or text[proposal.start : proposal.end] != proposal.source_text
         ):
             continue
-        localized = localize_llm_edit(
+        for relative_start, source_text, suggestion in localize_llm_edits(
             proposal.source_text, proposal.suggestion, proposal.reason_code
-        )
-        if localized is None:
-            continue
-        relative_start, source_text, suggestion = localized
-        start = proposal.start + relative_start
-        end = start + len(source_text)
-        if (
-            text[start:end] != source_text
-            or _contains_ignored_text(source_text, ignored_words)
         ):
-            continue
-        category, reason_code = canonicalize_llm_edit(
-            source_text, suggestion, proposal.category, proposal.reason_code
-        )
-        detector = f"llm.discovery.{reason_code}.{LLM_DISCOVERY_VERSION}"
-        accepted.append(
-            Finding(
-                id=f"{proposal.block_id}:{start}:{end}:{detector}",
-                category=category,
-                origin="llm",
-                detector_id=detector,
-                block_id=proposal.block_id,
-                start=start,
-                end=end,
-                source_text=source_text,
-                suggestion=suggestion,
-                reason=_review_reason(reason_code),
-                rule_version=reviewer.version,
-                confidence=proposal.confidence,
+            start = proposal.start + relative_start
+            end = start + len(source_text)
+            if text[start:end] != source_text or _contains_ignored_text(
+                source_text, ignored_words
+            ):
+                continue
+            category, reason_code = canonicalize_llm_edit(
+                source_text, suggestion, proposal.category, proposal.reason_code
             )
-        )
+            detector = f"llm.discovery.{reason_code}.{LLM_DISCOVERY_VERSION}"
+            accepted.append(
+                Finding(
+                    id=f"{proposal.block_id}:{start}:{end}:{detector}",
+                    category=category,
+                    origin="llm",
+                    detector_id=detector,
+                    block_id=proposal.block_id,
+                    start=start,
+                    end=end,
+                    source_text=source_text,
+                    suggestion=suggestion,
+                    reason=_review_reason(reason_code),
+                    rule_version=reviewer.version,
+                    confidence=proposal.confidence,
+                )
+            )
 
     merged = _merge_review_findings(accepted, blocks)
     limited = _limit_review_findings(merged, blocks, 200)

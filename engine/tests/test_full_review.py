@@ -8,7 +8,11 @@ from typing import Any
 import pytest
 
 from soatvan.checking import Block, Finding, Preset, RuleEngine
-from soatvan.checking.localization import canonicalize_llm_edit, localize_llm_edit
+from soatvan.checking.localization import (
+    canonicalize_llm_edit,
+    localize_llm_edit,
+    localize_llm_edits,
+)
 from soatvan.models import LlamaCppClassifier
 from soatvan.models.review import (
     LLM_ONLY_REVIEW_SYSTEM_PROMPT,
@@ -692,6 +696,113 @@ def test_localizer_rejects_the_same_guessed_minimal_orthographic_rewrite() -> No
     assert localize_llm_edit("trể", "tệ", "compound_word") is None
 
 
+def test_localizer_splits_a_clause_rewrite_into_separate_anchored_edits() -> None:
+    # Verbatim output from gemma-4-e2b: it ignores the one-error-per-discovery
+    # instruction and rewrites the clause, truncated at the schema's 96-char cap.
+    source = (
+        "Kính gửi uỷ ban nhân dân thành phố hà nội. "
+        "Chúng tôi xin bổ xung báo cáo về việc sát nhập hai ph"
+    )
+    suggestion = (
+        "Kính gửi Ủy ban nhân dân thành phố Hà Nội. "
+        "Chúng tôi xin bổ sung báo cáo về việc sáp nhập hai ph"
+    )
+    assert localize_llm_edit(source, suggestion, "spelling") is None
+
+    edits = localize_llm_edits(source, suggestion, "spelling")
+    assert [(item[1], item[2]) for item in edits] == [
+        ("uỷ", "Ủy"),
+        ("hà", "Hà"),
+        ("nội", "Nội"),
+        ("xung", "sung"),
+        ("sát", "sáp"),
+    ]
+    # Every offset must still anchor exactly inside the supplied source span.
+    for offset, edited_source, _ in edits:
+        assert source[offset : offset + len(edited_source)] == edited_source
+
+
+def test_localizer_still_refuses_regions_that_fail_the_per_edit_rules() -> None:
+    # A truncated tail leaves an unmatched fragment; it must not become an edit.
+    edits = localize_llm_edits(
+        "Đơn vị sát nhập hai ph", "Đơn vị sáp nhập hai phòng ban.", "spelling"
+    )
+    assert [(item[1], item[2]) for item in edits] == [("sát", "sáp")]
+
+
+def test_review_parser_emits_one_discovery_per_edit_in_a_clause_rewrite() -> None:
+    text = "Kính gửi uỷ ban nhân dân thành phố hà nội."
+    target = ReviewSegment(f"p0@0:{len(text)}", "document:p0", 0, 0, text, "paragraph")
+    chunk = ReviewChunk("chunk-1", (target,), (), (), "")
+
+    parsed = parse_review_content(
+        json.dumps(
+            {
+                "discoveries": [
+                    {
+                        "segment_id": target.segment_id,
+                        "source_text": text,
+                        "occurrence_index": 0,
+                        "suggestion": "Kính gửi Ủy ban nhân dân thành phố Hà Nội.",
+                        "category": "technical",
+                        "reason_code": "spelling",
+                        "confidence": 1.0,
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        chunk,
+    )
+
+    assert parsed is not None
+    _, discoveries = parsed
+    assert [(item.source_text, item.suggestion) for item in discoveries] == [
+        ("uỷ", "Ủy"),
+        ("hà", "Hà"),
+        ("nội", "Nội"),
+    ]
+    for item in discoveries:
+        assert text[item.start : item.end] == item.source_text
+
+
+def test_low_confidence_discovery_is_kept_because_the_signal_is_uncalibrated(
+    tmp_path: Path,
+) -> None:
+    block = Block("document:p0", "Đơn vị đã bổ xung hồ sơ")
+    documents = Documents([block])
+    reviewer = Reviewer(
+        FullReviewResult(
+            (),
+            (
+                DiscoveryProposal(
+                    "document:p0", 10, 17, "bổ xung", "bổ sung", "spelling", "spelling", 0.1
+                ),
+            ),
+            1,
+            1,
+        )
+    )
+    processor = ProcessDocument(documents, Dictionary(), RuleEngine(), Reviewers(reviewer))
+
+    result = processor.execute(
+        ProcessRequest(
+            tmp_path / "source.docx",
+            tmp_path / "output.docx",
+            Preset.STANDARD,
+            use_model=True,
+            full_review=True,
+        ),
+        lambda *_: None,
+        Token(),
+    )
+
+    assert result.finding_count == 1
+    assert [item.source_text for item in documents.written] == ["xung"]
+    assert [item.suggestion for item in documents.written] == ["sung"]
+    assert [item.confidence for item in documents.written] == [0.1]
+
+
 def test_review_parser_rejects_unicode_normalization_noop() -> None:
     text = "xử"
     target = ReviewSegment("p0@0:2", "document:p0", 0, 0, text, "paragraph")
@@ -1159,7 +1270,7 @@ def test_workflow_full_review_optionally_includes_deterministic_findings(
     assert ("rules", 35, "job.applying_rules") in progress
 
 
-def test_full_review_confident_drop_removes_optional_rule_finding(
+def test_full_review_confident_drop_never_removes_optional_rule_finding(
     tmp_path: Path,
 ) -> None:
     block = Block("document:p0", "Đơn vị sát nhập hồ sơ")
@@ -1183,9 +1294,13 @@ def test_full_review_confident_drop_removes_optional_rule_finding(
         Token(),
     )
 
-    assert result.finding_count == 0
-    assert result.output_path is None
-    assert documents.written == []
+    # Self-reported confidence is not calibrated, so a confident `drop` is not
+    # evidence that a deterministic detector was wrong. The finding is kept.
+    assert result.finding_count == 1
+    assert result.output_path is not None
+    assert [item.source_text for item in documents.written] == ["sát nhập"]
+    assert [item.suggestion for item in documents.written] == ["sáp nhập"]
+    assert [item.origin for item in documents.written] == ["rule"]
 
 
 @pytest.mark.parametrize(
