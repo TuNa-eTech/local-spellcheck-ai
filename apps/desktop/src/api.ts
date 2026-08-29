@@ -103,9 +103,9 @@ export const api = {
     return invoke("ai_config_update", {
       request: {
         provider: params.provider,
-        apiKey: params.apiKey ?? params.api_key ?? "",
-        baseUrl: params.baseUrl ?? params.base_url ?? "",
-        modelName: params.modelName ?? params.model_name ?? "",
+        apiKey: params.apiKey ?? params.api_key,
+        baseUrl: params.baseUrl ?? params.base_url,
+        modelName: params.modelName ?? params.model_name,
         temperature: params.temperature ?? 0.0,
         timeoutSeconds: params.timeoutSeconds ?? params.timeout_seconds ?? 60,
         isActive: params.isActive ?? params.is_active ?? false,

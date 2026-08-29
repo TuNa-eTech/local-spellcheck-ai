@@ -336,7 +336,7 @@ class Sidecar:
         if api_key_param is None:
             api_key = stored.api_key if stored else ""
         elif isinstance(api_key_param, str):
-            api_key = api_key_param
+            api_key = api_key_param.strip()
         else:
             raise ValueError("INVALID_PARAMS")
 
@@ -352,10 +352,14 @@ class Sidecar:
                 )
             )
         elif isinstance(base_url_param, str):
-            base_url = base_url_param or (
-                "https://generativelanguage.googleapis.com/v1beta"
-                if provider == "gemini"
-                else "https://api.openai.com/v1"
+            base_url = base_url_param.strip() or (
+                stored.base_url
+                if stored and stored.base_url
+                else (
+                    "https://generativelanguage.googleapis.com/v1beta"
+                    if provider == "gemini"
+                    else "https://api.openai.com/v1"
+                )
             )
         else:
             raise ValueError("INVALID_PARAMS")
@@ -368,8 +372,10 @@ class Sidecar:
                 else ("gemini-2.5-flash" if provider == "gemini" else "gpt-4o-mini")
             )
         elif isinstance(model_name_param, str):
-            model_name = model_name_param or (
-                "gemini-2.5-flash" if provider == "gemini" else "gpt-4o-mini"
+            model_name = model_name_param.strip() or (
+                stored.model_name
+                if stored and stored.model_name
+                else ("gemini-2.5-flash" if provider == "gemini" else "gpt-4o-mini")
             )
         else:
             raise ValueError("INVALID_PARAMS")
