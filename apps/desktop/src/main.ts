@@ -1258,16 +1258,34 @@ async function modelAction(): Promise<void> {
 async function testCloudConnection(): Promise<void> {
   const provider = state.selectedProviderTab;
   if (provider === "local" || state.cloudTestLoading) return;
+  const keyInput = document.querySelector<HTMLInputElement>("#cloud-api-key")?.value;
+  const urlInput = document.querySelector<HTMLInputElement>("#cloud-base-url")?.value;
+  const modelInput = document.querySelector<HTMLInputElement>("#cloud-model-name")?.value;
   const draft = state.cloudDrafts[provider];
+  if (keyInput !== undefined) draft.apiKey = keyInput;
+  if (urlInput !== undefined) draft.baseUrl = urlInput;
+  if (modelInput !== undefined) draft.modelName = modelInput;
+
+  const saved = state.aiConfig?.configs.find(c => c.provider === provider);
+  if (!draft.apiKey.trim() && (!saved || !saved.api_key)) {
+    state.cloudTestResult = {
+      ok: false,
+      error: "API_KEY_REQUIRED",
+      message: "Vui lòng nhập API Key trước khi kiểm tra kết nối.",
+    };
+    render("#cloud-api-key");
+    return;
+  }
+
   state.cloudTestLoading = true;
   state.cloudTestResult = null;
   render("#cloud-test-connection");
   try {
     const result = await api.aiConfigTestConnection({
       provider,
-      apiKey: draft.apiKey || undefined,
-      baseUrl: draft.baseUrl || undefined,
-      modelName: draft.modelName || undefined,
+      apiKey: draft.apiKey.trim() || undefined,
+      baseUrl: draft.baseUrl.trim() || undefined,
+      modelName: draft.modelName.trim() || undefined,
     });
     state.cloudTestResult = result;
   } catch (err) {
@@ -1285,16 +1303,33 @@ async function testCloudConnection(): Promise<void> {
 async function saveAndActivateCloud(): Promise<void> {
   const provider = state.selectedProviderTab;
   if (provider === "local" || state.cloudSaving) return;
+  const keyInput = document.querySelector<HTMLInputElement>("#cloud-api-key")?.value;
+  const urlInput = document.querySelector<HTMLInputElement>("#cloud-base-url")?.value;
+  const modelInput = document.querySelector<HTMLInputElement>("#cloud-model-name")?.value;
   const draft = state.cloudDrafts[provider];
+  if (keyInput !== undefined) draft.apiKey = keyInput;
+  if (urlInput !== undefined) draft.baseUrl = urlInput;
+  if (modelInput !== undefined) draft.modelName = modelInput;
+
+  const saved = state.aiConfig?.configs.find(c => c.provider === provider);
+  if (!draft.apiKey.trim() && (!saved || !saved.api_key)) {
+    state.settingsMessage = {
+      tone: "error",
+      text: "Vui lòng nhập API Key trước khi lưu và kích hoạt.",
+    };
+    render("#cloud-api-key");
+    return;
+  }
+
   state.cloudSaving = true;
   state.settingsMessage = null;
   render("#cloud-save-active");
   try {
     await api.aiConfigUpdate({
       provider,
-      apiKey: draft.apiKey || undefined,
-      baseUrl: draft.baseUrl || undefined,
-      modelName: draft.modelName || undefined,
+      apiKey: draft.apiKey.trim() || undefined,
+      baseUrl: draft.baseUrl.trim() || undefined,
+      modelName: draft.modelName.trim() || undefined,
       isActive: true,
     });
     await api.aiConfigSetActive(provider);
@@ -1304,12 +1339,12 @@ async function saveAndActivateCloud(): Promise<void> {
     state.useModel = true;
     state.fullReview = true;
     saveModelPreference(true);
-    const saved = updatedState.configs.find(c => c.provider === provider);
-    if (saved) {
+    const updatedSaved = updatedState.configs.find(c => c.provider === provider);
+    if (updatedSaved) {
       state.cloudDrafts[provider] = {
         apiKey: "",
-        baseUrl: saved.base_url || draft.baseUrl,
-        modelName: saved.model_name || draft.modelName,
+        baseUrl: updatedSaved.base_url || draft.baseUrl,
+        modelName: updatedSaved.model_name || draft.modelName,
       };
     }
     state.settingsMessage = {
