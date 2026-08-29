@@ -242,9 +242,9 @@ describe("four-step desktop workflow", () => {
     api.emitProgress("another-job", 80, "exporting");
     expect(document.querySelector('[role="progressbar"]')?.getAttribute("aria-valuenow")).toBe("0");
     api.emitProgress(jobId, -10, "reading");
-    expect(document.body.textContent).toContain("Đang đọc cấu trúc tệp Word");
+    expect(document.body.textContent).toContain("Đang đọc tệp");
     api.emitProgress(jobId, 72, "validating");
-    expect(document.body.textContent).toContain("Đang kiểm tra vị trí cảnh báo");
+    expect(document.body.textContent).toContain("Sắp xong rồi");
     api.emitProgress(jobId, 88, "exporting");
     expect(document.body.textContent).toContain("Đang tạo tệp kết quả");
     api.emitProgress(jobId, 99, "rules");

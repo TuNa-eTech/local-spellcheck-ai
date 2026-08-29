@@ -327,7 +327,7 @@ function render(preferredFocus?: string): void {
     <main class="workflow-shell">
       ${state.step === "file" ? `<section class="workflow-card workflow-card--file"><div class="section-copy"><h1>Chọn tệp Word cần kiểm tra</h1><p>Ứng dụng tạo một bản kết quả mới và luôn giữ nguyên tệp gốc.</p></div><button class="drop-zone" id="choose"><strong>Chọn hoặc kéo thả tệp .docx</strong><span>Nhấn Ctrl+O để mở nhanh</span></button>${errorHtml()}</section>` : ""}
       ${state.step === "rules" && doc ? `<section class="workflow-card"><div class="workflow-context"><button class="back-button" id="back">← Chọn tệp khác</button><div class="file-chip"><strong>${escape(doc.name)}</strong><span>${documentMetadata(doc)}</span></div></div><div class="workflow-lead"><div class="section-copy"><div class="ai-provider-badge" id="workflow-ai-badge"><span class="badge-dot ${isCloudActive() ? "badge-dot--cloud" : "badge-dot--local"}"></span><span>${escape(activeAiLabel())}</span></div><h1>Chuẩn bị rà soát</h1><p>${reviewModeDescription()}</p></div><div class="workflow-actions workflow-actions--lead"><button class="button button--primary" id="start">Bắt đầu xử lý</button></div></div>${customRuleSelectionHtml()}${errorHtml()}</section>` : ""}
-      ${state.step === "processing" ? `<section class="workflow-card processing-panel"><div class="processing-status"><span class="spinner" aria-hidden="true"></span><div class="section-copy"><h1>${progressTitle()}</h1><p>${isCloudActive() ? "Đang xử lý phân tích văn bản qua API AI." : "Mọi xử lý tài liệu diễn ra trên máy này."}</p></div></div><div class="progress-row"><div class="progress" role="progressbar" aria-label="Tiến độ xử lý" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${state.progress}"><span style="--progress-scale:${state.progress / 100}"></span></div><strong class="progress-value">${state.progress}%</strong></div><p class="sr-only progress-announcement" aria-live="polite" aria-atomic="true">${progressTitle()} ${state.progress}%</p><div class="workflow-actions"><button class="button button--secondary" id="cancel" ${state.jobStarting || state.cancelPending ? "disabled" : ""} ${state.jobStarting || state.cancelPending ? 'aria-busy="true"' : ""}>${state.jobStarting ? "Đang chuẩn bị…" : state.cancelPending ? "Đang dừng…" : "Dừng xử lý"}</button></div>${errorHtml()}</section>` : ""}
+      ${state.step === "processing" ? `<section class="workflow-card processing-panel"><div class="processing-status"><span class="spinner" aria-hidden="true"></span><div class="section-copy"><h1>${progressTitle()}</h1><p class="progress-subtitle">${progressSubtitle()}</p></div></div><div class="progress-row"><div class="progress" role="progressbar" aria-label="Tiến độ xử lý" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${state.progress}"><span style="--progress-scale:${state.progress / 100}"></span></div><strong class="progress-value">${state.progress}%</strong></div><p class="sr-only progress-announcement" aria-live="polite" aria-atomic="true">${progressTitle()} ${state.progress}%</p><div class="workflow-actions"><button class="button button--secondary" id="cancel" ${state.jobStarting || state.cancelPending ? "disabled" : ""} ${state.jobStarting || state.cancelPending ? 'aria-busy="true"' : ""}>${state.jobStarting ? "Đang chuẩn bị…" : state.cancelPending ? "Đang dừng…" : "Dừng xử lý"}</button></div>${errorHtml()}</section>` : ""}
       ${(state.step === "result" || state.step === "no-findings") ? resultHtml() : ""}
     </main>` : settingsHtml()}
     <footer class="status-bar">${isCloudActive() ? `<span><span aria-hidden="true">☁</span> ${escape(activeAiLabel())} · Gửi dữ liệu qua API đám mây</span>` : `<span><span aria-hidden="true">●</span> Xử lý cục bộ · không gửi nội dung tài liệu lên mạng</span>`}<span>v${escape(state.appVersion)}</span></footer>`;
@@ -355,15 +355,26 @@ function stepIndex(): number { return state.step === "file" ? 0 : state.step ===
 function errorHtml(): string { return state.error ? `<p class="error" role="alert">${escape(state.error)}</p>` : ""; }
 const progressStageRanks: Record<string, number> = { reading: 0, rules: 1, model: 2, validating: 3, exporting: 4, complete: 5 };
 function progressTitle(): string {
-  if (state.progressStage === "model") return state.fullReview ? `Đang rà soát thân bài và bảng bằng ${activeAiLabel()}…` : `Đang phân loại các trường hợp nghi ngờ bằng ${activeAiLabel()}…`;
+  if (state.progressStage === "model") return state.fullReview ? `Đang rà soát toàn văn bằng ${activeAiLabel()}…` : `Đang xác nhận cảnh báo bằng ${activeAiLabel()}…`;
   const titles: Record<string, string> = {
-    reading: "Đang đọc cấu trúc tệp Word…",
-    rules: "Đang áp dụng quy tắc…",
-    validating: "Đang kiểm tra vị trí cảnh báo…",
+    reading: "Đang đọc tệp…",
+    rules: "Đang kiểm tra chính tả và ngữ pháp…",
+    validating: "Sắp xong rồi…",
     exporting: "Đang tạo tệp kết quả…",
-    complete: "Đang hoàn tất xử lý…",
+    complete: "Hoàn tất!",
   };
   return titles[state.progressStage] ?? (state.progress < 25 ? titles.reading : state.progress < 75 ? titles.rules : state.progress < 90 ? titles.validating : titles.exporting);
+}
+function progressSubtitle(): string {
+  if (state.progressStage === "model") return state.fullReview ? "AI đang đọc từng đoạn văn để tìm lỗi và phát sinh cảnh báo." : "AI đang xem xét các trường hợp nghi ngờ để loại bỏ nhầm lẫn.";
+  const subtitles: Record<string, string> = {
+    reading: "Phân tích cấu trúc, đoạn văn và bảng biểu trong tài liệu.",
+    rules: "Bộ quy tắc cố định đang quét lỗi chính tả, dấu câu và định dạng.",
+    validating: "Đang xác nhận vị trí chính xác của từng cảnh báo trong tài liệu.",
+    exporting: "Đang bôi màu và ghi chú cảnh báo vào bản sao tệp Word.",
+    complete: "Kết quả sẵn sàng để xem.",
+  };
+  return subtitles[state.progressStage] ?? (state.progress < 25 ? subtitles.reading : state.progress < 75 ? subtitles.rules : state.progress < 90 ? subtitles.validating : subtitles.exporting);
 }
 function applyProgress(stage: string, percent: number): void {
   const previousProgress = state.progress;
@@ -375,12 +386,15 @@ function applyProgress(stage: string, percent: number): void {
     state.progressStage = stage;
   }
   const title = progressTitle();
+  const subtitle = progressSubtitle();
   const heading = document.querySelector<HTMLElement>(".workflow-card h1");
+  const subtitleEl = document.querySelector<HTMLElement>(".progress-subtitle");
   const progress = document.querySelector<HTMLElement>('[role="progressbar"]');
   const progressFill = progress?.querySelector<HTMLElement>("span");
   const value = document.querySelector<HTMLElement>(".progress-value");
   const announcement = document.querySelector<HTMLElement>(".progress-announcement");
   if (heading) heading.textContent = title;
+  if (subtitleEl) subtitleEl.textContent = subtitle;
   progress?.setAttribute("aria-valuenow", String(state.progress));
   progressFill?.style.setProperty("--progress-scale", String(state.progress / 100));
   if (value) value.textContent = `${state.progress}%`;
