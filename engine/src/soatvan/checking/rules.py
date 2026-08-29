@@ -78,8 +78,8 @@ CONFUSIONS: dict[str, tuple[str, str]] = {
     "rà sóat": ("rà soát", "Dấu thanh trong âm tiết “soát” phải đặt ở nguyên âm chính a."),
     "một cữa": ("một cửa", "Từ đúng chính tả là “một cửa” (dấu hỏi)."),
     "giửa": ("giữa", "Từ đúng chính tả là “giữa” (dấu ngã)."),
-    "sở Nội vụ": ("Sở Nội vụ", "Theo Nghị định 30/2020/NĐ-CP, tên cơ quan nên được viết hoa."),
-    "phòng Nội vụ": ("Phòng Nội vụ", "Theo Nghị định 30/2020/NĐ-CP, tên cơ quan nên được viết hoa."),
+    "sở nội vụ": ("Sở Nội vụ", "Theo Nghị định 30/2020/NĐ-CP, tên cơ quan nên được viết hoa."),
+    "phòng nội vụ": ("Phòng Nội vụ", "Theo Nghị định 30/2020/NĐ-CP, tên cơ quan nên được viết hoa."),
     # Phụ âm đầu / vần / chữ cái
     "bố chí": ("bố trí", "Từ đúng chính tả là “bố trí” (ch/tr)."),
     "đề suất": ("đề xuất", "Từ đúng chính tả là “đề xuất” (s/x)."),
