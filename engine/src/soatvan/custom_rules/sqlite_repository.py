@@ -10,19 +10,26 @@ from pathlib import Path
 
 MAX_CUSTOM_RULE_COUNT = 100
 MAX_CUSTOM_RULE_PROMPT_LENGTH = 4_000
+MAX_CUSTOM_RULE_TITLE_LENGTH = 80
 _CUSTOM_RULES_DATABASE_LOCK = threading.RLock()
 
 
 @dataclass(frozen=True, slots=True)
 class CustomRule:
     id: str
+    title: str
     prompt: str
+    is_default: bool
     created_at: str
     updated_at: str
 
 
 class SqliteCustomRuleRepository:
-    """Persistent custom-rule prompts with a bounded shared context budget."""
+    """Persistent custom-rule prompts with a bounded shared context budget.
+
+    ``title`` is required operator-facing metadata used to pick rules per run.
+    It is never sent to the model, so it stays outside the prompt budget.
+    """
 
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -38,7 +45,9 @@ class SqliteCustomRuleRepository:
         self._connection.execute(
             "CREATE TABLE IF NOT EXISTS custom_rules ("
             "id TEXT PRIMARY KEY, "
+            "title TEXT NOT NULL DEFAULT '', "
             "prompt TEXT NOT NULL, "
+            "is_default INTEGER NOT NULL DEFAULT 0, "
             "created_at TEXT NOT NULL, "
             "updated_at TEXT NOT NULL, "
             f"CHECK(length(prompt) BETWEEN 1 AND {MAX_CUSTOM_RULE_PROMPT_LENGTH})"
@@ -48,18 +57,48 @@ class SqliteCustomRuleRepository:
             "CREATE INDEX IF NOT EXISTS custom_rules_created_at_idx "
             "ON custom_rules(created_at, id)"
         )
+        self._migrate_titles_and_defaults()
         self._connection.commit()
+
+    def _migrate_titles_and_defaults(self) -> None:
+        """Add the newer columns to databases written by an earlier release."""
+        columns = {
+            str(row["name"])
+            for row in self._connection.execute("PRAGMA table_info(custom_rules)")
+        }
+        if "title" not in columns:
+            self._connection.execute(
+                "ALTER TABLE custom_rules ADD COLUMN title TEXT NOT NULL DEFAULT ''"
+            )
+        if "is_default" not in columns:
+            self._connection.execute(
+                "ALTER TABLE custom_rules ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0"
+            )
+        # A stored rule must always be identifiable in the review step, so give
+        # legacy rows a title derived from their own prompt instead of a blank.
+        self._connection.execute(
+            "UPDATE custom_rules SET title = substr(prompt, 1, ?) WHERE title = ''",
+            (MAX_CUSTOM_RULE_TITLE_LENGTH,),
+        )
 
     def list(self) -> list[CustomRule]:
         with self._lock:
             rows = self._connection.execute(
-                "SELECT id, prompt, created_at, updated_at "
+                "SELECT id, title, prompt, is_default, created_at, updated_at "
                 "FROM custom_rules ORDER BY created_at ASC, id ASC"
             ).fetchall()
         return [self._from_row(row) for row in rows]
 
-    def upsert(self, prompt: object, rule_id: object = None) -> CustomRule:
+    def upsert(
+        self,
+        prompt: object,
+        rule_id: object = None,
+        title: object = None,
+        is_default: object = False,
+    ) -> CustomRule:
         clean_prompt = self._validate_prompt(prompt)
+        clean_title = self._validate_title(title)
+        clean_default = self._validate_is_default(is_default)
         clean_id = self._validate_id(rule_id) if rule_id is not None else str(uuid.uuid4())
 
         with self._lock:
@@ -95,18 +134,27 @@ class SqliteCustomRuleRepository:
                 )
                 created_at = str(existing["created_at"]) if existing else updated_at
                 self._connection.execute(
-                    "INSERT INTO custom_rules(id, prompt, created_at, updated_at) "
-                    "VALUES (?, ?, ?, ?) "
+                    "INSERT INTO custom_rules"
+                    "(id, title, prompt, is_default, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?) "
                     "ON CONFLICT(id) DO UPDATE SET "
-                    "prompt = excluded.prompt, updated_at = excluded.updated_at",
-                    (clean_id, clean_prompt, created_at, updated_at),
+                    "title = excluded.title, prompt = excluded.prompt, "
+                    "is_default = excluded.is_default, updated_at = excluded.updated_at",
+                    (
+                        clean_id,
+                        clean_title,
+                        clean_prompt,
+                        int(clean_default),
+                        created_at,
+                        updated_at,
+                    ),
                 )
                 self._connection.commit()
             except Exception:
                 self._connection.rollback()
                 raise
 
-        return CustomRule(clean_id, clean_prompt, created_at, updated_at)
+        return CustomRule(clean_id, clean_title, clean_prompt, clean_default, created_at, updated_at)
 
     def delete(self, rule_id: object) -> bool:
         clean_id = self._validate_id(rule_id)
@@ -129,6 +177,25 @@ class SqliteCustomRuleRepository:
         if not clean or "\x00" in clean or len(clean) > MAX_CUSTOM_RULE_PROMPT_LENGTH:
             raise ValueError("CUSTOM_RULE_INVALID_PROMPT")
         return clean
+
+    @staticmethod
+    def _validate_title(title: object) -> str:
+        if not isinstance(title, str):
+            raise ValueError("CUSTOM_RULE_INVALID_TITLE")
+        clean = unicodedata.normalize("NFC", title).strip()
+        if (
+            not clean
+            or len(clean) > MAX_CUSTOM_RULE_TITLE_LENGTH
+            or any(character in clean for character in "\r\n\x00")
+        ):
+            raise ValueError("CUSTOM_RULE_INVALID_TITLE")
+        return clean
+
+    @staticmethod
+    def _validate_is_default(is_default: object) -> bool:
+        if not isinstance(is_default, bool):
+            raise ValueError("CUSTOM_RULE_INVALID_DEFAULT")
+        return is_default
 
     @staticmethod
     def _validate_id(rule_id: object) -> str:
@@ -155,7 +222,9 @@ class SqliteCustomRuleRepository:
     def _from_row(row: sqlite3.Row) -> CustomRule:
         return CustomRule(
             id=str(row["id"]),
+            title=str(row["title"]),
             prompt=str(row["prompt"]),
+            is_default=bool(row["is_default"]),
             created_at=str(row["created_at"]),
             updated_at=str(row["updated_at"]),
         )

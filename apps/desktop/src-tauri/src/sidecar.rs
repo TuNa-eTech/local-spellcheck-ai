@@ -418,6 +418,7 @@ mod tests {
     #[test]
     fn tauri_bridge_event_names_are_legal() {
         assert_eq!("job.progress".replace('.', "-"), "job-progress");
-        assert_eq!("model.progress".replace('.', "-"), "model-progress");
+        assert_eq!("job.completed".replace('.', "-"), "job-completed");
+        assert_eq!("job.no_findings".replace('.', "-"), "job-no_findings");
     }
 }

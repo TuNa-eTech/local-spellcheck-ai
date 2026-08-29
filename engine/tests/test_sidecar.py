@@ -73,17 +73,31 @@ def test_custom_rule_protocol_crud_and_legacy_dictionary_is_not_public(
 
     created = engine.dispatch(
         "custom_rule.upsert",
-        {"prompt": '  Luôn giữ nguyên “SoátVăn” và cụm \'AI-first\'.  '},
+        {
+            "prompt": '  Luôn giữ nguyên “SoátVăn” và cụm \'AI-first\'.  ',
+            "title": "Tên sản phẩm",
+            "is_default": True,
+        },
     )
     assert created["prompt"] == 'Luôn giữ nguyên “SoátVăn” và cụm \'AI-first\'.'
+    assert created["title"] == "Tên sản phẩm"
+    assert created["is_default"] is True
     assert engine.dispatch("custom_rule.list", {}) == {"entries": [created]}
+
+    with pytest.raises(ValueError, match="CUSTOM_RULE_INVALID_TITLE"):
+        engine.dispatch("custom_rule.upsert", {"prompt": "Thiếu tiêu đề."})
 
     updated = engine.dispatch(
         "custom_rule.upsert",
-        {"id": created["id"], "prompt": "Dùng giọng văn hành chính."},
+        {
+            "id": created["id"],
+            "prompt": "Dùng giọng văn hành chính.",
+            "title": "Giọng văn",
+        },
     )
     assert updated["created_at"] == created["created_at"]
     assert updated["updated_at"] > created["updated_at"]
+    assert updated["is_default"] is False
     assert engine.dispatch("custom_rule.delete", {"id": created["id"]}) == {
         "deleted": True
     }

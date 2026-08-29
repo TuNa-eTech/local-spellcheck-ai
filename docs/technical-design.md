@@ -18,7 +18,7 @@ SoátVăn nên được xây như một **modular desktop monolith** gồm ba ra
 
 Python chạy dưới dạng **sidecar thường trú**, đóng gói bằng PyInstaller `onedir`. Rust giao tiếp với sidecar bằng **NDJSON qua `stdin/stdout`**, không mở FastAPI, localhost hay socket. Cách này giữ Python là implementation detail, tránh port/firewall và làm tiêu chí zero-egress dễ kiểm chứng hơn.
 
-Model không nằm trong installer chính. Khi chưa cài model hoặc model lỗi, ứng dụng vẫn hoàn thành toàn bộ luồng bằng bộ kiểm tra cơ bản. Build connected cho tải model chủ động từ allowlist; build air-gap nhập package từ USB/thư mục nội bộ.
+Model không nằm trong installer chính. Khi chưa cài model hoặc model lỗi, ứng dụng vẫn hoàn thành toàn bộ luồng bằng bộ kiểm tra cơ bản. Model được nhập từ USB hoặc thư mục nội bộ; không có đường tải qua mạng.
 
 ## 2. Architecture drivers từ PRD
 
@@ -36,16 +36,19 @@ Model không nằm trong installer chính. Khi chưa cài model hoặc model l�
 
 ## 3. Quyết định sản phẩm hiện hành
 
-### 3.1. Hai profile provisioning model
+### 3.1. Provisioning model chỉ bằng import cục bộ
 
-Sản phẩm tách rõ **hai release profile**, dùng cùng codebase:
+Sản phẩm chỉ còn **một release profile**: model được đưa vào máy bằng lệnh nhập gói từ tệp có sẵn.
 
 | Profile | Settings | Network contract | Phù hợp |
 |---|---|---|---|
-| `connected-provisioning` | `Tải model` và `Chọn gói model` | Chỉ Rust được gọi allowlisted HTTPS endpoint sau thao tác rõ ràng; không gửi document/text; không request nền | Máy có internet lúc cấp model |
-| `airgap` | Chỉ `Chọn gói model` | Không compile/init HTTP, updater, websocket; `connect-src 'none'` | Mạng nội bộ tách biệt, nghiệm thu zero-egress nghiêm ngặt |
+| `airgap` | Chỉ `Chọn gói model` | Không có call site mạng nào trong code ứng dụng: không khởi tạo HTTP client, không updater, không websocket; `connect-src` chỉ cho IPC | Mọi môi trường, gồm mạng nội bộ tách biệt và nghiệm thu zero-egress nghiêm ngặt |
 
-Network contract chung: không có kết nối nền và không có nội dung tài liệu rời khỏi máy. Nghiệm thu tách thành hai bài test: **model provisioning** và **open → process → output**. Bài test thứ hai phải có zero egress ở cả hai profile.
+Network contract: không có kết nối nền, không có đường tải qua mạng và không có nội dung tài liệu rời khỏi máy. Nghiệm thu **open → process → output** phải zero egress.
+
+Lưu ý về cách bảo đảm này được thực thi: `tauri` kéo `reqwest` vào dependency graph như transitive dependency, nên zero-egress **không** đến từ việc binary thiếu thư viện HTTP. Nó đến từ ba lớp: code ứng dụng không có call site mạng nào, CSP chỉ cho `connect-src` tới IPC, và bài test runtime kiểm tra không có TCP connection nào thuộc process tree của app.
+
+Đường tải model qua HTTPS allowlist từng tồn tại ở profile `connected-provisioning` đã được **loại bỏ khỏi codebase** cùng toàn bộ helper mạng của nó. Model remote qua API key của dịch vụ AI bên ngoài đã được xem xét và **không đưa vào phạm vi**.
 
 ### 3.2. Workflow tối giản và nội dung file xuất
 
@@ -116,7 +119,7 @@ flowchart LR
 | Thành phần | Làm | Không làm |
 |---|---|---|
 | WebView UI | Render DTO, quản lý focus/keyboard, gửi intent, hiển thị progress/error | Đọc DOCX, truy cập filesystem tổng quát, chạy shell, gọi model |
-| Rust host | Dialog, canonicalize path, lifecycle sidecar, validate IPC, cancel, model download/import, atomic handoff | Chứa luật tiếng Việt hoặc sửa OOXML |
+| Rust host | Dialog, canonicalize path, lifecycle sidecar, validate IPC, cancel, model import, atomic handoff | Chứa luật tiếng Việt hoặc sửa OOXML |
 | Python application/domain | Use case open/process/export, invariants, finding arbitration | Biết Tauri/WebView hoặc trả HTML |
 | Python adapters | OOXML, SQLite custom-rule store, model runtime, tài nguyên ngôn ngữ đóng gói | Định nghĩa policy nghiệp vụ |
 
@@ -249,7 +252,7 @@ Khi chạy full review, result có thêm object `review` tùy chọn:
 | `document.inspect` | Validate DOCX và trả metadata tối thiểu |
 | `job.start` / `job.cancel` | Chạy pipeline, export tạm và emit progress/terminal event |
 | `custom_rule.list/upsert/delete` | CRUD các prompt quy tắc riêng trong SQLite |
-| `model.status/download/import/cancel/remove` | Provisioning model ở Rust host |
+| `model.status/import/cancel/remove` | Provisioning model ở Rust host |
 
 Tauri WebView chỉ gọi command nghiệp vụ của Rust. Không cấp `shell:allow-spawn` cho JavaScript và không expose arbitrary filesystem command.
 
@@ -467,17 +470,16 @@ Manifest tối thiểu:
 
 Mỗi attempt/retry phát `job.progress` với coverage chưa tăng để reset inactivity timer. Host dùng watchdog 1.020 giây, luôn lớn hơn timeout manifest tối đa 900 giây cho một attempt; vì vậy cây retry tuần tự không bị cộng dồn vào cùng một idle deadline, trong khi runtime treo vẫn bị host hủy sau khoảng grace hữu hạn.
 
-### 11.4. Download/import/activate
+### 11.4. Import/activate
 
 1. Kiểm tra dung lượng trống trước khi bắt đầu.
-2. Ghi vào `models/.staging/<job-id>/`; file chưa xong có suffix `.partial`.
-3. Hỗ trợ resume cho connected profile, chỉ từ build-time allowlist.
-4. Xác minh byte size, SHA-256, chữ ký Ed25519, license, protocol và quality reports đã ký; report phải khớp SHA-256 model/corpus và có profile 8/16 GB đạt precision ≥90%, recall ≥85%.
-5. Smoke-load model bằng engine; runtime thiếu hoặc load lỗi không được chuyển sang `ready`.
-6. Rename atomically vào thư mục versioned và cập nhật registry.
-7. Không xoá version đang hoạt động cho tới khi version mới load thành công.
+2. Ghi vào `models/staging-<uuid>/`; file chưa xong có suffix `.partial`.
+3. Xác minh byte size, SHA-256, chữ ký Ed25519, license, protocol và quality reports đã ký; report phải khớp SHA-256 model/corpus và có profile 8/16 GB đạt precision ≥90%, recall ≥85%. `.gguf` nhập trực tiếp bỏ qua chữ ký/quality và được đánh dấu `local_unverified`.
+4. Smoke-load model bằng engine; runtime thiếu hoặc load lỗi không được chuyển sang `ready`.
+5. Rename atomically vào `active/` sau khi chuyển bản cũ sang `previous/`, và cập nhật registry.
+6. Không xoá version cũ cho tới khi version mới load thành công; startup phục hồi `previous/` nếu activation bị ngắt giữa chừng.
 
-Trạng thái UI trong mục Settings `AI cục bộ`: `not_installed → downloading/importing → verifying → installed → ready`, với nhánh `cancelled/error/incompatible`. Mục này giữ toàn bộ lifecycle chọn, tải/nhập, tiến độ, huỷ, kích hoạt/tắt runtime và gỡ model; availability của tải qua mạng vẫn do release profile quyết định. Gói thiếu quality gate bị từ chối ngay; `installed` nghĩa là gói đã qua integrity/signature/quality nhưng runtime chưa khả dụng, còn `ready` yêu cầu smoke-load thành công. Prompt riêng vẫn chỉnh sửa được khi AI tắt nhưng chỉ được ghép/gửi khi model `ready`. Chưa có model không phải lỗi của luồng kiểm tra cơ bản.
+Trạng thái UI trong mục Settings `AI cục bộ`: `not_installed → importing → verifying → installed → ready`, với nhánh `cancelled/error/incompatible`. Mục này giữ lifecycle nhập gói, huỷ thao tác, kích hoạt/tắt runtime và gỡ model; không có affordance tải qua mạng. Gói thiếu quality gate bị từ chối ngay; `installed` nghĩa là gói đã qua integrity/signature/quality nhưng runtime chưa khả dụng, còn `ready` yêu cầu smoke-load thành công. Prompt riêng vẫn chỉnh sửa được khi AI tắt nhưng chỉ được ghép/gửi khi model `ready`. Chưa có model không phải lỗi của luồng kiểm tra cơ bản.
 
 ## 12. Local storage và data retention
 
@@ -516,7 +518,7 @@ SQLite có thể còn bảng dictionary từ bản thử nghiệm cũ để migr
 - Không truyền document text qua CLI argument hoặc environment.
 - Log chỉ có request ID, rule ID, duration, version và error code; redaction path mặc định.
 - App, sidecar, native DLL, installer và model manifest đều được ký/xác minh.
-- Connected profile chỉ cho HTTPS host/path đã allowlist; không nhận arbitrary URL từ UI.
+- Không có call site mạng trong code ứng dụng và không nhận URL từ UI; `reqwest` chỉ tồn tại như transitive dependency của `tauri`, không được gọi.
 
 ## 14. Windows packaging và release
 
@@ -629,7 +631,7 @@ Trên clean Windows VM:
 3. Chạy lại với model đã import.
 4. Dùng firewall deny + packet capture/TCPView cho toàn process tree.
 5. Xác nhận không socket/egress từ app, sidecar hoặc WebView child trong processing path.
-6. Test model download riêng cho connected profile, xác nhận chỉ model bytes/manifest và allowlisted endpoint.
+6. Xác nhận không có egress ngay cả khi nhập gói model, vì provisioning chỉ đọc tệp cục bộ.
 
 ## 17. Acceptance mapping rút gọn
 

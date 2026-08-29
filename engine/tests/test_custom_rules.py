@@ -10,6 +10,7 @@ import pytest
 from soatvan.custom_rules import (
     MAX_CUSTOM_RULE_COUNT,
     MAX_CUSTOM_RULE_PROMPT_LENGTH,
+    MAX_CUSTOM_RULE_TITLE_LENGTH,
     SqliteCustomRuleRepository,
 )
 
@@ -18,13 +19,24 @@ def test_crud_persists_unicode_quotes_and_preserves_created_at(tmp_path: Path) -
     database = tmp_path / "preferences.db"
     repository = SqliteCustomRuleRepository(database)
 
-    created = repository.upsert('  Ưu tiên cách viết “thuần Việt” và giữ dấu nháy \'đơn\'.  ')
+    created = repository.upsert(
+        '  Ưu tiên cách viết “thuần Việt” và giữ dấu nháy \'đơn\'.  ',
+        None,
+        "  Thuật ngữ “thuần Việt”  ",
+        True,
+    )
     assert created.prompt == 'Ưu tiên cách viết “thuần Việt” và giữ dấu nháy \'đơn\'.'
+    assert created.title == "Thuật ngữ “thuần Việt”"
+    assert created.is_default is True
     assert str(uuid.UUID(created.id)) == created.id
     assert created.created_at == created.updated_at
 
-    updated = repository.upsert("Không sửa tên riêng: Nguyễn Ánh.", created.id)
+    updated = repository.upsert(
+        "Không sửa tên riêng: Nguyễn Ánh.", created.id, "Tên riêng", False
+    )
     assert updated.id == created.id
+    assert updated.title == "Tên riêng"
+    assert updated.is_default is False
     assert updated.created_at == created.created_at
     assert updated.updated_at > created.updated_at
     repository.close()
@@ -49,8 +61,8 @@ def test_migration_keeps_legacy_database_tables_and_orders_deterministically(
     repository = SqliteCustomRuleRepository(database)
     first_id = "00000000-0000-0000-0000-000000000002"
     second_id = "00000000-0000-0000-0000-000000000001"
-    first = repository.upsert("Quy tắc thứ nhất", first_id)
-    second = repository.upsert("Quy tắc thứ hai", second_id)
+    first = repository.upsert("Quy tắc thứ nhất", first_id, "Thứ nhất")
+    second = repository.upsert("Quy tắc thứ hai", second_id, "Thứ hai")
     assert repository.list() == [first, second]
 
     check = sqlite3.connect(database)
@@ -60,32 +72,71 @@ def test_migration_keeps_legacy_database_tables_and_orders_deterministically(
     check.close()
 
 
-def test_prompt_and_identifier_validation_boundaries(tmp_path: Path) -> None:
+def test_titleless_rows_from_an_earlier_release_are_given_a_derived_title(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "preferences.db"
+    connection = sqlite3.connect(database)
+    connection.execute(
+        "CREATE TABLE custom_rules ("
+        "id TEXT PRIMARY KEY, prompt TEXT NOT NULL, "
+        "created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
+    )
+    long_prompt = "Đ" * (MAX_CUSTOM_RULE_TITLE_LENGTH + 40)
+    connection.execute(
+        "INSERT INTO custom_rules VALUES (?, ?, ?, ?)",
+        (
+            "00000000-0000-0000-0000-000000000003",
+            long_prompt,
+            "2026-08-25T01:00:00.000000Z",
+            "2026-08-25T01:00:00.000000Z",
+        ),
+    )
+    connection.commit()
+    connection.close()
+
+    entries = SqliteCustomRuleRepository(database).list()
+    assert len(entries) == 1
+    assert entries[0].prompt == long_prompt
+    assert entries[0].title == "Đ" * MAX_CUSTOM_RULE_TITLE_LENGTH
+    assert entries[0].is_default is False
+
+
+def test_prompt_title_and_identifier_validation_boundaries(tmp_path: Path) -> None:
     repository = SqliteCustomRuleRepository(tmp_path / "preferences.db")
-    valid = repository.upsert("x" * MAX_CUSTOM_RULE_PROMPT_LENGTH)
+    valid = repository.upsert("x" * MAX_CUSTOM_RULE_PROMPT_LENGTH, None, "t" * 80)
     assert len(valid.prompt) == MAX_CUSTOM_RULE_PROMPT_LENGTH
+    assert len(valid.title) == MAX_CUSTOM_RULE_TITLE_LENGTH
 
     for prompt in ("", " \n\t ", "contains\x00nul", "x" * (MAX_CUSTOM_RULE_PROMPT_LENGTH + 1), 3):
         with pytest.raises(ValueError, match="CUSTOM_RULE_INVALID_PROMPT"):
-            repository.upsert(prompt)
+            repository.upsert(prompt, None, "Tiêu đề")
+
+    for title in ("", "   ", "hai\ndòng", "nul\x00", "t" * 81, None, 7):
+        with pytest.raises(ValueError, match="CUSTOM_RULE_INVALID_TITLE"):
+            repository.upsert("Nội dung hợp lệ", None, title)
+
+    for flag in ("true", 1, None):
+        with pytest.raises(ValueError, match="CUSTOM_RULE_INVALID_DEFAULT"):
+            repository.upsert("Nội dung hợp lệ", None, "Tiêu đề", flag)
 
     for rule_id in ("not-a-uuid", "00000000-0000-0000-0000-00000000000A", 4):
         with pytest.raises(ValueError, match="CUSTOM_RULE_INVALID_ID"):
             repository.delete(rule_id)
 
 
-def test_aggregate_prompt_budget_accounts_for_replacement(tmp_path: Path) -> None:
+def test_aggregate_prompt_budget_ignores_titles(tmp_path: Path) -> None:
     repository = SqliteCustomRuleRepository(tmp_path / "preferences.db")
-    first = repository.upsert("a" * 2_500)
-    second = repository.upsert("b" * 1_500)
+    first = repository.upsert("a" * 2_500, None, "t" * 80)
+    second = repository.upsert("b" * 1_500, None, "u" * 80)
 
     with pytest.raises(ValueError, match="CUSTOM_RULE_LIMIT_REACHED"):
-        repository.upsert("c")
+        repository.upsert("c", None, "Tiêu đề")
     with pytest.raises(ValueError, match="CUSTOM_RULE_LIMIT_REACHED"):
-        repository.upsert("a" * 2_501, first.id)
+        repository.upsert("a" * 2_501, first.id, "Tiêu đề")
 
-    shortened = repository.upsert("a", first.id)
-    expanded = repository.upsert("b" * 3_999, second.id)
+    shortened = repository.upsert("a", first.id, "Ngắn")
+    expanded = repository.upsert("b" * 3_999, second.id, "Dài")
     assert sum(len(entry.prompt) for entry in repository.list()) == 4_000
     assert repository.list() == [shortened, expanded]
 
@@ -96,7 +147,11 @@ def test_concurrent_create_never_exceeds_count_limit(tmp_path: Path) -> None:
 
     def create(index: int) -> str:
         try:
-            return repositories[index % len(repositories)].upsert(chr(0x4E00 + index)).id
+            return (
+                repositories[index % len(repositories)]
+                .upsert(chr(0x4E00 + index), None, f"Quy tắc {index}")
+                .id
+            )
         except ValueError as error:
             return str(error)
 
@@ -112,14 +167,14 @@ def test_concurrent_create_never_exceeds_count_limit(tmp_path: Path) -> None:
 def test_concurrent_updates_leave_one_complete_valid_value(tmp_path: Path) -> None:
     database = tmp_path / "preferences.db"
     repositories = [SqliteCustomRuleRepository(database) for _ in range(4)]
-    entry = repositories[0].upsert("initial")
+    entry = repositories[0].upsert("initial", None, "Ban đầu")
     prompts = [f'Quy tắc #{index}: giữ nguyên "tên riêng".' for index in range(40)]
 
     with ThreadPoolExecutor(max_workers=12) as pool:
         results = list(
             pool.map(
                 lambda item: repositories[item[0] % len(repositories)].upsert(
-                    item[1], entry.id
+                    item[1], entry.id, f"Tiêu đề {item[0]}", item[0] % 2 == 0
                 ),
                 enumerate(prompts),
             )

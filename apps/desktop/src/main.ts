@@ -2,43 +2,6 @@ import "./styles.css";
 import { api } from "./api";
 import type { CustomRule, DocumentInfo, JobResult, ModelStatus, Preset, RuleOptions, Step } from "./contracts";
 
-export interface Gemma4Model {
-  id: string;
-  name: string;
-  badge: string;
-  badgeClass?: string;
-  ram: string;
-  size: string;
-  description: string;
-}
-
-const gemma4Catalog: Gemma4Model[] = [
-  {
-    id: "gemma-4-e2b",
-    name: "Gemma 4 E2B Instruct",
-    badge: "Nhẹ",
-    ram: "RAM 8GB / CPU",
-    size: "~1.5 GB",
-    description: "Gói khoảng 1,5 GB dành cho máy có 8 GB RAM và có thể chạy bằng CPU.",
-  },
-  {
-    id: "gemma-4-e4b",
-    name: "Gemma 4 E4B Instruct",
-    badge: "Trung bình",
-    ram: "RAM 8GB – 16GB",
-    size: "~2.8 GB",
-    description: "Gói khoảng 2,8 GB dành cho máy có từ 8 GB đến 16 GB RAM.",
-  },
-  {
-    id: "gemma-4-12b",
-    name: "Gemma 4 12B Instruct",
-    badge: "Lớn",
-    ram: "RAM ≥ 16GB / GPU",
-    size: "~7.5 GB",
-    description: "Gói khoảng 7,5 GB dành cho máy có ít nhất 16 GB RAM và GPU.",
-  },
-];
-
 const app = document.querySelector<HTMLDivElement>("#app")!;
 let renderedStep: Step | null = null;
 let renderedView: AppView["kind"] | null = null;
@@ -73,23 +36,22 @@ const state: {
   progressStage: string;
   jobStarting: boolean;
   cancelPending: boolean;
-  modelProgress: number;
-  modelReceived: number;
-  modelTotal: number;
   result: JobResult | null;
   model: ModelStatus;
   settingsLoading: boolean;
   customRules: CustomRule[];
+  selectedRuleIds: string[];
+  customRuleTitleDraft: string;
   customRuleDraft: string;
+  customRuleDefaultDraft: boolean;
   editingCustomRuleId: string | null;
   customRulePending: boolean;
+  customRuleTitleInvalid: boolean;
   customRulePromptInvalid: boolean;
   pendingPromptAction: PendingPromptAction | null;
   settingsMessage: SettingsMessage;
   lastDeletedRule: CustomRule | null;
   error: string;
-  selectedModelId: string;
-  downloadingModelId: string | null;
   modelRemovalPending: boolean;
   modelRemovalRunning: boolean;
   outputActionPending: OutputAction | null;
@@ -106,23 +68,22 @@ const state: {
   useModel: false,
   fullReview: false,
   includeRuleFindings: false,
-  modelProgress: 0,
-  modelReceived: 0,
-  modelTotal: 0,
   result: null,
   model: { state: "not_installed" },
   settingsLoading: false,
   customRules: [],
+  selectedRuleIds: [],
+  customRuleTitleDraft: "",
   customRuleDraft: "",
+  customRuleDefaultDraft: false,
   editingCustomRuleId: null,
   customRulePending: false,
+  customRuleTitleInvalid: false,
   customRulePromptInvalid: false,
   pendingPromptAction: null,
   settingsMessage: null,
   lastDeletedRule: null,
   error: "",
-  selectedModelId: "gemma-4-e4b",
-  downloadingModelId: null,
   modelRemovalPending: false,
   modelRemovalRunning: false,
   outputActionPending: null,
@@ -145,6 +106,7 @@ const fixedReviewRules: { id: keyof RuleOptions; name: string; description: stri
   { id: "administrative_capitalization", name: "Viết hoa hành chính", description: "Kiểm tra quy tắc viết hoa theo Nghị định 30/2020, Phụ lục II." },
 ];
 const customRulePromptLimit = 4000;
+const customRuleTitleLimit = 80;
 const genericProcessingError = "Không xử lý được tệp. Hãy kiểm tra tệp rồi thử lại; tệp gốc chưa bị thay đổi.";
 const processingErrorMessages: Record<string, string> = {
   CUSTOM_PROMPT_CONTEXT_EXCEEDED: "Quy tắc riêng quá dài so với dung lượng ngữ cảnh đang dùng. Hãy rút gọn quy tắc hoặc chọn model có context lớn hơn. Tệp gốc chưa bị thay đổi.",
@@ -167,12 +129,11 @@ function saveModelPreference(enabled: boolean): void { try { localStorage.setIte
 
 function escape(value: string): string { const node = document.createElement("div"); node.textContent = value; return node.innerHTML; }
 function formatBytes(value: number): string { return `${(value / 1024 / 1024).toLocaleString("vi-VN", { maximumFractionDigits: 2 })} MB`; }
-function selectedModel() { return gemma4Catalog.find(item => item.id === state.selectedModelId) ?? gemma4Catalog[1]; }
 function focusSelectorFor(element: Element | null): string | null {
   if (!(element instanceof HTMLElement)) return null;
   if (element.id) return `#${element.id}`;
   if (element.dataset.settingsSection) return `[data-settings-section="${element.dataset.settingsSection}"]`;
-  if (element instanceof HTMLInputElement && element.name === "gemma-select") return `input[name="gemma-select"][value="${element.value}"]`;
+  if (element.dataset.selectRule) return `[data-select-rule="${element.dataset.selectRule}"]`;
   if (element.dataset.editRule) return `[data-edit-rule="${element.dataset.editRule}"]`;
   if (element.dataset.deleteRule) return `[data-delete-rule="${element.dataset.deleteRule}"]`;
   return null;
@@ -203,21 +164,28 @@ function reviewModeDescription(): string {
     ? "AI là lớp rà soát chính; bộ quy tắc code sẽ chạy thêm để bổ sung cảnh báo."
     : "AI sẽ dùng prompt tiếng Việt mặc định để tự tìm lỗi trong toàn bộ nội dung; bộ quy tắc code không chạy.";
 }
-function compiledCustomPrompt(): string { return state.useModel ? state.customRules.map(rule => rule.prompt).join("\n\n") : ""; }
+function selectedCustomRules(): CustomRule[] { return state.customRules.filter(rule => state.selectedRuleIds.includes(rule.id)); }
+function compiledCustomPrompt(): string { return state.useModel ? selectedCustomRules().map(rule => rule.prompt).join("\n\n") : ""; }
+// A freshly loaded rule set starts from the operator's Settings defaults; the
+// review step then owns the per-document choice until the list changes again.
+function syncDefaultRuleSelection(): void { state.selectedRuleIds = state.customRules.filter(rule => rule.is_default).map(rule => rule.id); }
 function customRuleCharacterCount(): number { return state.customRules.reduce((total, rule) => total + [...rule.prompt].length, 0); }
-function modelOperationBusy(): boolean { return state.modelRemovalRunning || ["downloading", "importing", "verifying"].includes(state.model.state); }
+function modelOperationBusy(): boolean { return state.modelRemovalRunning || ["importing", "verifying"].includes(state.model.state); }
 function isWorkflowView(): boolean { return state.view.kind === "workflow"; }
 function settingsOperationLocked(): boolean { return modelOperationBusy() || modelOperationBaseline !== null || state.modelRemovalPending || state.customRulePending; }
 function settingsSectionNavigationLocked(): boolean { return state.settingsLoading || settingsOperationLocked(); }
 function customRuleDraftDirty(): boolean {
   const editing = state.customRules.find(rule => rule.id === state.editingCustomRuleId);
-  return editing ? state.customRuleDraft !== editing.prompt : state.customRuleDraft.length > 0;
+  return editing
+    ? state.customRuleTitleDraft !== editing.title
+      || state.customRuleDraft !== editing.prompt
+      || state.customRuleDefaultDraft !== editing.is_default
+    : state.customRuleTitleDraft.length > 0 || state.customRuleDraft.length > 0 || state.customRuleDefaultDraft;
 }
 function settingsBusyMessage(): SettingsMessage {
   if (state.customRulePending) return { tone: "status", text: "Đang cập nhật prompt. Hãy chờ thao tác hoàn tất." };
   if (state.modelRemovalRunning) return { tone: "status", text: "Đang gỡ model khỏi máy. Hãy chờ thao tác hoàn tất." };
   if (state.modelRemovalPending) return { tone: "status", text: "Hãy chọn giữ lại hoặc gỡ model trước khi rời mục này." };
-  if (state.model.state === "downloading") return { tone: "status", text: "Đang tải model. Bạn có thể huỷ thao tác bằng nút bên dưới." };
   if (state.model.state === "importing") return { tone: "status", text: "Đang nhập gói model. Bạn có thể huỷ thao tác bằng nút bên dưới." };
   if (state.model.state === "verifying") return { tone: "status", text: "Đang xác minh và khởi động model. Hãy chờ thao tác hoàn tất." };
   if (modelOperationBaseline !== null) return { tone: "status", text: "Đang cập nhật trạng thái AI cục bộ. Hãy chờ thao tác hoàn tất." };
@@ -227,14 +195,31 @@ function settingsSectionHeading(section: SettingsSection): string {
   return section === "prompts" ? "#settings-prompts-title" : section === "review-rules" ? "#settings-review-rules-title" : "#settings-models-title";
 }
 
+function customRuleSelectionHtml(): string {
+  const count = state.customRules.length;
+  const applies = count > 0 && state.useModel && modelFilterAvailable();
+  const selected = state.selectedRuleIds.filter(id => state.customRules.some(rule => rule.id === id)).length;
+  const summary = count === 0
+    ? "Không có yêu cầu bổ sung; AI vẫn dùng prompt mặc định."
+    : applies
+      ? `Đang chọn ${selected.toLocaleString("vi-VN")}/${count.toLocaleString("vi-VN")}; các prompt được chọn sẽ gộp thành yêu cầu bổ sung cho prompt mặc định.`
+      : "Chưa được áp dụng vì AI cục bộ đang tắt hoặc chưa sẵn sàng.";
+  const picker = count === 0
+    ? `<div class="empty-state"><strong>Chưa có prompt riêng.</strong><span>Tạo prompt trong Cài đặt để cung cấp thuật ngữ hoặc tiêu chí riêng cho AI.</span></div>`
+    : `<ul class="prompt-picker">${state.customRules.map(rule => {
+        const id = escape(rule.id);
+        const checked = state.selectedRuleIds.includes(rule.id) ? "checked" : "";
+        return `<li class="prompt-picker__item"><label class="setting-row prompt-picker__row"><span><strong>${escape(rule.title)}</strong><small>${escape(rule.prompt)}</small></span><input type="checkbox" data-select-rule="${id}" ${checked} ${applies ? "" : "disabled"}></label></li>`;
+      }).join("")}</ul>`;
+  return `<fieldset class="custom-rules-summary prompt-picker-group"><legend class="sr-only">Quy tắc riêng áp dụng cho lần rà soát này</legend><div class="prompt-picker-group__header"><div><strong>${count.toLocaleString("vi-VN")} quy tắc riêng</strong><span>${summary}</span></div><div class="button-row"><button class="button button--secondary" id="manage-custom-rules" type="button">Quản lý prompt</button><button class="button button--quiet" id="manage-review-rules" type="button">Xem quy tắc rà soát</button></div></div>${picker}</fieldset>${count > 0 && !applies ? `<p class="settings-message settings-message--error" role="alert">Bật AI cục bộ để áp dụng các quy tắc riêng. <button class="inline-button" id="open-model-settings" type="button">Thiết lập AI</button></p>` : ""}`;
+}
+
 function render(preferredFocus?: string): void {
   const previousFocus = focusSelectorFor(document.activeElement);
   const workflowView = isWorkflowView();
   const focusStep = workflowView && renderedStep !== null && renderedStep !== state.step;
   const focusSettings = renderedView !== "settings" && state.view.kind === "settings";
   const doc = state.document;
-  const customRulesApply = state.customRules.length > 0 && state.useModel && modelFilterAvailable();
-  const customRuleCount = state.customRules.length;
   const reviewNavDisabled = state.view.kind === "settings" && settingsOperationLocked();
   app.innerHTML = `
     <header class="app-header">
@@ -253,7 +238,7 @@ function render(preferredFocus?: string): void {
     </nav>
     <main class="workflow-shell">
       ${state.step === "file" ? `<section class="workflow-card workflow-card--file"><div class="section-copy"><h1>Chọn tệp Word cần kiểm tra</h1><p>Ứng dụng tạo một bản kết quả mới và luôn giữ nguyên tệp gốc.</p></div><button class="drop-zone" id="choose"><strong>Chọn hoặc kéo thả tệp .docx</strong><span>Nhấn Ctrl+O để mở nhanh</span></button>${errorHtml()}</section>` : ""}
-      ${state.step === "rules" && doc ? `<section class="workflow-card"><div class="workflow-context"><button class="back-button" id="back">← Chọn tệp khác</button><div class="file-chip"><strong>${escape(doc.name)}</strong><span>${documentMetadata(doc)}</span></div></div><div class="section-copy"><h1>Chuẩn bị rà soát</h1><p>${reviewModeDescription()}</p></div><div class="custom-rules-summary"><div><strong>${customRuleCount.toLocaleString("vi-VN")} quy tắc riêng</strong><span>${customRuleCount === 0 ? "Không có yêu cầu bổ sung; AI vẫn dùng prompt mặc định." : customRulesApply ? "Sẽ được gộp thành yêu cầu bổ sung cho prompt mặc định." : "Chưa được áp dụng vì AI cục bộ đang tắt hoặc chưa sẵn sàng."}</span></div><div class="button-row"><button class="button button--secondary" id="manage-custom-rules" type="button">Quản lý prompt</button><button class="button button--quiet" id="manage-review-rules" type="button">Xem quy tắc rà soát</button></div></div>${customRuleCount > 0 && !customRulesApply ? `<p class="settings-message settings-message--error" role="alert">Bật AI cục bộ để áp dụng các quy tắc riêng. <button class="inline-button" id="open-model-settings" type="button">Thiết lập AI</button></p>` : ""}${fullReviewOptionHtml()}<div class="workflow-actions"><button class="button button--primary" id="start">Bắt đầu xử lý</button></div>${errorHtml()}</section>` : ""}
+      ${state.step === "rules" && doc ? `<section class="workflow-card"><div class="workflow-context"><button class="back-button" id="back">← Chọn tệp khác</button><div class="file-chip"><strong>${escape(doc.name)}</strong><span>${documentMetadata(doc)}</span></div></div><div class="workflow-lead"><div class="section-copy"><h1>Chuẩn bị rà soát</h1><p>${reviewModeDescription()}</p></div><div class="workflow-actions workflow-actions--lead"><button class="button button--primary" id="start">Bắt đầu xử lý</button></div></div>${customRuleSelectionHtml()}${fullReviewOptionHtml()}${errorHtml()}</section>` : ""}
       ${state.step === "processing" ? `<section class="workflow-card processing-panel"><div class="processing-status"><span class="spinner" aria-hidden="true"></span><div class="section-copy"><h1>${progressTitle()}</h1><p>Mọi xử lý tài liệu diễn ra trên máy này.</p></div></div><div class="progress-row"><div class="progress" role="progressbar" aria-label="Tiến độ xử lý" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${state.progress}"><span style="--progress-scale:${state.progress / 100}"></span></div><strong class="progress-value">${state.progress}%</strong></div><p class="sr-only progress-announcement" aria-live="polite" aria-atomic="true">${progressTitle()} ${state.progress}%</p><div class="workflow-actions"><button class="button button--secondary" id="cancel" ${state.jobStarting || state.cancelPending ? "disabled" : ""} ${state.jobStarting || state.cancelPending ? 'aria-busy="true"' : ""}>${state.jobStarting ? "Đang chuẩn bị…" : state.cancelPending ? "Đang dừng…" : "Dừng xử lý"}</button></div>${errorHtml()}</section>` : ""}
       ${(state.step === "result" || state.step === "no-findings") ? resultHtml() : ""}
     </main>` : settingsHtml()}
@@ -381,7 +366,6 @@ function promptDiscardConfirmationHtml(): string {
   if (!state.pendingPromptAction) return "";
   return `<div class="destructive-confirm" id="prompt-discard-confirmation" role="alert" aria-labelledby="prompt-discard-title"><p id="prompt-discard-title"><strong>Prompt có thay đổi chưa lưu.</strong> Tiếp tục chỉnh sửa hoặc bỏ thay đổi để thực hiện thao tác vừa chọn.</p><div class="button-row"><button class="button button--secondary button--small" id="cancel-prompt-discard" type="button">Tiếp tục chỉnh sửa</button><button class="button button--danger button--small" id="confirm-prompt-discard" type="button">Bỏ thay đổi</button></div></div>`;
 }
-function progressHtml(value: number, label: string, id?: string): string { return `<div class="progress" ${id ? `id="${id}"` : ""} role="progressbar" aria-label="${escape(label)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${value}"><span style="--progress-scale:${value / 100}"></span></div>`; }
 function settingsContent(section: SettingsSection): { body: string; footer: string } {
   if (section === "prompts") {
     const editing = state.customRules.find(rule => rule.id === state.editingCustomRuleId);
@@ -389,16 +373,18 @@ function settingsContent(section: SettingsSection): { body: string; footer: stri
     const available = Math.max(0, customRulePromptLimit - customRuleCharacterCount() + existingLength);
     const draftLength = [...state.customRuleDraft].length;
     const controlsLocked = state.customRulePending || state.settingsLoading;
+    const saveDisabled = controlsLocked || !state.customRuleTitleDraft.trim() || !state.customRuleDraft.trim();
     const promptList = state.customRules.length
       ? state.customRules.map((rule, index) => {
           const id = escape(rule.id);
           const selected = rule.id === state.editingCustomRuleId;
-          return `<div class="prompt-list__item"><button class="prompt-row" type="button" data-prompt-id="${id}" data-edit-rule="${id}" aria-label="Sửa prompt ${index + 1}" ${selected ? 'aria-current="true"' : ""} ${controlsLocked ? "disabled" : ""}><strong>Prompt ${index + 1}</strong><span>${escape(rule.prompt)}</span></button><button class="delete-button" type="button" data-delete-rule="${id}" aria-label="Xoá prompt ${index + 1}" ${controlsLocked ? "disabled" : ""}>Xoá</button></div>`;
+          const badge = rule.is_default ? `<em class="prompt-row__badge">Chọn sẵn</em>` : "";
+          return `<div class="prompt-list__item"><button class="prompt-row" type="button" data-prompt-id="${id}" data-edit-rule="${id}" aria-label="Sửa prompt ${index + 1}: ${escape(rule.title)}" ${selected ? 'aria-current="true"' : ""} ${controlsLocked ? "disabled" : ""}><strong>${escape(rule.title)}${badge}</strong><span>${escape(rule.prompt)}</span></button><button class="delete-button" type="button" data-delete-rule="${id}" aria-label="Xoá prompt ${index + 1}: ${escape(rule.title)}" ${controlsLocked ? "disabled" : ""}>Xoá</button></div>`;
         }).join("")
       : `<div class="empty-state"><strong>Chưa có prompt riêng.</strong><span>Tạo một prompt để cung cấp thuật ngữ, ngữ cảnh hoặc tiêu chí kiểm tra riêng cho AI.</span></div>`;
     return {
-      body: `<section class="settings-section settings-prompts" id="settings-prompts" aria-labelledby="settings-prompts-title"><header class="settings-section__header"><div class="section-copy"><h2 id="settings-prompts-title">Prompt</h2><p>Mỗi mục là một đoạn hướng dẫn bổ sung cho AI; ứng dụng tự quản lý định dạng kết quả và vị trí bôi vàng.</p></div><button class="button button--secondary" id="new-custom-rule" type="button" ${controlsLocked ? "disabled" : ""}>Prompt mới</button></header><div class="prompt-manager"><div class="prompt-manager__master"><nav class="prompt-list" aria-label="Danh sách prompt" aria-live="polite">${promptList}</nav></div><section class="prompt-manager__detail" aria-labelledby="custom-rule-editor-title"><div class="section-copy"><h3 id="custom-rule-editor-title">${editing ? "Sửa prompt" : "Tạo prompt"}</h3><p>${editing ? "Chỉnh nội dung rồi lưu thay đổi, hoặc huỷ để trở về chế độ tạo mới." : "Mô tả thuật ngữ, ngữ cảnh hoặc tiêu chí mà AI cần chú ý."}</p></div><form class="custom-rule-form" id="custom-rule-form"><div class="control"><label for="custom-rule-prompt">Nội dung prompt</label><textarea id="custom-rule-prompt" name="prompt" rows="7" required maxlength="${available}" aria-describedby="custom-rule-help custom-rule-count${state.customRulePromptInvalid ? " settings-message" : ""}" ${state.customRulePromptInvalid ? 'aria-invalid="true"' : ""} placeholder="Ví dụ: Dùng thuật ngữ “khách hàng”, không dùng “client”." ${controlsLocked ? "disabled" : ""}>${escape(state.customRuleDraft)}</textarea><div class="field__meta"><span class="field__helper" id="custom-rule-help">Không yêu cầu AI trả cả câu/đoạn hoặc tự đặt cấu trúc output. Tổng tối đa 4.000 ký tự.</span><small id="custom-rule-count">${draftLength.toLocaleString("vi-VN")}/${available.toLocaleString("vi-VN")} ký tự còn dùng được cho mục này</small></div></div></form></section></div></section>`,
-      footer: `<footer class="settings-footer"><div class="button-row settings-footer__actions"><button class="button button--primary" type="submit" form="custom-rule-form" ${controlsLocked || !state.customRuleDraft.trim() ? "disabled" : ""}>${state.customRulePending ? "Đang lưu…" : editing ? "Lưu thay đổi" : "Thêm prompt"}</button>${editing ? `<button class="button button--secondary" id="cancel-rule-edit" type="button" ${controlsLocked ? "disabled" : ""}>Huỷ sửa</button>` : ""}</div></footer>`,
+      body: `<section class="settings-section settings-prompts" id="settings-prompts" aria-labelledby="settings-prompts-title"><header class="settings-section__header"><div class="section-copy"><h2 id="settings-prompts-title">Prompt</h2><p>Mỗi mục là một đoạn hướng dẫn bổ sung cho AI; ứng dụng tự quản lý định dạng kết quả và vị trí bôi vàng.</p></div><button class="button button--secondary" id="new-custom-rule" type="button" ${controlsLocked ? "disabled" : ""}>Prompt mới</button></header><div class="prompt-manager"><div class="prompt-manager__master"><nav class="prompt-list" aria-label="Danh sách prompt" aria-live="polite">${promptList}</nav></div><section class="prompt-manager__detail" aria-labelledby="custom-rule-editor-title"><div class="section-copy"><h3 id="custom-rule-editor-title">${editing ? "Sửa prompt" : "Tạo prompt"}</h3><p>${editing ? "Chỉnh nội dung rồi lưu thay đổi, hoặc huỷ để trở về chế độ tạo mới." : "Mô tả thuật ngữ, ngữ cảnh hoặc tiêu chí mà AI cần chú ý."}</p></div><form class="custom-rule-form" id="custom-rule-form"><div class="control"><label for="custom-rule-title">Tiêu đề</label><input type="text" id="custom-rule-title" name="title" required maxlength="${customRuleTitleLimit}" aria-describedby="custom-rule-title-help${state.customRuleTitleInvalid ? " settings-message" : ""}" ${state.customRuleTitleInvalid ? 'aria-invalid="true"' : ""} placeholder="Ví dụ: Thuật ngữ khách hàng" value="${escape(state.customRuleTitleDraft)}" ${controlsLocked ? "disabled" : ""}><span class="field__helper" id="custom-rule-title-help">Bắt buộc, tối đa ${customRuleTitleLimit} ký tự. Tiêu đề hiển thị ở bước Chuẩn bị rà soát và không được gửi cho AI.</span></div><div class="control"><label for="custom-rule-prompt">Nội dung prompt</label><textarea id="custom-rule-prompt" name="prompt" rows="7" required maxlength="${available}" aria-describedby="custom-rule-help custom-rule-count${state.customRulePromptInvalid ? " settings-message" : ""}" ${state.customRulePromptInvalid ? 'aria-invalid="true"' : ""} placeholder="Ví dụ: Dùng thuật ngữ “khách hàng”, không dùng “client”." ${controlsLocked ? "disabled" : ""}>${escape(state.customRuleDraft)}</textarea><div class="field__meta"><span class="field__helper" id="custom-rule-help">Không yêu cầu AI trả cả câu/đoạn hoặc tự đặt cấu trúc output. Tổng tối đa 4.000 ký tự.</span><small id="custom-rule-count">${draftLength.toLocaleString("vi-VN")}/${available.toLocaleString("vi-VN")} ký tự còn dùng được cho mục này</small></div></div><label class="setting-row"><span><strong>Chọn sẵn ở bước Chuẩn bị rà soát</strong><small>Prompt này sẽ được tick mặc định khi bắt đầu một lần rà soát mới.</small></span><input type="checkbox" id="custom-rule-default" ${state.customRuleDefaultDraft ? "checked" : ""} ${controlsLocked ? "disabled" : ""}></label></form></section></div></section>`,
+      footer: `<footer class="settings-footer"><div class="button-row settings-footer__actions"><button class="button button--primary" type="submit" form="custom-rule-form" ${saveDisabled ? "disabled" : ""}>${state.customRulePending ? "Đang lưu…" : editing ? "Lưu thay đổi" : "Thêm prompt"}</button>${editing ? `<button class="button button--secondary" id="cancel-rule-edit" type="button" ${controlsLocked ? "disabled" : ""}>Huỷ sửa</button>` : ""}</div></footer>`,
     };
   }
   if (section === "review-rules") {
@@ -409,22 +395,13 @@ function settingsContent(section: SettingsSection): { body: string; footer: stri
   }
   const installed = state.model.state === "ready" || state.model.state === "installed";
   const busy = modelOperationBusy();
-  const progressBusy = ["downloading", "importing", "verifying"].includes(state.model.state);
   const controlsLocked = busy || modelOperationBaseline !== null || state.modelRemovalPending || state.settingsLoading;
   const activeModelId = state.model.model_id;
-  const downloadInfo = state.model.state === "downloading" && state.modelTotal > 0
-    ? `Đang tải model… ${formatBytes(state.modelReceived)} / ${formatBytes(state.modelTotal)} (${state.modelProgress}%)`
-    : state.model.state === "downloading"
-    ? `Đang tải model… ${state.modelProgress}%`
-    : "";
-  const title = state.modelRemovalRunning ? "Đang gỡ model…" : state.model.state === "ready" ? (state.model.release_approved ? "AI cục bộ đã sẵn sàng" : "AI cục bộ đang ở chế độ đánh giá") : state.model.state === "installed" ? (state.model.code ? "Model đã cài nhưng chưa thể khởi động" : "Model đã cài; AI đang tắt") : state.model.state === "downloading" ? downloadInfo : state.model.state === "importing" ? "Đang nhập gói model…" : state.model.state === "verifying" ? "Đang xác minh và khởi động model…" : state.model.state === "cancelled" ? "Đã dừng thao tác model" : state.model.state === "invalid" || state.model.state === "incompatible" ? "Gói model không hợp lệ hoặc không tương thích" : state.model.state === "error" ? "Không thể cài model" : "Chưa cài AI cục bộ";
-  const chosen = selectedModel();
-  const selectedIsActive = installed && activeModelId === chosen.id;
-  const actionLabel = busy ? "Huỷ thao tác" : selectedIsActive ? "Đang sử dụng" : `Tải ${chosen.name}`;
+  const title = state.modelRemovalRunning ? "Đang gỡ model…" : state.model.state === "ready" ? (state.model.release_approved ? "AI cục bộ đã sẵn sàng" : "AI cục bộ đang ở chế độ đánh giá") : state.model.state === "installed" ? (state.model.code ? "Model đã cài nhưng chưa thể khởi động" : "Model đã cài; AI đang tắt") : state.model.state === "importing" ? "Đang nhập gói model…" : state.model.state === "verifying" ? "Đang xác minh và khởi động model…" : state.model.state === "cancelled" ? "Đã dừng thao tác model" : state.model.state === "invalid" || state.model.state === "incompatible" ? "Gói model không hợp lệ hoặc không tương thích" : state.model.state === "error" ? "Không thể cài model" : "Chưa cài AI cục bộ";
   return {
     body: `
     <section class="settings-section settings-models" id="settings-models" aria-labelledby="settings-models-title">
-    <header class="settings-section__header"><div class="section-copy"><h2 id="settings-models-title">AI cục bộ</h2><p>Chọn và quản lý model chạy hoàn toàn trên máy này.</p></div></header>
+    <header class="settings-section__header"><div class="section-copy"><h2 id="settings-models-title">AI cục bộ</h2><p>Nhập gói model từ tệp có sẵn trên máy. Ứng dụng không tải model qua mạng.</p></div></header>
     <div class="model-card">
       <div class="model-card__header">
         <div>
@@ -433,43 +410,17 @@ function settingsContent(section: SettingsSection): { body: string; footer: stri
         </div>
         ${installed && !state.modelRemovalPending ? `<button class="delete-button" id="model-remove" type="button" ${controlsLocked ? "disabled" : ""}>Gỡ model</button>` : ""}
       </div>
-      ${progressBusy ? progressHtml(state.modelProgress, "Tiến độ thao tác model", "model-download-progress") : ""}
-      ${state.modelRemovalPending ? `<div class="destructive-confirm" role="alert"><p>Gỡ model sẽ giải phóng dung lượng, nhưng bạn phải tải lại nếu muốn dùng AI sau này.</p><div class="button-row"><button class="button button--secondary button--small" id="cancel-model-remove" type="button" ${state.modelRemovalRunning ? "disabled" : ""}>Giữ lại</button><button class="button button--danger button--small" id="confirm-model-remove" type="button" ${state.modelRemovalRunning ? 'disabled aria-busy="true"' : ""}>${state.modelRemovalRunning ? "Đang gỡ…" : "Gỡ model"}</button></div></div>` : ""}
+      ${state.modelRemovalPending ? `<div class="destructive-confirm" role="alert"><p>Gỡ model sẽ giải phóng dung lượng, nhưng bạn phải nhập lại gói nếu muốn dùng AI sau này.</p><div class="button-row"><button class="button button--secondary button--small" id="cancel-model-remove" type="button" ${state.modelRemovalRunning ? "disabled" : ""}>Giữ lại</button><button class="button button--danger button--small" id="confirm-model-remove" type="button" ${state.modelRemovalRunning ? 'disabled aria-busy="true"' : ""}>${state.modelRemovalRunning ? "Đang gỡ…" : "Gỡ model"}</button></div></div>` : ""}
     </div>
     ${installed && state.model.trust === "local_unverified" ? `<p class="settings-message settings-message--error" role="status">Model GGUF nhập cục bộ chưa có chữ ký và benchmark phát hành. Có thể rà soát sâu để đánh giá trên máy này, nhưng kết quả chưa được phê duyệt cho phát hành.</p>` : ""}
     ${installed ? `<label class="setting-row"><span><strong>Dùng AI với quy tắc riêng</strong><small>Tắt để giải phóng bộ nhớ; bộ kiểm tra cơ bản vẫn tiếp tục hoạt động.</small></span><input type="checkbox" id="use-model" ${state.useModel ? "checked" : ""} ${controlsLocked ? "disabled" : ""}></label>` : ""}
     <div class="section-copy model-section-copy">
-      <h3>Chọn phiên bản Gemma 4</h3>
-      <p>Dung lượng tải và yêu cầu thiết bị được ghi rõ cho từng phiên bản.</p>
+      <h3>Nhập gói model</h3>
+      <p>Chấp nhận gói <code>.svmodel</code> đã ký hoặc tệp <code>.gguf</code> nhập cục bộ. Gói ký số mới được coi là đã phê duyệt phát hành.</p>
     </div>
-    <fieldset class="model-catalog"><legend class="sr-only">Phiên bản Gemma 4</legend>
-      ${gemma4Catalog.map(item => {
-        const isActive = installed && activeModelId === item.id;
-        const isSelected = state.selectedModelId === item.id;
-        return `
-          <label class="model-option ${isActive ? "active" : ""}">
-            <div class="model-option-header">
-              <div class="model-option-title">
-                <input type="radio" name="gemma-select" value="${item.id}" ${isSelected ? "checked" : ""} ${controlsLocked ? "disabled" : ""}>
-                <span>${escape(item.name)}</span>
-              </div>
-              <div class="model-badges">
-                <span class="model-badge ${item.badgeClass ?? ""}">${escape(item.badge)}</span>
-                ${isActive ? `<span class="model-badge model-badge--active">✓ Đang dùng</span>` : ""}
-              </div>
-            </div>
-            <div class="model-meta">
-              <span><strong>Dung lượng</strong> ${escape(item.size)}</span>
-              <span><strong>Thiết bị</strong> ${escape(item.ram)}</span>
-            </div>
-            <p>${escape(item.description)}</p>
-          </label>
-        `;
-      }).join("")}
-    </fieldset>
-    <p class="notice">Ứng dụng chỉ kết nối mạng khi bạn chủ động tải model. Nội dung tài liệu không được gửi đi.</p>
+    <p class="notice">Ứng dụng không kết nối mạng để lấy model. Nội dung tài liệu không được gửi đi.</p>
     </section>`,
-    footer: `<footer class="settings-footer"><div class="button-row settings-footer__actions"><button class="button button--secondary" id="model-import" type="button" ${controlsLocked ? "disabled" : ""}>Nhập gói có sẵn</button><button class="button button--primary" id="model-action" type="button" ${state.settingsLoading || state.modelRemovalPending || (!busy && modelOperationBaseline !== null) || (selectedIsActive && !busy) ? "disabled" : ""} ${busy ? 'aria-busy="true"' : ""}>${escape(actionLabel)}</button></div></footer>`,
+    footer: `<footer class="settings-footer"><div class="button-row settings-footer__actions"><button class="button button--primary" id="model-import" type="button" ${controlsLocked ? "disabled" : ""}>Nhập gói có sẵn</button><button class="button button--secondary" id="model-action" type="button" ${busy && !state.modelRemovalRunning ? "" : "disabled"} ${busy ? 'aria-busy="true"' : ""}>Huỷ thao tác</button></div></footer>`,
   };
 }
 
@@ -498,6 +449,27 @@ function bind(): void {
     state.includeRuleFindings = state.fullReview && fullReviewAvailable() && (event.target as HTMLInputElement).checked;
     render("#include-rule-findings");
   });
+  document.querySelectorAll<HTMLInputElement>("[data-select-rule]").forEach(input => input.addEventListener("change", () => {
+    const id = input.dataset.selectRule!;
+    state.selectedRuleIds = input.checked
+      ? [...new Set([...state.selectedRuleIds, id])]
+      : state.selectedRuleIds.filter(item => item !== id);
+    render(`[data-select-rule="${id}"]`);
+  }));
+  document.querySelector<HTMLInputElement>("#custom-rule-title")?.addEventListener("input", event => {
+    state.customRuleTitleDraft = (event.target as HTMLInputElement).value;
+    if (state.customRuleTitleInvalid) {
+      state.customRuleTitleInvalid = false;
+      state.settingsMessage = null;
+      (event.target as HTMLInputElement).removeAttribute("aria-invalid");
+      (event.target as HTMLInputElement).setAttribute("aria-describedby", "custom-rule-title-help");
+      document.querySelector("#settings-message")?.remove();
+    }
+    updateCustomRuleSaveControl();
+  });
+  document.querySelector<HTMLInputElement>("#custom-rule-default")?.addEventListener("change", event => {
+    state.customRuleDefaultDraft = (event.target as HTMLInputElement).checked;
+  });
   document.querySelector<HTMLTextAreaElement>("#custom-rule-prompt")?.addEventListener("input", event => {
     state.customRuleDraft = (event.target as HTMLTextAreaElement).value;
     if (state.customRulePromptInvalid) {
@@ -511,8 +483,7 @@ function bind(): void {
     const available = Math.max(0, customRulePromptLimit - customRuleCharacterCount() + (editing ? [...editing.prompt].length : 0));
     const counter = document.querySelector<HTMLElement>("#custom-rule-count");
     if (counter) counter.textContent = `${[...state.customRuleDraft].length.toLocaleString("vi-VN")}/${available.toLocaleString("vi-VN")} ký tự còn dùng được cho mục này`;
-    const submit = document.querySelector<HTMLButtonElement>('button[type="submit"][form="custom-rule-form"]');
-    if (submit) submit.disabled = !state.customRuleDraft.trim();
+    updateCustomRuleSaveControl();
   });
   document.querySelector<HTMLFormElement>("#custom-rule-form")?.addEventListener("submit", event => void saveCustomRule(event));
   document.querySelector("#new-custom-rule")?.addEventListener("click", () => newCustomRule());
@@ -527,7 +498,11 @@ function bind(): void {
   document.querySelector("#model-remove")?.addEventListener("click", () => { state.modelRemovalPending = true; state.settingsMessage = null; render("#cancel-model-remove"); });
   document.querySelector("#cancel-model-remove")?.addEventListener("click", () => { state.modelRemovalPending = false; state.settingsMessage = null; render("#model-remove"); });
   document.querySelector("#confirm-model-remove")?.addEventListener("click", () => void removeModel());
-  document.querySelectorAll<HTMLInputElement>('input[name="gemma-select"]').forEach(input => input.addEventListener("change", () => { state.selectedModelId = input.value; render(`input[name="gemma-select"][value="${input.value}"]`); }));
+}
+
+function updateCustomRuleSaveControl(): void {
+  const submit = document.querySelector<HTMLButtonElement>('button[type="submit"][form="custom-rule-form"]');
+  if (submit) submit.disabled = !state.customRuleTitleDraft.trim() || !state.customRuleDraft.trim();
 }
 
 function requestPromptAction(action: PendingPromptAction): boolean {
@@ -546,8 +521,11 @@ function confirmPromptDiscard(): void {
   const action = state.pendingPromptAction;
   if (!action) return;
   state.pendingPromptAction = null;
+  state.customRuleTitleDraft = "";
   state.customRuleDraft = "";
+  state.customRuleDefaultDraft = false;
   state.editingCustomRuleId = null;
+  state.customRuleTitleInvalid = false;
   state.customRulePromptInvalid = false;
   state.settingsMessage = null;
   if (action.kind === "close") closeSettings(action.preferredReturnFocus, true);
@@ -564,7 +542,10 @@ function activateSettingsSection(section: SettingsSection, discardConfirmed = fa
   }
   if (state.view.section === section) return;
   if (!discardConfirmed && requestPromptAction({ kind: "section", section })) return;
-  if (state.view.section === "prompts") state.customRulePromptInvalid = false;
+  if (state.view.section === "prompts") {
+    state.customRuleTitleInvalid = false;
+    state.customRulePromptInvalid = false;
+  }
   state.view = { ...state.view, section };
   state.pendingPromptAction = null;
   state.settingsMessage = null;
@@ -733,7 +714,10 @@ function closeSettings(preferredReturnFocus?: string, discardConfirmed = false):
   state.settingsMessage = null;
   state.lastDeletedRule = null;
   state.editingCustomRuleId = null;
+  state.customRuleTitleDraft = "";
   state.customRuleDraft = "";
+  state.customRuleDefaultDraft = false;
+  state.customRuleTitleInvalid = false;
   state.customRulePromptInvalid = false;
   state.pendingPromptAction = null;
   render(returnFocus);
@@ -768,12 +752,12 @@ async function openSettings(section: SettingsSection = "prompts", returnFocus = 
   }
   if (modelResult.status === "fulfilled" && modelSequence === modelOperationSequence && modelStatusRequest === modelStatusRequestSequence) {
     state.model = modelResult.value;
-    if (state.model.model_id && gemma4Catalog.some(item => item.id === state.model.model_id)) state.selectedModelId = state.model.model_id;
   } else if (modelResult.status === "rejected") {
     state.settingsMessage = { tone: "error", text: "Không đọc được trạng thái AI cục bộ. Quy tắc riêng vẫn có thể được chỉnh sửa." };
   }
   if (customRulesResult.status === "fulfilled" && customRuleSequence === customRuleOperationSequence && customRuleRequest === customRuleRequestSequence) {
     state.customRules = customRulesResult.value;
+    syncDefaultRuleSelection();
   } else if (customRulesResult.status === "rejected") {
     state.settingsMessage = { tone: "error", text: "Không tải được prompt riêng. Hãy quay lại màn rà soát, mở Cài đặt và thử lần nữa." };
   }
@@ -781,26 +765,42 @@ async function openSettings(section: SettingsSection = "prompts", returnFocus = 
   state.settingsLoading = false;
   render();
 }
+function applyRuleDefaultSelection(rule: CustomRule): void {
+  state.selectedRuleIds = rule.is_default
+    ? [...new Set([...state.selectedRuleIds, rule.id])]
+    : state.selectedRuleIds.filter(id => id !== rule.id);
+}
 async function saveCustomRule(event: SubmitEvent): Promise<void> {
   event.preventDefault();
   if (state.customRulePending) return;
+  const title = state.customRuleTitleDraft.trim().normalize("NFC");
   const prompt = state.customRuleDraft.trim().normalize("NFC");
+  if (!title || [...title].length > customRuleTitleLimit) {
+    state.customRuleTitleInvalid = true;
+    state.settingsMessage = { tone: "error", text: `Tiêu đề là bắt buộc và tối đa ${customRuleTitleLimit} ký tự.` };
+    render("#custom-rule-title");
+    return;
+  }
   if (!prompt) return;
   const operation = ++customRuleOperationSequence;
   state.customRulePending = true;
+  state.customRuleTitleInvalid = false;
   state.customRulePromptInvalid = false;
   state.pendingPromptAction = null;
   state.settingsMessage = null;
   render("#custom-rule-prompt");
   try {
-    const saved = await api.customRuleUpsert(state.editingCustomRuleId, prompt);
+    const saved = await api.customRuleUpsert(state.editingCustomRuleId, title, prompt, state.customRuleDefaultDraft);
     if (operation !== customRuleOperationSequence) return;
     const existing = state.customRules.findIndex(rule => rule.id === saved.id);
     state.customRules = existing >= 0
       ? state.customRules.map(rule => rule.id === saved.id ? saved : rule)
       : [...state.customRules, saved];
     state.customRules.sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
+    applyRuleDefaultSelection(saved);
+    state.customRuleTitleDraft = "";
     state.customRuleDraft = "";
+    state.customRuleDefaultDraft = false;
     state.editingCustomRuleId = null;
     state.lastDeletedRule = null;
     state.settingsMessage = { tone: "status", text: "Đã lưu prompt." };
@@ -820,12 +820,15 @@ function newCustomRule(discardConfirmed = false): void {
   if (state.customRulePending || state.settingsLoading) return;
   if (!discardConfirmed && requestPromptAction({ kind: "new" })) return;
   state.editingCustomRuleId = null;
+  state.customRuleTitleDraft = "";
   state.customRuleDraft = "";
+  state.customRuleDefaultDraft = false;
+  state.customRuleTitleInvalid = false;
   state.customRulePromptInvalid = false;
   state.pendingPromptAction = null;
   state.lastDeletedRule = null;
   state.settingsMessage = null;
-  render("#custom-rule-prompt");
+  render("#custom-rule-title");
 }
 function editCustomRule(id: string, discardConfirmed = false): void {
   const rule = state.customRules.find(item => item.id === id);
@@ -836,7 +839,10 @@ function editCustomRule(id: string, discardConfirmed = false): void {
   }
   if (!discardConfirmed && requestPromptAction({ kind: "edit", id })) return;
   state.editingCustomRuleId = id;
+  state.customRuleTitleDraft = rule.title;
   state.customRuleDraft = rule.prompt;
+  state.customRuleDefaultDraft = rule.is_default;
+  state.customRuleTitleInvalid = false;
   state.customRulePromptInvalid = false;
   state.pendingPromptAction = null;
   state.lastDeletedRule = null;
@@ -846,7 +852,10 @@ function editCustomRule(id: string, discardConfirmed = false): void {
 function cancelCustomRuleEdit(): void {
   if (state.customRulePending) return;
   state.editingCustomRuleId = null;
+  state.customRuleTitleDraft = "";
   state.customRuleDraft = "";
+  state.customRuleDefaultDraft = false;
+  state.customRuleTitleInvalid = false;
   state.customRulePromptInvalid = false;
   state.pendingPromptAction = null;
   state.settingsMessage = null;
@@ -865,10 +874,14 @@ async function deleteCustomRule(id: string): Promise<void> {
     if (operation !== customRuleOperationSequence) return;
     if (!deleted) throw new Error("not deleted");
     state.customRules = state.customRules.filter(item => item.id !== id);
+    state.selectedRuleIds = state.selectedRuleIds.filter(item => item !== id);
     state.lastDeletedRule = rule;
     if (state.editingCustomRuleId === id) {
       state.editingCustomRuleId = null;
+      state.customRuleTitleDraft = "";
       state.customRuleDraft = "";
+      state.customRuleDefaultDraft = false;
+      state.customRuleTitleInvalid = false;
       state.customRulePromptInvalid = false;
       state.pendingPromptAction = null;
     }
@@ -889,9 +902,10 @@ async function undoDeleteCustomRule(): Promise<void> {
   state.settingsMessage = null;
   render("#undo-delete-rule");
   try {
-    const restored = await api.customRuleUpsert(rule.id, rule.prompt);
+    const restored = await api.customRuleUpsert(rule.id, rule.title, rule.prompt, rule.is_default);
     if (operation !== customRuleOperationSequence) return;
     state.customRules = [...state.customRules, restored].sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
+    applyRuleDefaultSelection(restored);
     state.lastDeletedRule = null;
     state.settingsMessage = { tone: "status", text: "Đã khôi phục quy tắc riêng." };
   } catch {
@@ -945,7 +959,6 @@ async function modelImport(): Promise<void> {
   const previous = { model: state.model, useModel: state.useModel };
   modelOperationBaseline = previous;
   state.model = { ...state.model, state: "importing" };
-  state.modelProgress = 0;
   state.settingsMessage = null;
   render("#model-import");
   try {
@@ -976,43 +989,7 @@ async function modelImport(): Promise<void> {
     }
   }
 }
-async function downloadGemmaModel(modelId: string): Promise<void> {
-  if (modelOperationBusy() || state.modelRemovalPending) return;
-  const operation = ++modelOperationSequence;
-  const previous = { model: state.model, useModel: state.useModel };
-  modelOperationBaseline = previous;
-  state.selectedModelId = modelId;
-  state.downloadingModelId = modelId;
-  state.model = { state: "downloading" };
-  state.modelProgress = 0;
-  state.modelReceived = 0;
-  state.modelTotal = 0;
-  state.settingsMessage = null;
-  render("#model-action");
-  try {
-    const status = await api.modelDownload(modelId);
-    if (operation !== modelOperationSequence) return;
-    state.model = status;
-    state.useModel = modelCanFilter(status);
-    state.fullReview = state.useModel && status.capabilities?.full_review === true;
-    state.includeRuleFindings = false;
-    saveModelPreference(state.useModel);
-  } catch {
-    if (operation === modelOperationSequence) {
-      state.model = previous.model;
-      state.useModel = previous.useModel;
-      state.settingsMessage = { tone: "error", text: "Không tải được model. Model đang dùng trước đó được giữ nguyên." };
-    }
-  } finally {
-    if (operation === modelOperationSequence) {
-      state.downloadingModelId = null;
-      modelOperationBaseline = null;
-      clearUnavailableFullReview();
-      render("#model-action");
-    }
-  }
-}
-async function cancelModelDownload(): Promise<void> {
+async function cancelModelOperation(): Promise<void> {
   if (!modelOperationBusy() || state.modelRemovalRunning) return;
   try {
     const cancelled = await api.modelCancel();
@@ -1027,7 +1004,6 @@ async function cancelModelDownload(): Promise<void> {
       state.useModel = false;
     }
     modelOperationBaseline = null;
-    state.downloadingModelId = null;
     state.settingsMessage = { tone: "status", text: "Đã dừng thao tác model." };
   } catch {
     state.settingsMessage = { tone: "error", text: "Không dừng được thao tác model. Hãy chờ tác vụ hiện tại kết thúc." };
@@ -1066,12 +1042,7 @@ async function removeModel(): Promise<void> {
 }
 async function modelAction(): Promise<void> {
   if (state.modelRemovalPending || state.modelRemovalRunning) return;
-  if (modelOperationBusy()) {
-    await cancelModelDownload();
-    return;
-  }
-  if (["ready", "installed"].includes(state.model.state) && state.model.model_id === state.selectedModelId) return;
-  await downloadGemmaModel(state.selectedModelId);
+  if (modelOperationBusy()) await cancelModelOperation();
 }
 
 // Initial render immediately paints the UI
@@ -1132,7 +1103,6 @@ try {
     state.fullReview = state.useModel && model.capabilities?.full_review === true;
     state.includeRuleFindings = false;
     clearUnavailableFullReview();
-    if (model.model_id && gemma4Catalog.some(item => item.id === model.model_id)) state.selectedModelId = model.model_id;
     render();
   }).catch(() => {});
 } catch { /* noop */ }
@@ -1143,27 +1113,9 @@ try {
   void api.customRuleList().then(rules => {
     if (customRuleSequence !== customRuleOperationSequence || request !== customRuleRequestSequence) return;
     state.customRules = rules;
+    syncDefaultRuleSelection();
     render();
   }).catch(() => {});
 } catch { /* noop */ }
 
 try { void api.appVersion().then(version => { state.appVersion = version; render(); }).catch(() => {}); } catch { /* noop */ }
-
-try {
-  void api.onModelProgress(event => {
-    state.modelReceived = event.received;
-    state.modelTotal = event.total;
-    state.modelProgress = event.total > 0
-      ? Math.min(100, Math.round((event.received / event.total) * 1000) / 10)
-      : event.percent;
-    if (state.model.state === "downloading") {
-      const progress = document.querySelector<HTMLElement>("#model-download-progress");
-      progress?.setAttribute("aria-valuenow", String(state.modelProgress));
-      progress?.querySelector<HTMLElement>("span")?.style.setProperty("--progress-scale", String(state.modelProgress / 100));
-      const title = document.querySelector<HTMLElement>("#model-status-title");
-      if (title) title.textContent = event.total > 0
-        ? `Đang tải model… ${formatBytes(event.received)} / ${formatBytes(event.total)} (${state.modelProgress}%)`
-        : `Đang tải model… ${state.modelProgress}%`;
-    }
-  }).catch(() => {});
-} catch { /* noop */ }

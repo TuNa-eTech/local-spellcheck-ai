@@ -90,13 +90,13 @@ Script build đúng kiến trúc của máy đang chạy. Để phát hành cho 
 
 ## Model và cấu hình build
 
-Model không được đóng trong installer. Tải model chỉ được compile khi có đủ các biến môi trường sau:
+Model không được đóng trong installer và ứng dụng không có đường tải model qua mạng. Model chỉ vào máy bằng lệnh nhập gói trong Settings > `AI cục bộ`.
 
-- `SOATVAN_MODEL_ENDPOINT`: URL HTTPS chính xác.
-- `SOATVAN_MODEL_ALLOWLIST`: hostname được phép, phân cách bằng dấu phẩy.
+Xác minh chữ ký gói `.svmodel` cần một biến compile-time:
+
 - `SOATVAN_MODEL_PUBLIC_KEY`: Ed25519 public key dạng base64.
 
-Nếu không có đủ cấu hình, ứng dụng vẫn build và chạy rule-only; chức năng tải model fail-closed. Import gói model offline vẫn yêu cầu manifest, checksum và chữ ký hợp lệ.
+Không có biến này, ứng dụng vẫn build và chạy rule-only; nhập gói ký số fail-closed với `MODEL_NOT_CONFIGURED`. Nhập tệp `.gguf` trực tiếp không cần biến này nhưng được đánh dấu `local_unverified` và không được coi là đã phê duyệt phát hành.
 
 ### Benchmark và đóng gói model M2
 

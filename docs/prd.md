@@ -11,7 +11,7 @@
 
 ## 1. Tóm tắt
 
-Xây dựng phần mềm desktop nhận file Word, phát hiện lỗi chính tả và trình bày tiếng Việt, trả về file Word có bôi vàng và comment kèm gợi ý sửa. Toàn bộ nội dung tài liệu được xử lý trên máy người dùng. Build air-gap không có mạng; build connected chỉ kết nối khi người dùng chủ động tải model từ endpoint allowlist và không gửi nội dung tài liệu.
+Xây dựng phần mềm desktop nhận file Word, phát hiện lỗi chính tả và trình bày tiếng Việt, trả về file Word có bôi vàng và comment kèm gợi ý sửa. Toàn bộ nội dung tài liệu được xử lý trên máy người dùng. Ứng dụng không có đường kết nối mạng: model được cấp bằng cách nhập gói từ tệp có sẵn trên máy.
 
 Kiến trúc lai: **LLM offline** có thể tắt, chỉ lọc candidate hoặc rà toàn bộ phần nội dung được hỗ trợ theo các chunk giới hạn token. **Bộ kiểm tra cơ bản cố định** chạy độc lập khi AI tắt, cung cấp candidate cho AI filter, hoặc được bật như lớp bổ sung tùy chọn trong full review. Người dùng không cấu hình preset/nhóm rule/từ điển; phần tuỳ biến duy nhất là CRUD các **quy tắc riêng**, mỗi mục là một đoạn prompt text được ghép thành context chung khi AI bật.
 
@@ -132,8 +132,8 @@ Kiến trúc lai: **LLM offline** có thể tắt, chỉ lọc candidate hoặc 
 
 **F7. Cài đặt phần mềm và model offline**
 - Bộ cài chạy được trên máy không có internet
-- Model được nhập bằng package đã xác minh; build connected có thể cho tải chủ động từ endpoint allowlist và không gửi nội dung tài liệu
-- Mục `AI cục bộ` hỗ trợ chọn model, tải hoặc nhập theo release profile, hiển thị tiến độ, huỷ thao tác, kích hoạt/tắt runtime và gỡ model
+- Model được nhập bằng package đã xác minh từ tệp có sẵn trên máy; ứng dụng không có chức năng tải model qua mạng
+- Mục `AI cục bộ` hỗ trợ nhập gói model, huỷ thao tác, kích hoạt/tắt runtime và gỡ model
 - ✅ Given máy hoàn toàn không có mạng, when cài đặt và chạy, then phần mềm hoạt động đầy đủ
 
 > **Superseded từ PRD 0.2:** preview tài liệu, finding list, thao tác sửa/bỏ qua/undo trong app, quản lý từ điển, preset và checkbox từng nhóm rule không còn thuộc sản phẩm hiện hành. Người dùng xem cảnh báo và quyết định chỉnh sửa trong file DOCX kết quả bằng Microsoft Word.
@@ -165,7 +165,7 @@ Kiến trúc lai: **LLM offline** có thể tắt, chỉ lọc candidate hoặc 
 | | Yêu cầu |
 |---|---|
 | **Hiệu năng** | Tầng luật ≤ 2s/50 trang. AI filter ≤ 3 phút/50 trang trên cấu hình khuyến nghị. Full review có benchmark/giới hạn riêng theo model, token budget và coverage; không kế thừa SLA của filter trước khi PoC đạt gate |
-| **Bảo mật** | Không có nội dung tài liệu hoặc kết nối nền rời máy. Đường xử lý phải zero-egress; model provisioning connected được tách riêng và chỉ tới allowlist |
+| **Bảo mật** | Không có nội dung tài liệu hoặc kết nối nền rời máy. Toàn bộ ứng dụng zero-egress; không có đường tải model hay dịch vụ AI từ xa |
 | **Toàn vẹn dữ liệu** | Không bao giờ ghi đè file gốc. Mọi kết quả ghi ra file mới |
 | **Cấu hình tối thiểu** | Windows 10, 8 GB RAM, 15 GB trống — *cần xác nhận sau PoC* |
 | **Khả năng chịu lỗi** | File hỏng hoặc quá lớn phải báo lỗi rõ ràng, không crash |

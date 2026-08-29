@@ -10,7 +10,7 @@
       "properties": {
         "v": {"const": 1},
         "id": {"type": "string", "minLength": 1},
-        "method": {"enum": ["engine.hello", "document.inspect", "job.start", "job.cancel", "custom_rule.list", "custom_rule.upsert", "custom_rule.delete", "model.status", "model.download", "model.import", "model.cancel", "model.remove"]},
+        "method": {"enum": ["engine.hello", "document.inspect", "job.start", "job.cancel", "custom_rule.list", "custom_rule.upsert", "custom_rule.delete", "model.status", "model.import", "model.cancel", "model.remove"]},
         "params": {"type": "object"}
       },
       "allOf": [
@@ -71,7 +71,7 @@
       "required": ["v", "event", "data"],
       "properties": {
         "v": {"const": 1},
-        "event": {"enum": ["job.progress", "job.completed", "job.no_findings", "job.failed", "model.progress", "model.state_changed"]},
+        "event": {"enum": ["job.progress", "job.completed", "job.no_findings", "job.failed"]},
         "data": {"type": "object"}
       }
     }

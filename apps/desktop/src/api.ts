@@ -39,17 +39,11 @@ export const api = {
   appVersion(): Promise<string> { return isTauri() ? getVersion() : Promise.resolve("0.1.5"); },
   openOutput(path: string, reveal = false) { return invoke("open_output", { path, reveal }); },
   customRuleList(): Promise<CustomRule[]> { return invoke("custom_rule_list"); },
-  customRuleUpsert(id: string | null, prompt: string): Promise<CustomRule> { return invoke("custom_rule_upsert", { id, prompt }); },
+  customRuleUpsert(id: string | null, title: string, prompt: string, isDefault: boolean): Promise<CustomRule> { return invoke("custom_rule_upsert", { id, title, prompt, isDefault }); },
   customRuleDelete(id: string): Promise<boolean> { return invoke("custom_rule_delete", { id }); },
   modelStatus(activate = true): Promise<ModelStatus> { return isTauri() ? invoke("model_status", { activate }) : Promise.resolve({ state: "not_installed" }); },
   modelDeactivate(): Promise<ModelStatus> { return isTauri() ? invoke("model_deactivate") : Promise.resolve({ state: "not_installed" }); },
   modelImport(): Promise<ModelStatus | null> { return invoke("model_import"); },
-  modelDownload(modelId?: string): Promise<ModelStatus> { return invoke("model_download", { modelId }); },
-  modelActivate(modelId: string): Promise<ModelStatus> { return invoke("model_status", { activate: true, modelId }); },
   modelCancel(): Promise<boolean> { return invoke("model_cancel"); },
   modelRemove(modelId?: string): Promise<ModelStatus> { return invoke("model_remove", { modelId }); },
-  onModelProgress(handler: (event: { received: number; total: number; percent: number }) => void): Promise<UnlistenFn> {
-    if (!isTauri()) return Promise.resolve(() => undefined);
-    return listen("model-progress", event => handler(event.payload as { received: number; total: number; percent: number }));
-  },
 };

@@ -103,8 +103,6 @@ jobs:
         run: npm run tauri build -- --bundles nsis
         working-directory: apps/desktop
         env:
-          SOATVAN_MODEL_ENDPOINT: ${{ vars.SOATVAN_MODEL_ENDPOINT }}
-          SOATVAN_MODEL_ALLOWLIST: ${{ vars.SOATVAN_MODEL_ALLOWLIST }}
           SOATVAN_MODEL_PUBLIC_KEY: ${{ vars.SOATVAN_MODEL_PUBLIC_KEY }}
       - name: Install, launch and verify process lifecycle without egress
         timeout-minutes: 15

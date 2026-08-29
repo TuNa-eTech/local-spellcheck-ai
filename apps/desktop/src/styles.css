@@ -333,8 +333,9 @@ button:not(:disabled):not([aria-disabled="true"]):active,
   position: relative;
   min-inline-size: 0;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   gap: var(--space-3xs);
   color: var(--color-muted);
   font-size: var(--text-xs);
@@ -1150,6 +1151,77 @@ button:not(:disabled):not([aria-disabled="true"]):active,
   padding-block-end: 0;
 }
 
+.workflow-lead {
+  min-inline-size: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-2xs);
+}
+
+.workflow-lead > .section-copy {
+  min-inline-size: 0;
+  flex: 1 1 18rem;
+}
+
+.workflow-actions--lead {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.prompt-picker-group {
+  margin: 0;
+  border-inline: 0;
+  padding: 0;
+  padding-block: var(--space-2xs);
+}
+
+.prompt-picker-group__header {
+  min-inline-size: 0;
+  display: grid;
+  align-items: center;
+  gap: var(--space-2xs);
+}
+
+.prompt-picker-group__header > div {
+  min-inline-size: 0;
+  display: grid;
+  gap: var(--space-3xs);
+}
+
+.prompt-picker-group__header span {
+  color: var(--color-muted);
+}
+
+.prompt-picker {
+  min-inline-size: 0;
+  display: grid;
+  gap: 0;
+  margin-block: var(--space-2xs) 0;
+  padding: 0;
+  list-style: none;
+}
+
+.prompt-picker__item + .prompt-picker__item {
+  border-block-start: var(--rule-thin) solid var(--color-rule);
+}
+
+.prompt-picker__row small {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.prompt-row__badge {
+  margin-inline-start: var(--space-2xs);
+  color: var(--color-accent);
+  font-style: normal;
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+
 .custom-rule-list {
   min-inline-size: 0;
   display: grid;
@@ -1518,6 +1590,10 @@ button:not(:disabled):not([aria-disabled="true"]):active,
 
   .custom-rules-summary,
   .custom-rule-item {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .prompt-picker-group__header {
     grid-template-columns: minmax(0, 1fr) auto;
   }
 

@@ -29,7 +29,6 @@ PUBLIC_METHODS = frozenset(
         "custom_rule.upsert",
         "custom_rule.delete",
         "model.status",
-        "model.download",
         "model.import",
         "model.cancel",
         "model.remove",
@@ -41,8 +40,6 @@ PUBLIC_EVENTS = frozenset(
         "job.completed",
         "job.no_findings",
         "job.failed",
-        "model.progress",
-        "model.state_changed",
     }
 )
 
@@ -91,7 +88,7 @@ class Sidecar:
             "model.status": self.model_status,
             "model.remove": self.model_remove,
         }
-        if method in {"model.download", "model.import", "model.cancel"}:
+        if method in {"model.import", "model.cancel"}:
             raise ValueError("MODEL_PROVISIONING_OWNED_BY_HOST")
         if method not in handlers:
             raise ValueError("METHOD_NOT_FOUND")
@@ -207,7 +204,14 @@ class Sidecar:
         }
 
     def custom_rule_upsert(self, params: dict[str, Any]) -> dict[str, Any]:
-        return asdict(self.custom_rules.upsert(params["prompt"], params.get("id")))
+        return asdict(
+            self.custom_rules.upsert(
+                params["prompt"],
+                params.get("id"),
+                params.get("title"),
+                params.get("is_default", False),
+            )
+        )
 
     def custom_rule_delete(self, params: dict[str, Any]) -> dict[str, Any]:
         return {"deleted": self.custom_rules.delete(params["id"])}
@@ -377,6 +381,8 @@ def safe_message(code: str) -> str:
         "SESSION_DICTIONARY_INVALID": "Danh sách từ bỏ qua không hợp lệ.",
         "CUSTOM_RULE_INVALID_ID": "Mã quy tắc riêng không hợp lệ.",
         "CUSTOM_RULE_INVALID_PROMPT": "Nội dung quy tắc riêng không hợp lệ.",
+        "CUSTOM_RULE_INVALID_TITLE": "Tiêu đề quy tắc riêng không hợp lệ.",
+        "CUSTOM_RULE_INVALID_DEFAULT": "Cờ chọn sẵn của quy tắc riêng không hợp lệ.",
         "CUSTOM_RULE_LIMIT_REACHED": "Các quy tắc riêng đã đạt giới hạn lưu trữ.",
         "MODEL_INFERENCE_TIMEOUT": "Model AI vượt quá thời gian xử lý cho phép.",
     }

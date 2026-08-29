@@ -72,9 +72,9 @@ defer to it. Amend intentionally — this file is the rule.
 - Work area · left-aligned task copy; 12 px internal rhythm; controls are 36 px on fine pointers and 44 px on coarse pointers.
 - File picker · a restrained dashed work surface, never a full-height hero.
 - Settings · in-app CMS page, never a modal; local index for Prompt, Luật rà soát, and Model; one independently scrolling work area.
-- Prompt · master/detail CRUD with a saved-prompt index and a dedicated editor; backend records remain prompt-only with no invented title field.
-- Rules · transparent read-only inventory of the fixed detector set; per-document review-mode controls remain in the review workflow.
-- Models · flat catalog rows with the existing import, download, cancel, enable, and remove lifecycle intact.
+- Prompt · master/detail CRUD with a saved-prompt index and a dedicated editor; every record carries a required identifying title, the prompt body, and a "preselect" flag. The title is operator-facing only and is never sent to the model.
+- Rules · transparent read-only inventory of the fixed detector set; per-document review-mode controls remain in the review workflow, where saved prompts are picked by title with checkboxes.
+- Models · flat rows with the import, cancel, enable, and remove lifecycle. There is no download affordance; models arrive only from a local file.
 - Settings navigation and data rows use hairline separation; selected, error, and active states may use a tinted surface.
 - Typography · body 15 px/1.45; primary screen heading 26 px maximum; helper text 12–13 px.
 

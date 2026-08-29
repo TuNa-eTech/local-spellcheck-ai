@@ -9,13 +9,11 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sha2::Digest;
 use std::{
     collections::HashSet,
     fs,
     fs::OpenOptions,
-    future::Future,
-    io::{self, Read, Seek, SeekFrom, Write},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -23,7 +21,7 @@ use std::{
     },
     time::Duration,
 };
-use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
+use tauri::{AppHandle, Manager, RunEvent, State};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 use tokio::sync::Mutex as AsyncMutex;
@@ -159,7 +157,9 @@ struct SidecarJobParams<'a> {
 #[derive(Debug, Serialize, Deserialize)]
 struct CustomRule {
     id: String,
+    title: String,
     prompt: String,
+    is_default: bool,
     created_at: String,
     updated_at: String,
 }
@@ -463,12 +463,14 @@ async fn custom_rule_list(state: State<'_, AppState>) -> AppResult<Vec<CustomRul
 #[tauri::command]
 async fn custom_rule_upsert(
     id: Option<String>,
+    title: String,
     prompt: String,
+    is_default: bool,
     state: State<'_, AppState>,
 ) -> AppResult<CustomRule> {
     Ok(serde_json::from_value(state.engine.call(
         "custom_rule.upsert",
-        json!({"id": id, "prompt": prompt}),
+        json!({"id": id, "title": title, "prompt": prompt, "is_default": is_default}),
         Duration::from_secs(5),
     )?)?)
 }
@@ -572,174 +574,6 @@ async fn model_remove(
     clean_model_partial_cache(&cache)?;
     engine_model_status(&state.engine, false)
 }
-#[tauri::command]
-async fn model_download(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    model_id: Option<String>,
-) -> AppResult<ModelStatus> {
-    const MAX_MODEL_PACKAGE: u64 = 8 * 1024 * 1024 * 1024;
-    let chosen_id = model_id.unwrap_or_else(|| "gemma-4-e4b".into());
-    let default_endpoint = match chosen_id.as_str() {
-        "gemma-4-e2b" => "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf",
-        "gemma-4-12b" => "https://huggingface.co/unsloth/gemma-4-12B-it-GGUF/resolve/main/gemma-4-12B-it-Q4_K_M.gguf",
-        "gemma-4-e4b" => "https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf",
-        _ => return Err(AppError::ModelNotConfigured),
-    };
-    let endpoint = option_env!("SOATVAN_MODEL_ENDPOINT").unwrap_or(default_endpoint);
-    let default_allowlist =
-        "huggingface.co,cdn-lfs.huggingface.co,github.com,objects.githubusercontent.com";
-    let allowlist = option_env!("SOATVAN_MODEL_ALLOWLIST").unwrap_or(default_allowlist);
-    let allowed_hosts = parse_model_allowlist(allowlist);
-    let url = url::Url::parse(endpoint).map_err(|_| AppError::ModelNotConfigured)?;
-    if !model_url_is_allowed(&url, &allowed_hosts) {
-        return Err(AppError::ModelNotConfigured);
-    }
-    let _operation = state
-        .model_operation
-        .try_lock()
-        .map_err(|_| AppError::ModelOperationInProgress)?;
-    let generation = next_model_generation(&state.model_generation);
-    let redirect_hosts = allowed_hosts.clone();
-    let client = reqwest::Client::builder()
-        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) SoatVan/0.1.5")
-        .redirect(reqwest::redirect::Policy::custom(move |attempt| {
-            if attempt.previous().len() >= 10 {
-                attempt.error("too many model download redirects")
-            } else if model_url_is_allowed(attempt.url(), &redirect_hosts) {
-                attempt.follow()
-            } else {
-                attempt.error("model download redirect target is not allowed")
-            }
-        }))
-        .connect_timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|_| AppError::ModelNotConfigured)?;
-    let cache = app
-        .path()
-        .app_cache_dir()
-        .map_err(|_| AppError::InvalidPath)?;
-    fs::create_dir_all(&cache)?;
-    let cache_identity = format!("{chosen_id}\n{url}");
-    let cache_key = format!("{:x}", sha2::Sha256::digest(cache_identity.as_bytes()));
-    let partial_path = cache.join(format!(
-        "model-{chosen_id}-{}.svmodel.partial",
-        &cache_key[..16]
-    ));
-    let mut resumed_at = fs::metadata(&partial_path)
-        .map(|item| item.len())
-        .unwrap_or(0);
-    if resumed_at > MAX_MODEL_PACKAGE {
-        fs::remove_file(&partial_path)?;
-        resumed_at = 0;
-    }
-    let mut request = client.get(url);
-    if resumed_at > 0 {
-        request = request.header(reqwest::header::RANGE, format!("bytes={resumed_at}-"));
-    }
-    let mut response = await_download(
-        request.send(),
-        &state.model_cancelled_generation,
-        generation,
-    )
-    .await?
-    .error_for_status()
-    .map_err(|_| AppError::ModelPackageInvalid)?;
-    if !model_url_is_allowed(response.url(), &allowed_hosts) {
-        return Err(AppError::ModelNotConfigured);
-    }
-    let is_partial = response.status() == reqwest::StatusCode::PARTIAL_CONTENT;
-    let remaining = response
-        .content_length()
-        .ok_or(AppError::ModelPackageInvalid)?;
-    let total = if is_partial {
-        response
-            .headers()
-            .get(reqwest::header::CONTENT_RANGE)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| parse_content_range(value, resumed_at, remaining))
-            .ok_or(AppError::ModelPackageInvalid)?
-    } else {
-        resumed_at = 0;
-        remaining
-    };
-    if total == 0 || total > MAX_MODEL_PACKAGE {
-        return Err(AppError::ModelPackageInvalid);
-    }
-    let mut package = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(!is_partial)
-        .open(&partial_path)?;
-    if is_partial {
-        package.seek(SeekFrom::End(0))?;
-    }
-    let mut received = resumed_at;
-    let mut last_emitted_percent = 0;
-    let mut last_emitted_time = std::time::Instant::now();
-    while let Some(chunk) = await_download(
-        response.chunk(),
-        &state.model_cancelled_generation,
-        generation,
-    )
-    .await?
-    {
-        received = received.saturating_add(chunk.len() as u64);
-        if received > total || received > MAX_MODEL_PACKAGE {
-            return Err(AppError::ModelPackageInvalid);
-        }
-        package.write_all(&chunk)?;
-        let percent = received.saturating_mul(100) / total;
-        if percent != last_emitted_percent || last_emitted_time.elapsed().as_millis() >= 100 {
-            last_emitted_percent = percent;
-            last_emitted_time = std::time::Instant::now();
-            let _ = app.emit(
-                "model.progress",
-                json!({"received": received, "total": total, "percent": percent}),
-            );
-        }
-    }
-    let _ = app.emit(
-        "model.progress",
-        json!({"received": total, "total": total, "percent": 100}),
-    );
-    package.flush()?;
-    package.sync_all()?;
-    if received != total {
-        return Err(AppError::ModelPackageInvalid);
-    }
-    drop(package);
-    let status =
-        match install_model_package(&state, &partial_path, Some(chosen_id.as_str()), generation) {
-            Ok(status) => status,
-            Err(error) => {
-                let _ = fs::remove_file(&partial_path);
-                return Err(error);
-            }
-        };
-    fs::remove_file(partial_path)?;
-    let _ = app.emit("model.state_changed", &status);
-    Ok(status)
-}
-
-fn parse_model_allowlist(value: &str) -> HashSet<String> {
-    value
-        .split(',')
-        .map(str::trim)
-        .filter(|host| !host.is_empty())
-        .map(|host| host.to_ascii_lowercase())
-        .collect()
-}
-
-fn model_url_is_allowed(url: &url::Url, allowed_hosts: &HashSet<String>) -> bool {
-    url.scheme() == "https"
-        && url.username().is_empty()
-        && url.password().is_none()
-        && url.port_or_known_default() == Some(443)
-        && url
-            .host_str()
-            .is_some_and(|host| allowed_hosts.contains(&host.to_ascii_lowercase()))
-}
 
 fn next_model_generation(model_generation: &AtomicU64) -> u64 {
     model_generation
@@ -778,45 +612,6 @@ fn clean_model_partial_cache(cache: &Path) -> AppResult<()> {
         }
     }
     Ok(())
-}
-
-fn parse_content_range(value: &str, resumed_at: u64, content_length: u64) -> Option<u64> {
-    let value = value.strip_prefix("bytes ")?;
-    let (range, total) = value.split_once('/')?;
-    let (start, end) = range.split_once('-')?;
-    let start = start.parse::<u64>().ok()?;
-    let end = end.parse::<u64>().ok()?;
-    let total = total.parse::<u64>().ok()?;
-    let expected_length = end.checked_sub(start)?.checked_add(1)?;
-    (start == resumed_at
-        && end < total
-        && end.checked_add(1) == Some(total)
-        && expected_length == content_length)
-        .then_some(total)
-}
-
-async fn await_download<F, T>(
-    future: F,
-    cancelled_generation: &AtomicU64,
-    generation: u64,
-) -> AppResult<T>
-where
-    F: Future<Output = Result<T, reqwest::Error>>,
-{
-    if model_operation_cancelled(cancelled_generation, generation) {
-        return Err(AppError::ModelCancelled);
-    }
-    tokio::pin!(future);
-    loop {
-        tokio::select! {
-            result = &mut future => return result.map_err(|_| AppError::ModelPackageInvalid),
-            _ = tokio::time::sleep(Duration::from_millis(50)) => {
-                if model_operation_cancelled(cancelled_generation, generation) {
-                    return Err(AppError::ModelCancelled);
-                }
-            }
-        }
-    }
 }
 
 #[tauri::command]
@@ -1233,7 +1028,6 @@ pub fn run() {
             model_status,
             model_deactivate,
             model_import,
-            model_download,
             model_cancel,
             model_remove
         ])
@@ -1782,60 +1576,6 @@ mod tests {
         assert!(matches!(
             validate_produced_output(&output, &produced_outputs),
             Err(AppError::InvalidPath)
-        ));
-    }
-
-    #[tokio::test]
-    async fn model_download_wait_can_be_cancelled_before_network_returns() {
-        let cancelled_generation = std::sync::Arc::new(AtomicU64::new(0));
-        let signal = std::sync::Arc::clone(&cancelled_generation);
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-            signal.store(7, Ordering::Release);
-        });
-        let result = await_download(
-            std::future::pending::<Result<(), reqwest::Error>>(),
-            &cancelled_generation,
-            7,
-        )
-        .await;
-        assert!(matches!(result, Err(AppError::ModelCancelled)));
-    }
-
-    #[test]
-    fn resumed_download_requires_an_exact_complete_content_range() {
-        assert_eq!(
-            parse_content_range("bytes 100-199/200", 100, 100),
-            Some(200)
-        );
-        assert_eq!(parse_content_range("bytes 100-evil/200", 100, 100), None);
-        assert_eq!(parse_content_range("bytes 10-199/200", 100, 190), None);
-        assert_eq!(parse_content_range("bytes 100-149/200", 100, 50), None);
-        assert_eq!(parse_content_range("items 100-199/200", 100, 100), None);
-    }
-
-    #[test]
-    fn model_download_allowlist_applies_to_initial_and_redirect_urls() {
-        let hosts = parse_model_allowlist("huggingface.co, cdn-lfs.huggingface.co");
-        assert!(model_url_is_allowed(
-            &url::Url::parse("https://huggingface.co/model").unwrap(),
-            &hosts
-        ));
-        assert!(model_url_is_allowed(
-            &url::Url::parse("https://cdn-lfs.huggingface.co/model").unwrap(),
-            &hosts
-        ));
-        assert!(!model_url_is_allowed(
-            &url::Url::parse("https://huggingface.co.evil.test/model").unwrap(),
-            &hosts
-        ));
-        assert!(!model_url_is_allowed(
-            &url::Url::parse("http://huggingface.co/model").unwrap(),
-            &hosts
-        ));
-        assert!(!model_url_is_allowed(
-            &url::Url::parse("https://user@huggingface.co/model").unwrap(),
-            &hosts
         ));
     }
 

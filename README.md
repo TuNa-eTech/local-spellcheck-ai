@@ -16,9 +16,9 @@ Khi model sẵn sàng, giao diện mặc định chọn **Chỉ dùng AI để r
 
 Settings là một trang trong ứng dụng, không phải modal/dialog, với ba mục:
 
-- **Prompt**: bố cục master-detail để xem, thêm, sửa, xoá và hoàn tác xoá các prompt quy tắc riêng. Mỗi mục vẫn chỉ là một đoạn prompt text; tổng text lưu tối đa 4.000 ký tự. Khi AI bật và sẵn sàng, các mục được ghép theo thứ tự bằng dòng trống thành một context chung. Prompt chỉ bổ sung thuật ngữ/tiêu chí kiểm tra, không được thay đổi schema output hoặc yêu cầu model trả cả câu/đoạn làm vị trí lỗi. Khi AI tắt, các mục vẫn được lưu nhưng không ảnh hưởng bộ kiểm tra cơ bản.
+- **Prompt**: bố cục master-detail để xem, thêm, sửa, xoá và hoàn tác xoá các prompt quy tắc riêng. Mỗi mục gồm một tiêu đề bắt buộc (tối đa 80 ký tự, chỉ dùng để nhận diện và không gửi cho model), một đoạn prompt text và cờ **chọn sẵn**; tổng text prompt lưu tối đa 4.000 ký tự. Ở bước Chuẩn bị rà soát, người dùng tick chọn prompt theo tiêu đề; các mục được chọn ghép theo thứ tự bằng dòng trống thành một context chung khi AI bật và sẵn sàng. Prompt chỉ bổ sung thuật ngữ/tiêu chí kiểm tra, không được thay đổi schema output hoặc yêu cầu model trả cả câu/đoạn làm vị trí lỗi. Khi AI tắt, các mục vẫn được lưu nhưng không ảnh hưởng bộ kiểm tra cơ bản.
 - **Quy tắc rà soát**: inventory chỉ đọc của bộ kiểm tra cố định. Mục này không có preset, từ điển, danh sách bỏ qua hoặc công tắc bật/tắt detector; tùy chọn chạy bổ sung bộ quy tắc code vẫn nằm ở bước Chuẩn bị rà soát.
-- **AI cục bộ**: xem trạng thái và quản lý vòng đời model trên máy, gồm chọn, tải/nhập, huỷ thao tác, kích hoạt/tắt runtime và gỡ model theo release profile.
+- **AI cục bộ**: xem trạng thái và quản lý vòng đời model trên máy, gồm nhập gói từ tệp có sẵn, huỷ thao tác, kích hoạt/tắt runtime và gỡ model theo release profile. Ứng dụng không tải model qua mạng.
 
 Khi mở Settings hoặc chuyển mục, focus đi tới heading của trang/mục mới; nút quay lại khôi phục focus cho đúng control đã mở Settings. `Ctrl+O` chỉ hoạt động trong view rà soát và bị bỏ qua trong Settings; Settings không có hành vi đóng bằng `Esc` như dialog.
 
@@ -87,19 +87,13 @@ Build cá nhân dùng Windows self-signed certificate (`CN=SoatVan Personal Use`
 
 CI Windows build PyInstaller `onedir`, copy toàn bộ onedir vào Tauri resources, rồi build NSIS với WebView2 `offlineInstaller`. Model không nằm trong installer.
 
-Provisioning qua mạng chỉ được compile khi có đủ ba biến:
-
-- `SOATVAN_MODEL_ENDPOINT`: URL HTTPS chính xác.
-- `SOATVAN_MODEL_ALLOWLIST`: danh sách hostname phân cách bằng dấu phẩy.
-- `SOATVAN_MODEL_PUBLIC_KEY`: Ed25519 public key base64.
-
-Không có cấu hình trên, lệnh tải fail-closed với `MODEL_NOT_CONFIGURED`; nhập gói `.svmodel` vẫn kiểm tra manifest, size, SHA-256 và chữ ký trước khi đổi active directory atomically.
+Ứng dụng không có đường tải model qua mạng. Model chỉ được đưa vào máy bằng lệnh nhập gói: `.svmodel` đã ký được kiểm manifest, size, SHA-256 và chữ ký Ed25519 trước khi đổi active directory atomically, còn `.gguf` nhập trực tiếp được đánh dấu `local_unverified`. Xác minh chữ ký gói ký số cần biến compile-time `SOATVAN_MODEL_PUBLIC_KEY` (Ed25519 public key base64); không có biến này, nhập gói ký số fail-closed với `MODEL_NOT_CONFIGURED`.
 
 ## Trạng thái milestone
 
 - M0: source layout, protocol, persistent sidecar, crash/error boundary, safe DOCX ZIP validation, PyInstaller `onedir`, advanced golden DOCX và Windows Job Object đã được tự động hoá trong workflow `verify`.
 - M1: workflow bốn bước, metadata từ/trang best-effort, bộ kiểm tra cơ bản cố định, technical/confusion/capitalization/conservative-syllable rules, NFC source mapping, annotation-only DOCX, atomic no-clobber output và no-finding đã có unit/property/security/contract/UI/performance tests.
-- M2: CRUD quy tắc riêng, `llama-cpp-python` classifier và nhánh full review tùy chọn theo chunk, output có cấu trúc, anchor/coverage fail-closed, timeout/cancel, signed capability gate, import/download resume, crash recovery, smoke-load/rollback và toggle giải phóng runtime có trong source. Model chỉ `ready` khi package hợp lệ và smoke-load thành công. GGUF nhập cục bộ có thể chạy full review ở chế độ thử nghiệm nhưng vẫn là `local_unverified`; chỉ package ký số kèm benchmark riêng mới được coi là full review đã phê duyệt phát hành.
+- M2: CRUD quy tắc riêng (tiêu đề + prompt + cờ chọn sẵn), `llama-cpp-python` classifier và nhánh full review tùy chọn theo chunk, output có cấu trúc, anchor/coverage fail-closed, timeout/cancel, signed capability gate, nhập gói model, crash recovery, smoke-load/rollback và toggle giải phóng runtime có trong source. Model chỉ `ready` khi package hợp lệ và smoke-load thành công. GGUF nhập cục bộ có thể chạy full review ở chế độ thử nghiệm nhưng vẫn là `local_unverified`; chỉ package ký số kèm benchmark riêng mới được coi là full review đã phê duyệt phát hành.
 - M3: Windows CI/NSIS/WebView2 offline config, personal signing và Defender gate đã có. Developer ID/notarization và certificate công khai không nằm trong M0/M1.
 
 Corpus regression tổng hợp có 20 trường hợp và gate precision/recall tự động cho AI filter. Quality gate trên 20 DOCX thật vẫn cần bộ tài liệu ẩn danh và ground truth do người dùng duyệt; đây là evidence đầu vào, không được thay thế bằng dữ liệu giả. Full review phải có corpus/gate riêng đo discovery, coverage, latency và RAM trước khi được coi là capability phát hành.

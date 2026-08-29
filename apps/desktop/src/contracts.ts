@@ -53,7 +53,9 @@ export interface ProgressEvent {
 
 export interface CustomRule {
   id: string;
+  title: string;
   prompt: string;
+  is_default: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -64,7 +66,7 @@ export interface ModelCapabilities {
 }
 
 export interface ModelStatus {
-  state: "not_installed" | "downloading" | "importing" | "verifying" | "installed" | "ready" | "unverified" | "invalid" | "cancelled" | "error" | "incompatible";
+  state: "not_installed" | "importing" | "verifying" | "installed" | "ready" | "unverified" | "invalid" | "cancelled" | "error" | "incompatible";
   model_id?: string;
   version?: string;
   code?: string;
