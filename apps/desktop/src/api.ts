@@ -23,12 +23,12 @@ export const api = {
     return invoke("choose_document");
   },
   async inspectDropped(path: string): Promise<DocumentInfo> { return invoke("inspect_document", { path }); },
-  async startJob(jobId: string, sourcePath: string, preset: Preset, customPrompt: string, useModel: boolean, useSeq2Seq: boolean, ruleOptions: RuleOptions, ignoredWords: string[], fullReview: boolean, includeRuleFindings = false): Promise<JobResult> {
+  async startJob(jobId: string, sourcePath: string, preset: Preset, customPrompt: string, useModel: boolean, ruleOptions: RuleOptions, ignoredWords: string[], fullReview: boolean, includeRuleFindings = false): Promise<JobResult> {
     if (!isTauri()) {
       await new Promise(resolve => setTimeout(resolve, 1400));
       return { job_id: jobId, status: "completed", output_path: sourcePath.replace(/\.docx$/i, "-soat.docx"), finding_count: 5, counts: { category: { spelling: 2, technical: 3 }, origin: { rule: 5 } } };
     }
-    return invoke("start_job", { request: { jobId, sourcePath, preset, customPrompt, useModel, useSeq2Seq, fullReview, includeRuleFindings, ruleOptions, ignoredWords } });
+    return invoke("start_job", { request: { jobId, sourcePath, preset, customPrompt, useModel, fullReview, includeRuleFindings, ruleOptions, ignoredWords } });
   },
   cancelJob(jobId: string) { return isTauri() ? invoke("cancel_job", { jobId }) : Promise.resolve(false); },
   onProgress(handler: (event: ProgressEvent) => void, jobId?: string): Promise<UnlistenFn> {
@@ -138,5 +138,17 @@ export const api = {
       baseUrl: params.baseUrl ?? params.base_url,
       modelName: params.modelName ?? params.model_name,
     });
+  },
+  async seq2seqConfigGet(): Promise<{ model_dir: string; is_configured: boolean; is_valid: boolean }> {
+    if (!isTauri()) return { model_dir: "", is_configured: false, is_valid: false };
+    return invoke("seq2seq_config_get");
+  },
+  async seq2seqConfigUpdate(modelDir: string): Promise<{ model_dir: string; is_configured: boolean; is_valid: boolean }> {
+    if (!isTauri()) return { model_dir: modelDir, is_configured: !!modelDir, is_valid: false };
+    return invoke("seq2seq_config_update", { modelDir });
+  },
+  async chooseSeq2SeqModelDir(): Promise<string | null> {
+    if (!isTauri()) return null;
+    return invoke("choose_seq2seq_model_dir");
   },
 };

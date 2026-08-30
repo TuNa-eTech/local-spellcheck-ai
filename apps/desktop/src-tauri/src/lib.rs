@@ -134,8 +134,6 @@ struct StartJobRequest {
     custom_prompt: String,
     use_model: bool,
     #[serde(default)]
-    use_seq2seq: bool,
-    #[serde(default)]
     full_review: bool,
     #[serde(default)]
     include_rule_findings: bool,
@@ -151,11 +149,17 @@ struct SidecarJobParams<'a> {
     preset: &'a str,
     custom_prompt: &'a str,
     use_model: bool,
-    use_seq2seq: bool,
     full_review: bool,
     include_rule_findings: bool,
     rule_config: &'a RuleOptions,
     ignored_words: &'a [String],
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Seq2SeqConfig {
+    model_dir: String,
+    is_configured: bool,
+    is_valid: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -273,7 +277,6 @@ async fn start_job(request: StartJobRequest, state: State<'_, AppState>) -> AppR
         preset,
         custom_prompt,
         use_model,
-        use_seq2seq,
         full_review,
         include_rule_findings,
         rule_options,
@@ -344,7 +347,6 @@ async fn start_job(request: StartJobRequest, state: State<'_, AppState>) -> AppR
             preset: &preset,
             custom_prompt: &custom_prompt,
             use_model,
-            use_seq2seq,
             full_review,
             include_rule_findings,
             rule_config: &rule_options,
@@ -639,6 +641,35 @@ async fn ai_config_test_connection(
     Ok(serde_json::from_value(value)?)
 }
 
+
+#[tauri::command]
+async fn seq2seq_config_get(state: State<'_, AppState>) -> AppResult<Seq2SeqConfig> {
+    let result = state.engine.call("seq2seq_config.get", json!({}), Duration::from_secs(5))?;
+    Ok(serde_json::from_value(result)?)
+}
+
+#[tauri::command]
+async fn seq2seq_config_update(model_dir: String, state: State<'_, AppState>) -> AppResult<Seq2SeqConfig> {
+    let result = state.engine.call(
+        "seq2seq_config.update",
+        json!({ "model_dir": model_dir }),
+        Duration::from_secs(5),
+    )?;
+    Ok(serde_json::from_value(result)?)
+}
+
+#[tauri::command]
+async fn choose_seq2seq_model_dir(app: AppHandle) -> AppResult<Option<String>> {
+    let selected = app.dialog().file().blocking_pick_folder();
+    let Some(path) = selected.and_then(|v| v.into_path().ok()) else {
+        return Ok(None);
+    };
+    // Validate: must contain config.json
+    if !path.join("config.json").exists() {
+        return Err(AppError::Engine("SEQ2SEQ_DIR_INVALID".into()));
+    }
+    Ok(Some(path.to_string_lossy().into_owned()))
+}
 
 #[tauri::command]
 async fn model_status(activate: bool, state: State<'_, AppState>) -> AppResult<ModelStatus> {
@@ -1187,6 +1218,9 @@ pub fn run() {
             ai_config_update,
             ai_config_set_active,
             ai_config_test_connection,
+            seq2seq_config_get,
+            seq2seq_config_update,
+            choose_seq2seq_model_dir,
             model_status,
             model_deactivate,
             model_import,

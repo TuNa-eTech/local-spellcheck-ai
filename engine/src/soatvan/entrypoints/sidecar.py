@@ -16,6 +16,7 @@ from soatvan.custom_rules import (
     SqliteAiConfigRepository,
     SqliteCustomRuleRepository,
 )
+from soatvan.custom_rules.seq2seq_config_repository import SqliteSeq2SeqConfigRepository
 from soatvan.dictionary import SqliteDictionaryRepository
 from soatvan.document import DocxPackage, InvalidDocument
 from soatvan.models import (
@@ -113,8 +114,10 @@ class Sidecar:
         self.ai_config = SqliteAiConfigRepository(local_data / "preferences.db")
         self.models = ModelRegistry(local_data / "models")
         self.classifiers = DynamicClassifierProvider(self.models, self.ai_config)
+        self.seq2seq_config_repo = SqliteSeq2SeqConfigRepository(local_data / "preferences.db")
+        _seq2seq_cfg = self.seq2seq_config_repo.get_config()
         from soatvan.workflow.seq2seq_provider import LocalSeq2SeqProvider
-        self.seq2seq = LocalSeq2SeqProvider()
+        self.seq2seq = LocalSeq2SeqProvider(model_dir=_seq2seq_cfg.model_dir if _seq2seq_cfg.is_configured else None)
         self.processor = ProcessDocument(
             self.documents, self.dictionary, RuleEngine(), self.classifiers, self.seq2seq
         )
@@ -135,6 +138,8 @@ class Sidecar:
             "ai_config.update": self.ai_config_update,
             "ai_config.set_active": self.ai_config_set_active,
             "ai_config.test_connection": self.ai_config_test_connection,
+            "seq2seq_config.get": self.seq2seq_config_get,
+            "seq2seq_config.update": self.seq2seq_config_update,
         }
         if method in {"model.import", "model.cancel"}:
             raise ValueError("MODEL_PROVISIONING_OWNED_BY_HOST")
@@ -188,7 +193,7 @@ class Sidecar:
                 preset=Preset(params.get("preset", "standard")),
                 rule_config=_rule_config(params.get("rule_config")),
                 use_model=_boolean_param(params, "use_model"),
-                use_seq2seq=_boolean_param(params, "use_seq2seq"),
+                use_seq2seq=self.seq2seq is not None and self.seq2seq.is_ready(),
                 custom_prompt=_custom_prompt(params.get("custom_prompt", "")),
                 ignored_words=_ignored_words(params.get("ignored_words", [])),
                 full_review=_boolean_param(params, "full_review"),
@@ -458,6 +463,27 @@ class Sidecar:
             model_name=model_name,
         )
         return test_ai_connection(entry)
+
+    def seq2seq_config_get(self, _: dict[str, Any]) -> dict[str, Any]:
+        cfg = self.seq2seq_config_repo.get_config()
+        return {
+            "model_dir": cfg.model_dir,
+            "is_configured": cfg.is_configured,
+            "is_valid": cfg.is_valid(),
+        }
+
+    def seq2seq_config_update(self, params: dict[str, Any]) -> dict[str, Any]:
+        model_dir = str(params.get("model_dir", "")).strip()
+        cfg = self.seq2seq_config_repo.set_config(model_dir)
+        # Reload provider with new path
+        from soatvan.workflow.seq2seq_provider import LocalSeq2SeqProvider
+        self.seq2seq = LocalSeq2SeqProvider(model_dir=model_dir if cfg.is_configured else None)
+        self.processor._seq2seq = self.seq2seq
+        return {
+            "model_dir": cfg.model_dir,
+            "is_configured": cfg.is_configured,
+            "is_valid": cfg.is_valid(),
+        }
 
 
 def _rule_config(value: object) -> RuleConfig | None:

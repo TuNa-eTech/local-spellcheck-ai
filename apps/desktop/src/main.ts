@@ -61,7 +61,8 @@ const state: {
   step: Step;
   document: DocumentInfo | null;
   useModel: boolean;
-  useSeq2Seq: boolean;
+  seq2seqConfig: { model_dir: string; is_configured: boolean; is_valid: boolean } | null;
+  seq2seqSaving: boolean;
   fullReview: boolean;
   includeRuleFindings: boolean;
   jobId: string;
@@ -105,7 +106,8 @@ const state: {
   jobStarting: false,
   cancelPending: false,
   useModel: false,
-  useSeq2Seq: false,
+  seq2seqConfig: null,
+  seq2seqSaving: false,
   fullReview: false,
   includeRuleFindings: true,
   result: null,
@@ -283,19 +285,7 @@ function settingsSectionHeading(section: SettingsSection): string {
   return section === "prompts" ? "#settings-prompts-title" : section === "review-rules" ? "#settings-review-rules-title" : "#settings-models-title";
 }
 
-function seq2seqToggleHtml(): string {
-  return `<fieldset class="prompt-picker-group">
-    <legend class="sr-only">Tùy chọn AI bổ sung</legend>
-    <div class="prompt-picker-group__header">
-      <div><strong>AI Sửa lỗi ngữ cảnh (vn-spell-correction-small)</strong>
-      <span>Dùng mô hình AI nhẹ (115M) cục bộ để phát hiện thêm lỗi chính tả theo ngữ cảnh tiếng Việt. Không cần kết nối mạng.</span></div>
-    </div>
-    <ul class="prompt-picker"><li class="prompt-picker__item"><label class="setting-row prompt-picker__row">
-      <span><strong>Bật AI seq2seq offline</strong></span>
-      <input type="checkbox" id="use-seq2seq" ${state.useSeq2Seq ? "checked" : ""}>
-    </label></li></ul>
-  </fieldset>`;
-}
+
 
 function customRuleSelectionHtml(): string {
   const count = state.customRules.length;
@@ -343,7 +333,7 @@ function render(preferredFocus?: string): void {
     </nav>
     <main class="workflow-shell">
       ${state.step === "file" ? `<section class="workflow-card workflow-card--file"><div class="section-copy"><h1>Chọn tệp Word cần kiểm tra</h1><p>Ứng dụng tạo một bản kết quả mới và luôn giữ nguyên tệp gốc.</p></div><button class="drop-zone" id="choose"><strong>Chọn hoặc kéo thả tệp .docx</strong><span>Nhấn Ctrl+O để mở nhanh</span></button>${errorHtml()}</section>` : ""}
-      ${state.step === "rules" && doc ? `<section class="workflow-card"><div class="workflow-context"><button class="back-button" id="back">← Chọn tệp khác</button><div class="file-chip"><strong>${escape(doc.name)}</strong><span>${documentMetadata(doc)}</span></div></div><div class="workflow-lead"><div class="section-copy"><div class="ai-provider-badge" id="workflow-ai-badge"><span class="badge-dot ${isCloudActive() ? "badge-dot--cloud" : "badge-dot--local"}"></span><span>${escape(activeAiLabel())}</span></div><h1>Chuẩn bị rà soát</h1><p>${reviewModeDescription()}</p></div><div class="workflow-actions workflow-actions--lead"><button class="button button--primary" id="start">Bắt đầu xử lý</button></div></div>${customRuleSelectionHtml()}${seq2seqToggleHtml()}${errorHtml()}</section>` : ""}
+      ${state.step === "rules" && doc ? `<section class="workflow-card"><div class="workflow-context"><button class="back-button" id="back">← Chọn tệp khác</button><div class="file-chip"><strong>${escape(doc.name)}</strong><span>${documentMetadata(doc)}</span></div></div><div class="workflow-lead"><div class="section-copy"><div class="ai-provider-badge" id="workflow-ai-badge"><span class="badge-dot ${isCloudActive() ? "badge-dot--cloud" : "badge-dot--local"}"></span><span>${escape(activeAiLabel())}</span></div><h1>Chuẩn bị rà soát</h1><p>${reviewModeDescription()}</p></div><div class="workflow-actions workflow-actions--lead"><button class="button button--primary" id="start">Bắt đầu xử lý</button></div></div>${customRuleSelectionHtml()}${errorHtml()}</section>` : ""}
       ${state.step === "processing" ? `<section class="workflow-card processing-panel"><div class="processing-status"><span class="spinner" aria-hidden="true"></span><div class="section-copy"><h1>${progressTitle()}</h1><p class="progress-subtitle">${progressSubtitle()}</p></div></div><div class="progress-row"><div class="progress" role="progressbar" aria-label="Tiến độ xử lý" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${state.progress}"><span style="--progress-scale:${state.progress / 100}"></span></div><strong class="progress-value">${state.progress}%</strong></div><p class="sr-only progress-announcement" aria-live="polite" aria-atomic="true">${progressTitle()} ${state.progress}%</p><div class="workflow-actions"><button class="button button--secondary" id="cancel" ${state.jobStarting || state.cancelPending ? "disabled" : ""} ${state.jobStarting || state.cancelPending ? 'aria-busy="true"' : ""}>${state.jobStarting ? "Đang chuẩn bị…" : state.cancelPending ? "Đang dừng…" : "Dừng xử lý"}</button></div>${errorHtml()}</section>` : ""}
       ${(state.step === "result" || state.step === "no-findings") ? resultHtml() : ""}
     </main>` : settingsHtml()}
@@ -542,6 +532,16 @@ function settingsContent(section: SettingsSection): { body: string; footer: stri
 
   if (currentTab === "local") {
     const isLocalActive = state.aiConfig.active_provider === "local";
+    const seq2seqCfg = state.seq2seqConfig;
+    const seq2seqTitle = seq2seqCfg?.is_configured
+      ? (seq2seqCfg.is_valid ? '✓ Model seq2seq đã cấu hình' : '✕ Thư mục không hợp lệ')
+      : 'Chưa cấu hình model seq2seq';
+    const seq2seqDesc = seq2seqCfg?.is_configured
+      ? escape(seq2seqCfg.model_dir)
+      : 'Nhấn nút bên dưới để chọn thư mục chứa vn-spell-correction-small.';
+    const seq2seqStatusHtml = seq2seqCfg?.is_valid
+      ? `<p class="settings-message settings-message--status" role="status">✓ Sẽ tự động chạy AI seq2seq khi soát văn bản.</p>`
+      : (seq2seqCfg?.is_configured ? `<p class="settings-message settings-message--error" role="alert">Không tìm thấy config.json trong thư mục đã chọn. Hãy chọn lại thư mục đúng.</p>` : '');
     return {
       body: `
       <section class="settings-section settings-models" id="settings-models" aria-labelledby="settings-models-title">
@@ -565,8 +565,22 @@ function settingsContent(section: SettingsSection): { body: string; footer: stri
         <p>Chấp nhận gói <code>.svmodel</code> đã ký hoặc tệp <code>.gguf</code> nhập cục bộ. Gói ký số mới được coi là đã phê duyệt phát hành.</p>
       </div>
       <p class="notice">Ứng dụng không kết nối mạng để lấy model. Nội dung tài liệu không được gửi đi.</p>
+      <div class="section-copy model-section-copy">
+        <h3>AI Sửa lỗi ngữ cảnh (Seq2Seq Offline)</h3>
+        <p>Cấu hình thư mục chứa mô hình <code>vn-spell-correction-small</code> để bật sửa lỗi chính tả theo ngữ cảnh. Mô hình chạy hoàn toàn trên máy, không cần kết nối mạng.</p>
+      </div>
+      <div class="model-card" id="seq2seq-card">
+        <div class="model-card__header">
+          <div>
+            <strong id="seq2seq-status-title">${seq2seqTitle}</strong>
+            <p>${seq2seqDesc}</p>
+          </div>
+          ${state.seq2seqConfig?.is_configured ? `<button class="delete-button" id="seq2seq-remove" type="button" ${controlsLocked ? 'disabled' : ''}>Xóa cấu hình</button>` : ''}
+        </div>
+        ${seq2seqStatusHtml}
+      </div>
       </section>`,
-      footer: `<footer class="settings-footer"><div class="settings-footer__inner"><div class="button-row"><button class="button button--primary" id="model-import" type="button" ${controlsLocked ? "disabled" : ""}>Nhập gói có sẵn</button><button class="button button--secondary" id="model-action" type="button" ${busy && !state.modelRemovalRunning ? "" : "disabled"} ${busy ? 'aria-busy="true"' : ""}>Huỷ thao tác</button></div></div></footer>`,
+      footer: `<footer class="settings-footer"><div class="settings-footer__inner"><div class="button-row"><button class="button button--primary" id="model-import" type="button" ${controlsLocked ? "disabled" : ""}>Nhập gói có sẵn</button><button class="button button--secondary" id="seq2seq-choose-dir" type="button" ${controlsLocked || state.seq2seqSaving ? 'disabled' : ''} ${state.seq2seqSaving ? 'aria-busy="true"' : ''}>${state.seq2seqSaving ? 'Đang lưu…' : 'Chọn thư mục seq2seq'}</button><button class="button button--secondary" id="model-action" type="button" ${busy && !state.modelRemovalRunning ? "" : "disabled"} ${busy ? 'aria-busy="true"' : ""}>Huỷ thao tác</button></div></div></footer>`,
     };
   }
 
@@ -642,10 +656,6 @@ function bind(): void {
   document.querySelector("#manage-custom-rules")?.addEventListener("click", () => void openSettings("prompts", "#manage-custom-rules"));
   document.querySelector("#manage-review-rules")?.addEventListener("click", () => void openSettings("review-rules", "#manage-review-rules"));
   document.querySelector<HTMLInputElement>("#use-model")?.addEventListener("change", event => { void setModelEnabled((event.target as HTMLInputElement).checked); });
-  document.querySelector<HTMLInputElement>("#use-seq2seq")?.addEventListener("change", event => {
-    state.useSeq2Seq = (event.target as HTMLInputElement).checked;
-    render("#use-seq2seq");
-  });
   document.querySelectorAll<HTMLInputElement>("[data-select-rule]").forEach(input => input.addEventListener("change", () => {
     const id = input.dataset.selectRule!;
     state.selectedRuleIds = input.checked
@@ -729,6 +739,46 @@ function bind(): void {
   document.querySelector("#model-remove")?.addEventListener("click", () => { state.modelRemovalPending = true; state.settingsMessage = null; render("#cancel-model-remove"); });
   document.querySelector("#cancel-model-remove")?.addEventListener("click", () => { state.modelRemovalPending = false; state.settingsMessage = null; render("#model-remove"); });
   document.querySelector("#confirm-model-remove")?.addEventListener("click", () => void removeModel());
+  document.querySelector("#seq2seq-choose-dir")?.addEventListener("click", () => void chooseSeq2SeqModelDir());
+  document.querySelector("#seq2seq-remove")?.addEventListener("click", () => void removeSeq2SeqConfig());
+}
+
+async function chooseSeq2SeqModelDir(): Promise<void> {
+  if (state.seq2seqSaving) return;
+  try {
+    const dir = await api.chooseSeq2SeqModelDir();
+    if (!dir) return;
+    state.seq2seqSaving = true;
+    render();
+    const cfg = await api.seq2seqConfigUpdate(dir);
+    state.seq2seqConfig = cfg;
+    if (!cfg.is_valid) {
+      state.settingsMessage = { tone: 'error', text: 'Thư mục đã chọn không chứa model hợp lệ (thiếu config.json).' };
+    } else {
+      state.settingsMessage = { tone: 'status', text: 'Đã lưu đường dẫn model seq2seq.' };
+    }
+  } catch {
+    state.settingsMessage = { tone: 'error', text: 'Không thể chọn thư mục. Hãy thử lại.' };
+  } finally {
+    state.seq2seqSaving = false;
+    render('#seq2seq-choose-dir');
+  }
+}
+
+async function removeSeq2SeqConfig(): Promise<void> {
+  if (state.seq2seqSaving) return;
+  state.seq2seqSaving = true;
+  render();
+  try {
+    const cfg = await api.seq2seqConfigUpdate('');
+    state.seq2seqConfig = cfg;
+    state.settingsMessage = { tone: 'status', text: 'Đã xóa cấu hình model seq2seq.' };
+  } catch {
+    state.settingsMessage = { tone: 'error', text: 'Không thể xóa cấu hình. Hãy thử lại.' };
+  } finally {
+    state.seq2seqSaving = false;
+    render('#seq2seq-choose-dir');
+  }
 }
 
 function updateCustomRuleSaveControl(): void {
@@ -872,7 +922,7 @@ async function start(): Promise<void> {
   updateCancelControl();
   try {
     console.log("[SoatVan-UI] Dispatching api.startJob with jobId:", currentJobId);
-    const result = await api.startJob(currentJobId, state.document.path, defaultPreset, customPrompt, effectiveUseModel, state.useSeq2Seq, defaultRuleOptions, [], effectiveFullReview, effectiveFullReview ? true : false);
+    const result = await api.startJob(currentJobId, state.document.path, defaultPreset, customPrompt, effectiveUseModel, defaultRuleOptions, [], effectiveFullReview, effectiveFullReview ? true : false);
     console.log("[SoatVan-UI] api.startJob result:", result);
     if (state.jobId === currentJobId && state.step === "processing") {
       state.jobId = "";
@@ -1492,7 +1542,11 @@ try {
     api.aiConfigGet(),
     api.modelStatus(initialModelPreference),
     api.customRuleList(),
-  ]).then(([aiConfigRes, modelRes, rulesRes]) => {
+    api.seq2seqConfigGet().catch(() => null),
+  ]).then(([aiConfigRes, modelRes, rulesRes, seq2seqRes]) => {
+    if (seq2seqRes.status === "fulfilled" && seq2seqRes.value) {
+      state.seq2seqConfig = seq2seqRes.value;
+    }
     if (aiConfigRes.status === "fulfilled") {
       state.aiConfig = aiConfigRes.value;
       syncCloudDraftsFromConfig();
