@@ -240,4 +240,20 @@ def test_glued_ascii_unikey_words_detection() -> None:
     assert results.get("thongbao") == "thông báo"
 
 
+def test_unaccented_administrative_phrases_detection() -> None:
+    text = "Thực hiện hop dong và ban hành quyet dinh kiểm tra to chuc can bo theo quy trinh."
+    findings = RuleEngine().check(
+        [Block("document:p0", text)],
+        Preset.STANDARD,
+    )
+    results = {f.source_text: f.suggestion for f in findings}
+    assert results.get("hop dong") == "hợp đồng"
+    assert results.get("quyet dinh") == "quyết định"
+    assert results.get("to chuc") == "tổ chức"
+    assert results.get("can bo") == "cán bộ"
+    assert results.get("quy trinh") == "quy trình"
+
+
+
+
 

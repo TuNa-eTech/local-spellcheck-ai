@@ -4,6 +4,8 @@ import re
 import unicodedata
 from difflib import SequenceMatcher
 
+from .heading import is_heading, merge_tone_only
+
 WORD_PATTERN = re.compile(r"[^\W_]+", flags=re.UNICODE)
 _TOKEN_SPLIT = re.compile(r"(\s+)")
 _DELETION_REASON_CODES = frozenset({"punctuation", "repetition", "spacing", "technical"})
@@ -286,6 +288,11 @@ def _validate_localized_edit(
         reason_code not in _DELETION_REASON_CODES or len(source_text) > 16
     ):
         return None
+    if is_heading(source_text):
+        guarded = merge_tone_only(source_text, suggestion)
+        if _normalized(guarded).strip() == _normalized(source_text).strip():
+            return None
+        suggestion = guarded
     if reason_code == "capitalization" and source_text.isupper() and len(source_text) >= 2:
         # All-caps text in headings, titles, or acronyms is standard administrative format.
         # Converting all-caps words to lowercase is a false positive.
