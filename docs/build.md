@@ -186,6 +186,7 @@ git push origin v0.1.0
 Pipeline chạy test trước, sau đó build song song:
 
 - Windows x64 NSIS `.exe`.
+- Windows x64 Portable `.zip`.
 - macOS arm64 `.dmg`.
 - macOS Intel x64 `.dmg`.
 

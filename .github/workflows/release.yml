@@ -146,9 +146,12 @@ jobs:
           if (-not $installer) { throw "NSIS installer not found" }
           $certificate = Get-ChildItem "apps/desktop/src-tauri/target/release/bundle/nsis/*.cer" | Select-Object -First 1
           if (-not $certificate) { throw "Personal signing certificate not found" }
+          $portableZip = Get-ChildItem "dist/*-Portable.zip" | Select-Object -First 1
+          if (-not $portableZip) { throw "Portable zip not found in dist" }
           New-Item -ItemType Directory -Force release-assets | Out-Null
           Copy-Item -LiteralPath $installer.FullName -Destination "release-assets/SoatVan-${{ github.ref_name }}-windows-x64-setup.exe"
           Copy-Item -LiteralPath $certificate.FullName -Destination "release-assets/SoatVan-${{ github.ref_name }}-windows-personal-signing.cer"
+          Copy-Item -LiteralPath $portableZip.FullName -Destination "release-assets/SoatVan-${{ github.ref_name }}-windows-x64-portable.zip"
 
       - uses: actions/upload-artifact@v4
         with:
