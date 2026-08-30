@@ -31,23 +31,27 @@ def _detone(word: str) -> str:
     return unicodedata.normalize("NFC", "".join(c for c in decomposed if c not in _TONE_MARKS))
 
 
-def is_heading(text: str) -> bool:
-    """Return True when text looks like a document heading, title, or letterhead.
+_ADMIN_HEADING_PREFIX = re.compile(
+    r"^(số\s*:\s*|ký\s+hiệu\s*:\s*|điều\s+\d+|chương\s+[ivxlcdm\d]+|mục\s+\d+|phần\s+[ivxlcdm\d]+|phụ\s+lục\s+[ivxlcdm\d]*)",
+    re.IGNORECASE,
+)
 
-    Heading-shaped means:
-    1. Short (<= 12 tokens)
-    2. Does not end with sentence-final punctuation (. ! ?)
-    3. Either fully UPPERCASE or >= 50% TitleCased across its alphabetic tokens.
-    """
+
+def is_heading(text: str) -> bool:
+    """Return True when text looks like a document heading, title, letterhead, or article heading."""
     stripped = text.strip()
     if not stripped:
         return False
     tokens = stripped.split()
     if len(tokens) > _MAX_HEADING_TOKENS:
         return False
-    if stripped.endswith((".", "!", "?")):
+    if stripped.endswith((".", "!", "?")) and not _ADMIN_HEADING_PREFIX.search(stripped):
         return False
-    alpha = [t for t in tokens if _ALPHA_TOKEN.match(t)]
+    if _ADMIN_HEADING_PREFIX.search(stripped):
+        return True
+
+    clean_tokens = [re.sub(r"^[^\w]+|[^\w]+$", "", t) for t in tokens]
+    alpha = [t for t in clean_tokens if _ALPHA_TOKEN.match(t)]
     if not alpha:
         return False
     if all(t.isupper() for t in alpha):

@@ -128,7 +128,7 @@ class NoiseGenerator:
 
     def noisify(self, text: str) -> str:
         """Apply noise mutations to text according to config probabilities."""
-        if not text:
+        if not text or not text.strip():
             return text
 
         tokens = text.split(" ")
