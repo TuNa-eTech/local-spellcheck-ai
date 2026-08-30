@@ -71,6 +71,17 @@ _VIETNAMESE_MARKERS = frozenset(
 )
 
 
+def _match_case(source: str, target: str) -> str:
+    """Preserve casing (ALL CAPS or TitleCase) from source to target."""
+    if not source or not target:
+        return target
+    if source.isupper() and len(source) > 1:
+        return target.upper()
+    if source[0].isupper():
+        return target[0].upper() + target[1:]
+    return target
+
+
 def _syllable_repair(word: str) -> tuple[str, str] | None:
     """Return only high-confidence Vietnamese onset repairs.
 
@@ -329,13 +340,15 @@ class RuleEngine:
             if _contains_ignored(wrong, ignored):
                 continue
             for match in re.finditer(rf"(?<!\w){re.escape(wrong)}(?!\w)", lowered):
+                source_slice = text[match.start() : match.end()]
+                matched_right = _match_case(source_slice, right)
                 found.append(
                     self._make(
                         block,
                         *match.span(),
                         "spelling",
                         f"confusion.{wrong.replace(' ', '_')}.v1",
-                        right,
+                        matched_right,
                         reason,
                         0.98,
                     )
@@ -409,6 +422,7 @@ class RuleEngine:
                 suggestion = vocab.suggest_split(word) or ""
 
             if suggestion:
+                suggestion = _match_case(word, suggestion)
                 found.append(
                     self._make(
                         block,

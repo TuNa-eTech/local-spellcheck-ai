@@ -29,6 +29,14 @@ class AdminMatch:
     reason: str
 
 
+def _make_flexible_pattern(phrase: str) -> re.Pattern[str]:
+    """Compile phrase into a regex tolerant of variable whitespace and hyphen spacing."""
+    escaped = re.escape(phrase)
+    escaped = re.sub(r"\\\s+", r"\\s+", escaped)
+    escaped = re.sub(r"\\s*\\-\\s*", r"\\s*-\\s*", escaped)
+    return re.compile(rf"(?<!\w){escaped}(?!\w)", re.IGNORECASE)
+
+
 class _AdminEntitiesRegistry:
     """Singleton-style registry for precompiled administrative entity patterns."""
 
@@ -53,7 +61,7 @@ class _AdminEntitiesRegistry:
 
         # 1. Central agencies
         self.central_patterns = [
-            (re.compile(rf"(?<!\w){re.escape(wrong)}(?!\w)", re.IGNORECASE), right)
+            (_make_flexible_pattern(wrong), right)
             for wrong, right in data.get("central_agencies", [])
         ]
 
@@ -74,7 +82,7 @@ class _AdminEntitiesRegistry:
         ]:
             for field_lower, field_proper in local_fields:
                 self.local_agency_patterns.append((
-                    re.compile(rf"(?<!\w){re.escape(prefix_lower)}\s+{re.escape(field_lower)}(?!\w)", re.IGNORECASE),
+                    _make_flexible_pattern(f"{prefix_lower} {field_lower}"),
                     f"{prefix_proper} {field_proper}",
                 ))
 
@@ -85,31 +93,31 @@ class _AdminEntitiesRegistry:
             + data.get("reverence_and_events", [])
         )
         self.position_patterns = [
-            (re.compile(rf"(?<!\w){re.escape(wrong)}(?!\w)", re.IGNORECASE), right)
+            (_make_flexible_pattern(wrong), right)
             for wrong, right in combined_positions
         ]
 
         # 5. State Corporations
         self.corporation_patterns = [
-            (re.compile(rf"(?<!\w){re.escape(wrong)}(?!\w)", re.IGNORECASE), right)
+            (_make_flexible_pattern(wrong), right)
             for wrong, right in data.get("state_corporations", [])
         ]
 
         # 6. Major Institutions (Đại học, Học viện, Bệnh viện)
         self.institution_patterns = [
-            (re.compile(rf"(?<!\w){re.escape(wrong)}(?!\w)", re.IGNORECASE), right)
+            (_make_flexible_pattern(wrong), right)
             for wrong, right in data.get("major_institutions", [])
         ]
 
         # 7. Laws and Codes
         self.law_patterns = [
-            (re.compile(rf"(?<!\w){re.escape(wrong)}(?!\w)", re.IGNORECASE), right)
+            (_make_flexible_pattern(wrong), right)
             for wrong, right in data.get("laws_and_codes", [])
         ]
 
         # 8. Geographic Regions & Distinct Place Names
         self.geography_patterns = [
-            (re.compile(rf"(?<!\w){re.escape(wrong)}(?!\w)", re.IGNORECASE), right)
+            (_make_flexible_pattern(wrong), right)
             for wrong, right in data.get("geographic_regions", [])
         ]
 
