@@ -30,6 +30,12 @@ class VietnameseVocabulary:
     """
 
     _instance: VietnameseVocabulary | None = None
+    _loaded: bool = False
+    _syllables: frozenset[str]
+    _compounds: frozenset[str]
+    _rep_rules: list[tuple[str, str]]
+    _tone_map: dict[str, str]
+    _confusions: dict[str, tuple[str, str]]
 
     def __new__(cls) -> VietnameseVocabulary:
         if cls._instance is None:
@@ -45,6 +51,7 @@ class VietnameseVocabulary:
         self._compounds = _load_compounds()
         self._rep_rules = _load_rep_rules()
         self._tone_map = _load_tone_map()
+        self._confusions = _load_confusions()
         self._loaded = True
 
     @property
@@ -66,6 +73,11 @@ class VietnameseVocabulary:
     def tone_map(self) -> dict[str, str]:
         self._ensure_loaded()
         return self._tone_map
+
+    @property
+    def confusions(self) -> dict[str, tuple[str, str]]:
+        self._ensure_loaded()
+        return self._confusions
 
     def is_valid_syllable(self, syllable: str) -> bool:
         """Check if a syllable exists in the Vietnamese vocabulary."""
@@ -103,34 +115,81 @@ class VietnameseVocabulary:
         return suggestions
 
     def suggest_split(self, word: str) -> str | None:
-        """Split a glued word such as "bổsung" back into "bổ sung".
+        """Split a glued word such as "bổsung" or glued+misspelled "hướngdẩn" back into "bổ sung" / "hướng dẫn".
 
-        Typing without a space produces one token that is never a valid
-        syllable, so ``suggest_corrections`` cannot repair it: tone and
-        consonant substitution both keep the token glued.
-
-        Every split point is tried, but a candidate is only accepted when the
-        two halves are valid syllables *and* the resulting bigram is a known
-        compound. The compound check is what makes this safe: "thựchiện" splits
-        into both "thự chiện" and "thực hiện" with two valid syllables each, and
-        only the second is a real word. Without lexical evidence for the pair
-        this returns ``None`` and the caller falls back to a warning with no
-        suggestion.
+        Every split point is tried:
+        1. Exact split: head and tail are valid syllables and "head tail" is in compounds.
+        2. Glued + typo: tone swap or phonological corrections on head/tail form a valid compound.
         """
         self._ensure_loaded()
         normalized = _normalize(word)
         if len(normalized) < 2 or " " in normalized:
             return None
+
+        # 1. Exact split
         for index in range(1, len(normalized)):
             head, tail = normalized[:index], normalized[index:]
-            if head not in self._syllables or tail not in self._syllables:
-                continue
-            if f"{head} {tail}" not in self._compounds:
-                continue
-            # Slice the original token so existing capitalisation survives.
-            if len(word) == len(normalized):
-                return f"{word[:index]} {word[index:]}"
-            return f"{head} {tail}"
+            if head in self._syllables and tail in self._syllables and f"{head} {tail}" in self._compounds:
+                if len(word) == len(normalized):
+                    return f"{word[:index]} {word[index:]}"
+                return f"{head} {tail}"
+
+        # 2. Glued word with typos
+        for index in range(1, len(normalized)):
+            head, tail = normalized[:index], normalized[index:]
+
+            # 2a. Tone swap on tail (e.g. "hướngdẩn" -> "hướng dẫn")
+            ts_tail = _swap_tones(tail, self._tone_map)
+            if (
+                ts_tail != tail
+                and head in self._syllables
+                and ts_tail in self._syllables
+                and f"{head} {ts_tail}" in self._compounds
+            ):
+                return f"{head} {ts_tail}"
+
+            # 2b. Tone swap on head (e.g. "dểhiểu" -> "dễ hiểu")
+            ts_head = _swap_tones(head, self._tone_map)
+            if (
+                ts_head != head
+                and ts_head in self._syllables
+                and tail in self._syllables
+                and f"{ts_head} {tail}" in self._compounds
+            ):
+                return f"{ts_head} {tail}"
+
+            # 2c. Tone swap on both (e.g. "sữachửa" -> "sửa chữa")
+            if (
+                ts_head != head
+                and ts_tail != tail
+                and ts_head in self._syllables
+                and ts_tail in self._syllables
+                and f"{ts_head} {ts_tail}" in self._compounds
+            ):
+                return f"{ts_head} {ts_tail}"
+
+            # 2d. REP rules on tail (e.g. "bốchí" -> "bố trí", "đềsuất" -> "đề xuất", "bỏxót" -> "bỏ sót")
+            for old, new in self._rep_rules:
+                if old in tail:
+                    cand_tail = tail.replace(old, new, 1)
+                    if (
+                        head in self._syllables
+                        and cand_tail in self._syllables
+                        and f"{head} {cand_tail}" in self._compounds
+                    ):
+                        return f"{head} {cand_tail}"
+
+            # 2e. REP rules on head (e.g. "chedấu" -> "che giấu", "thịchấn" -> "thị trấn")
+            for old, new in self._rep_rules:
+                if old in head:
+                    cand_head = head.replace(old, new, 1)
+                    if (
+                        cand_head in self._syllables
+                        and tail in self._syllables
+                        and f"{cand_head} {tail}" in self._compounds
+                    ):
+                        return f"{cand_head} {tail}"
+
         return None
 
     def suggest_for_compound(
@@ -152,6 +211,44 @@ class VietnameseVocabulary:
                 return s
 
         return suggestions[0]
+
+    def find_compound_confusion(
+        self, w1: str, w2: str
+    ) -> tuple[str, str] | None:
+        """Check whether two consecutive valid syllables form an invalid compound with a valid tone swap correction.
+
+        Returns (suggested_compound, reason) or None.
+        """
+        self._ensure_loaded()
+        n1 = _normalize(w1)
+        n2 = _normalize(w2)
+        if not (self.is_valid_syllable(n1) and self.is_valid_syllable(n2)):
+            return None
+        bigram = f"{n1} {n2}"
+        if bigram in self.compounds or bigram in self.confusions:
+            return None
+
+        # 1. Tone swap on w2
+        ts2 = _swap_tones(n2, self._tone_map)
+        if ts2 != n2 and ts2 in self._syllables and f"{n1} {ts2}" in self._compounds:
+            return f"{n1} {ts2}", f"Từ đúng chính tả là “{n1} {ts2}”."
+
+        # 2. Tone swap on w1
+        ts1 = _swap_tones(n1, self._tone_map)
+        if ts1 != n1 and ts1 in self._syllables and f"{ts1} {n2}" in self._compounds:
+            return f"{ts1} {n2}", f"Từ đúng chính tả là “{ts1} {n2}”."
+
+        # 3. Tone swap on both (e.g. "sữa chửa" -> "sửa chữa")
+        if (
+            ts1 != n1
+            and ts2 != n2
+            and ts1 in self._syllables
+            and ts2 in self._syllables
+            and f"{ts1} {ts2}" in self._compounds
+        ):
+            return f"{ts1} {ts2}", f"Từ đúng chính tả là “{ts1} {ts2}”."
+
+        return None
 
 
 def _load_syllables() -> frozenset[str]:
@@ -176,6 +273,14 @@ def _load_compounds() -> frozenset[str]:
     )
 
 
+def _load_confusions() -> dict[str, tuple[str, str]]:
+    path = _DATA_DIR / "confusions.json"
+    if not path.exists():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return {k: (v[0], v[1]) for k, v in data.items() if isinstance(v, list) and len(v) >= 2}
+
+
 def _load_rep_rules() -> list[tuple[str, str]]:
     path = _DATA_DIR / "rep_rules.json"
     if not path.exists():
@@ -189,9 +294,11 @@ def _load_tone_map() -> dict[str, str]:
     if not path.exists():
         return {}
     data = json.loads(path.read_text(encoding="utf-8"))
-    return data.get("tone_map", {})
+    tone_data = data.get("tone_map", {})
+    return {str(k): str(v) for k, v in tone_data.items()}
 
 
 def _swap_tones(word: str, tone_map: dict[str, str]) -> str:
     """Swap hỏi↔ngã tones in a syllable."""
     return "".join(tone_map.get(c, c) for c in word)
+

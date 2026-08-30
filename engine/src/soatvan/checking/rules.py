@@ -336,7 +336,9 @@ class RuleEngine:
     ) -> list[Finding]:
         found: list[Finding] = []
         lowered = text.casefold()
-        for wrong, (right, reason) in CONFUSIONS.items():
+        vocab = VietnameseVocabulary()
+        all_confusions = {**CONFUSIONS, **vocab.confusions}
+        for wrong, (right, reason) in all_confusions.items():
             if _contains_ignored(wrong, ignored):
                 continue
             for match in re.finditer(rf"(?<!\w){re.escape(wrong)}(?!\w)", lowered):
@@ -351,6 +353,42 @@ class RuleEngine:
                         matched_right,
                         reason,
                         0.98,
+                    )
+                )
+                if len(found) >= limit:
+                    return found
+
+        # Dynamic bigram compound confusion check
+        words = list(WORD_PATTERN.finditer(text))
+        for i in range(len(words) - 1):
+            m1, m2 = words[i], words[i + 1]
+            if text[m1.end() : m2.start()].strip() != "":
+                continue
+            w1, w2 = m1.group(0), m2.group(0)
+            pair_text = text[m1.start() : m2.end()]
+            if (
+                _contains_ignored(pair_text, ignored)
+                or _contains_ignored(w1, ignored)
+                or _contains_ignored(w2, ignored)
+            ):
+                continue
+            pair_lowered = f"{w1.casefold()} {w2.casefold()}"
+            if pair_lowered in all_confusions:
+                continue
+            confusion = vocab.find_compound_confusion(w1, w2)
+            if confusion is not None:
+                suggested_compound, reason = confusion
+                matched_suggestion = _match_case(pair_text, suggested_compound)
+                found.append(
+                    self._make(
+                        block,
+                        m1.start(),
+                        m2.end(),
+                        "compound_word",
+                        f"confusion.{pair_lowered.replace(' ', '_')}.v1",
+                        matched_suggestion,
+                        reason,
+                        0.95,
                     )
                 )
                 if len(found) >= limit:

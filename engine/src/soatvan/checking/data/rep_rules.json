@@ -79,6 +79,70 @@
     {
       "from": "z",
       "to": "d"
+    },
+    {
+      "from": "ng",
+      "to": "n"
+    },
+    {
+      "from": "n",
+      "to": "ng"
+    },
+    {
+      "from": "c",
+      "to": "t"
+    },
+    {
+      "from": "t",
+      "to": "c"
+    },
+    {
+      "from": "o",
+      "to": "ô"
+    },
+    {
+      "from": "ô",
+      "to": "o"
+    },
+    {
+      "from": "e",
+      "to": "ê"
+    },
+    {
+      "from": "ê",
+      "to": "e"
+    },
+    {
+      "from": "oi",
+      "to": "ơi"
+    },
+    {
+      "from": "ơi",
+      "to": "oi"
+    },
+    {
+      "from": "r",
+      "to": "d"
+    },
+    {
+      "from": "d",
+      "to": "r"
+    },
+    {
+      "from": "r",
+      "to": "gi"
+    },
+    {
+      "from": "gi",
+      "to": "r"
+    },
+    {
+      "from": "l",
+      "to": "n"
+    },
+    {
+      "from": "n",
+      "to": "l"
     }
   ],
   "tone_map": {

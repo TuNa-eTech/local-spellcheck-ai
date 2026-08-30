@@ -2025,6 +2025,7 @@ báo bờm
 báo chí
 báo chương
 báo cáo
+báo cáo rõ
 báo cáo viên
 báo cáo điển hình
 báo cô
@@ -9326,6 +9327,7 @@ chỉ đường vạch lối
 chỉ đường vẽ lối
 chỉ được cái
 chỉ đạo
+chỉ đạo rõ
 chỉ định
 chỉn chu
 chỉn e
@@ -18530,6 +18532,7 @@ giải thể
 giải thức
 giải toả
 giải trình
+giải trình rõ
 giải trí
 giải trùng hợp
 giải trọc
@@ -22081,6 +22084,7 @@ hươu xạ
 hướng cách
 hướng dương
 hướng dẫn
+hướng dẫn rõ
 hướng dẫn viên
 hướng lai
 hướng lại
@@ -22562,6 +22566,7 @@ hằm hừ
 hằn học
 hằn thù
 hằng bất đẳng thức
+hằng giờ
 hằng hà
 hằng hà sa số
 hằng lượng
@@ -22569,11 +22574,14 @@ hằng nga
 hằng nga cung quảng
 hằng nga giáng thế
 hằng ngày
+hằng năm
 hằng sản
 hằng sản hằng tâm
 hằng số
 hằng thuỷ
+hằng tháng
 hằng tinh
+hằng tuần
 hằng tâm
 hằng tâm hằng sản
 hằng đẳng thức
@@ -37201,7 +37209,11 @@ nêu cao
 nêu cao nhưng bóng chẳng ngay
 nêu cong thì bóng cũng cong
 nêu gương
+nêu quan điểm
+nêu ra
+nêu rõ
 nêu tên
+nêu ý kiến
 nì nèo
 nình nịch
 ních ních
@@ -39509,6 +39521,7 @@ phân chất
 phân cách
 phân câu
 phân công
+phân công rõ
 phân cấp
 phân cấp quản lí
 phân cắt
@@ -41183,6 +41196,7 @@ quy y
 quy điền
 quy đầu
 quy định
+quy định rõ
 quy đồng mẫu số
 quy đổi
 quy đức
@@ -60747,6 +60761,7 @@ xác vờ
 xác xơ
 xác đáng
 xác định
+xác định rõ
 xác ướp
 xách mé
 xách nách

@@ -144,12 +144,12 @@ def test_dictionary_check_recovers_a_glued_word() -> None:
 def test_dictionary_check_warns_without_guessing_an_unsupported_split() -> None:
     config = RuleConfig(False, False, False, False, False, True)
     findings = RuleEngine().check(
-        [Block("document:p0", "Thực hiện hằngtháng.")],
+        [Block("document:p0", "Thực hiện nghiênthực.")],
         Preset.STANDARD,
         config=config,
     )
-    # "hằng tháng" is absent from the compound list, so the detector must warn
-    # instead of inventing a split.
+    # "nghiên thực" is absent from the compound list, so the detector must warn
+    # instead of inventing an unsupported split.
     assert [(item.detector_id, item.suggestion) for item in findings] == [
         ("dictionary.unknown.v1", "")
     ]
@@ -165,3 +165,79 @@ def test_administrative_and_standardization_sentence() -> None:
         ("sở Nội vụ", "Sở Nội vụ", "capitalization"),
         ("kỉ cương", "kỷ cương", "spelling"),
     ]
+
+
+def test_confusions_catches_neu_ro_and_administrative_homophones() -> None:
+    text = "Báo cáo cần nêu rỏ nguyên nhân, bố chí nhân lực và đề suất giải pháp che dấu tồn tại."
+    findings = RuleEngine().check(
+        [Block("document:p0", text)],
+        Preset.STANDARD,
+    )
+    sources_and_sugs = [(f.source_text, f.suggestion) for f in findings]
+    assert ("nêu rỏ", "nêu rõ") in sources_and_sugs
+    assert ("bố chí", "bố trí") in sources_and_sugs
+    assert ("đề suất", "đề xuất") in sources_and_sugs
+    assert ("che dấu", "che giấu") in sources_and_sugs
+
+
+def test_dynamic_compound_confusion_detects_tone_swap_variants() -> None:
+    text = "Cán bộ đùn đẫy trách nhiệm, hướng dẩn chưa rỏ ràng và thiếu biểu mẩu."
+    findings = RuleEngine().check(
+        [Block("document:p0", text)],
+        Preset.STANDARD,
+    )
+    sources_and_sugs = [(f.source_text, f.suggestion) for f in findings]
+    assert ("đùn đẫy", "đùn đẩy") in sources_and_sugs
+    assert ("hướng dẩn", "hướng dẫn") in sources_and_sugs
+    assert ("rỏ ràng", "rõ ràng") in sources_and_sugs
+    assert ("biểu mẩu", "biểu mẫu") in sources_and_sugs
+
+
+def test_target_words_kipthoi_neu_ro_theo_gioi() -> None:
+    text = "Cần xử lý kịpthời, nêu rỏ số liệu và theo giỏi tiến độ."
+    findings = RuleEngine().check(
+        [Block("document:p0", text)],
+        Preset.STANDARD,
+    )
+    results = {f.source_text: f.suggestion for f in findings}
+    assert results.get("kịpthời") == "kịp thời"
+    assert results.get("nêu rỏ") == "nêu rõ"
+    assert results.get("theo giỏi") == "theo dõi"
+
+
+def test_glued_words_and_glued_misspelled_words_detection() -> None:
+    text = "Cán bộ cần bổsung hồ sơ, thựchiện kếhoạch, không được đùnđẫy, bốchí hợp lý và sắpsếp ngăn nắp."
+    findings = RuleEngine().check(
+        [Block("document:p0", text)],
+        Preset.STANDARD,
+    )
+    results = {f.source_text: f.suggestion for f in findings}
+    # Pure glued words
+    assert results.get("bổsung") == "bổ sung"
+    assert results.get("thựchiện") == "thực hiện"
+    assert results.get("kếhoạch") == "kế hoạch"
+    # Glued + tone typo
+    assert results.get("đùnđẫy") == "đùn đẩy"
+    # Glued + consonant typo
+    assert results.get("bốchí") == "bố trí"
+    assert results.get("sắpsếp") == "sắp xếp"
+
+
+def test_glued_ascii_unikey_words_detection() -> None:
+    text = "Các tập tin giayphep, donnghi, xacnhan, hopdong, baocao, kehoach, quyetdinh, thongbao cần được xử lý."
+    findings = RuleEngine().check(
+        [Block("document:p0", text)],
+        Preset.STANDARD,
+    )
+    results = {f.source_text: f.suggestion for f in findings}
+    assert results.get("giayphep") == "giấy phép"
+    assert results.get("donnghi") == "đơn nghỉ"
+    assert results.get("xacnhan") == "xác nhận"
+    assert results.get("hopdong") == "hợp đồng"
+    assert results.get("baocao") == "báo cáo"
+    assert results.get("kehoach") == "kế hoạch"
+    assert results.get("quyetdinh") == "quyết định"
+    assert results.get("thongbao") == "thông báo"
+
+
+

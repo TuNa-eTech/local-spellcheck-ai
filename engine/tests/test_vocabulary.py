@@ -92,8 +92,8 @@ def test_suggest_split_requires_a_known_compound() -> None:
     # "thựchiện" also splits into the two valid syllables "thự" + "chiện".
     # Only "thực hiện" is a real compound, so the earlier split must lose.
     assert vocab.suggest_split("thựchiện") == "thực hiện"
-    # No compound backs "hằng tháng", so the split is refused rather than guessed.
-    assert vocab.suggest_split("hằngtháng") is None
+    # No compound backs "nghiên thực", so the split is refused rather than guessed.
+    assert vocab.suggest_split("nghiênthực") is None
 
 
 def test_suggest_split_leaves_correct_words_alone() -> None:
@@ -106,3 +106,29 @@ def test_suggest_split_leaves_correct_words_alone() -> None:
 def test_suggest_split_preserves_capitalisation() -> None:
     vocab = _vocab()
     assert vocab.suggest_split("Bổsung") == "Bổ sung"
+
+
+def test_suggest_split_recovers_glued_words_with_typos() -> None:
+    vocab = _vocab()
+    # Glued + tone swap errors
+    assert vocab.suggest_split("hướngdẩn") == "hướng dẫn"
+    assert vocab.suggest_split("biểumẩu") == "biểu mẫu"
+    assert vocab.suggest_split("rỏràng") == "rõ ràng"
+    assert vocab.suggest_split("làmrỏ") == "làm rõ"
+    assert vocab.suggest_split("đùnđẫy") == "đùn đẩy"
+    assert vocab.suggest_split("nắmvửng") == "nắm vững"
+    assert vocab.suggest_split("dểhiểu") == "dễ hiểu"
+    assert vocab.suggest_split("hổtrợ") == "hỗ trợ"
+    assert vocab.suggest_split("sữachửa") == "sửa chữa"
+    assert vocab.suggest_split("chấnchĩnh") == "chấn chỉnh"
+    assert vocab.suggest_split("bảnvẻ") == "bản vẽ"
+
+    # Glued + consonant / REP errors
+    assert vocab.suggest_split("bốchí") == "bố trí"
+    assert vocab.suggest_split("đềsuất") == "đề xuất"
+    assert vocab.suggest_split("chedấu") == "che giấu"
+    assert vocab.suggest_split("sắpsếp") == "sắp xếp"
+    assert vocab.suggest_split("bỏxót") == "bỏ sót"
+    assert vocab.suggest_split("thịchấn") == "thị trấn"
+    assert vocab.suggest_split("bổxung") == "bổ sung"
+
