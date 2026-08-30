@@ -6,109 +6,21 @@ from collections.abc import Callable, Iterable
 from dataclasses import replace
 
 from .domain import Block, Finding, Preset, RuleConfig
+from .vocabulary import VietnameseVocabulary
 
 RULE_VERSION = "rules-0.2.0"
 
 CONFUSIONS: dict[str, tuple[str, str]] = {
-    # Từ gây nhầm lẫn chuẩn & chính tả
-    "sát nhập": ("sáp nhập", "Cụm từ chuẩn là “sáp nhập”."),
-    "chỉnh chu": ("chỉn chu", "Từ đúng chính tả là “chỉn chu”."),
-    "xử lí": ("xử lý", "Khuyến nghị dùng “xử lý” thống nhất trong văn bản."),
-    "qui định": ("quy định", "Khuyến nghị dùng “quy định” thống nhất trong văn bản."),
-    "qui trình": ("quy trình", "Khuyến nghị dùng “quy trình” thống nhất trong văn bản."),
-    "ngiên cứu": ("nghiên cứu", "Âm tiết đứng trước i, e, ê phải dùng phụ âm đầu “ngh”."),
-    "qủa": ("quả", "Dấu thanh trong âm tiết “quả” phải đặt ở nguyên âm chính."),
-    # Dấu hỏi / ngã
-    "xữ lý": ("xử lý", "Từ đúng chính tả là “xử lý” (dấu hỏi)."),
-    "lưu trử": ("lưu trữ", "Từ đúng chính tả là “lưu trữ” (dấu ngã)."),
-    "dử liệu": ("dữ liệu", "Từ đúng chính tả là “dữ liệu” (dấu ngã)."),
-    "hướng dẩn": ("hướng dẫn", "Từ đúng chính tả là “hướng dẫn” (dấu ngã)."),
-    "biểu mẩu": ("biểu mẫu", "Từ đúng chính tả là “biểu mẫu” (dấu ngã)."),
-    "vẩn": ("vẫn", "Từ đúng chính tả là “vẫn” (dấu ngã)."),
-    "xãy ra": ("xảy ra", "Từ đúng chính tả là “xảy ra” (dấu hỏi)."),
-    "làm rỏ": ("làm rõ", "Từ đúng chính tả là “làm rõ” (dấu ngã)."),
-    "nêu rỏ": ("nêu rõ", "Từ đúng chính tả là “nêu rõ” (dấu ngã)."),
-    "rỏ ràng": ("rõ ràng", "Từ đúng chính tả là “rõ ràng” (dấu ngã)."),
-    "rỏ": ("rõ", "Từ đúng chính tả là “rõ” (dấu ngã)."),
-    "cụ thễ": ("cụ thể", "Từ đúng chính tả là “cụ thể” (dấu hỏi)."),
-    "đùn đẫy": ("đùn đẩy", "Từ đúng chính tả là “đùn đẩy” (dấu hỏi)."),
-    "bị củ": ("bị cũ", "Từ đúng chính tả là “bị cũ” (dấu ngã)."),
-    "chử ký": ("chữ ký", "Từ đúng chính tả là “chữ ký” (dấu ngã)."),
-    "chử kí": ("chữ ký", "Từ đúng chính tả là “chữ ký”."),
-    "chử": ("chữ", "Từ đúng chính tả là “chữ” (dấu ngã)."),
-    "ngẩu nhiên": ("ngẫu nhiên", "Từ đúng chính tả là “ngẫu nhiên” (dấu ngã)."),
-    "không rỏ": ("không rõ", "Từ đúng chính tả là “không rõ” (dấu ngã)."),
-    "lổi": ("lỗi", "Từ đúng chính tả là “lỗi” (dấu ngã)."),
-    "xin lổi": ("xin lỗi", "Từ đúng chính tả là “xin lỗi” (dấu ngã)."),
-    "chuyễn": ("chuyển", "Từ đúng chính tả là “chuyển” (dấu hỏi)."),
-    "luân chuyễn": ("luân chuyển", "Từ đúng chính tả là “luân chuyển” (dấu hỏi)."),
-    "bản vẻ": ("bản vẽ", "Từ đúng chính tả là “bản vẽ” (dấu ngã)."),
-    "nỗi bật": ("nổi bật", "Từ đúng chính tả là “nổi bật” (dấu hỏi)."),
-    "nắm vửng": ("nắm vững", "Từ đúng chính tả là “nắm vững” (dấu ngã)."),
-    "văn bãn": ("văn bản", "Từ đúng chính tả là “văn bản” (dấu hỏi)."),
-    "biên bãn": ("biên bản", "Từ đúng chính tả là “biên bản” (dấu hỏi)."),
-    "hình ãnh": ("hình ảnh", "Từ đúng chính tả là “hình ảnh” (dấu hỏi)."),
-    "sữa chửa": ("sửa chữa", "Từ đúng chính tả là “sửa chữa”."),
-    "dể hiểu": ("dễ hiểu", "Từ đúng chính tả là “dễ hiểu” (dấu ngã)."),
-    "dể quan sát": ("dễ quan sát", "Từ đúng chính tả là “dễ quan sát” (dấu ngã)."),
-    "dể": ("dễ", "Từ đúng chính tả là “dễ” (dấu ngã)."),
-    "hổ trợ": ("hỗ trợ", "Từ đúng chính tả là “hỗ trợ” (dấu ngã)."),
-    "trể": ("trễ", "Từ đúng chính tả là “trễ” (dấu ngã)."),
-    "mổi ngày": ("mỗi ngày", "Từ đúng chính tả là “mỗi ngày” (dấu ngã)."),
-    "mổi tháng": ("mỗi tháng", "Từ đúng chính tả là “mỗi tháng” (dấu ngã)."),
-    "mổi": ("mỗi", "Từ đúng chính tả là “mỗi” (dấu ngã)."),
-    "lỉnh vực": ("lĩnh vực", "Từ đúng chính tả là “lĩnh vực” (dấu ngã)."),
-    "kỷ thuật": ("kỹ thuật", "Từ đúng chính tả là “kỹ thuật” (dấu ngã)."),
-    "kỷ năng": ("kỹ năng", "Từ đúng chính tả là “kỹ năng” (dấu ngã)."),
-    "kỉ cương": ("kỷ cương", "Khuyến nghị dùng “kỷ cương” thống nhất trong văn bản."),
-    "quản lí": ("quản lý", "Khuyến nghị dùng “quản lý” thống nhất trong văn bản."),
-    "dẩn đến": ("dẫn đến", "Từ đúng chính tả là “dẫn đến” (dấu ngã)."),
-    "dẩn": ("dẫn", "Từ đúng chính tả là “dẫn” (dấu ngã)."),
-    "đã củ": ("đã cũ", "Từ đúng chính tả là “đã cũ” (dấu ngã)."),
-    "sẻ": ("sẽ", "Từ đúng chính tả là “sẽ” (dấu ngã)."),
-    "tẩy xoá": ("tẩy xóa", "Dấu thanh nên đặt ở nguyên âm chính a: “tẩy xóa”."),
-    "chuyển vòng": ("chuyển vòng", "Từ đúng chính tả là “chuyển vòng” (dấu hỏi)."),
-    "chuyển trả": ("chuyển trả", "Từ đúng chính tả là “chuyển trả” (dấu hỏi)."),
-    "mật khẫu": ("mật khẩu", "Từ đúng chính tả là “mật khẩu” (dấu hỏi)."),
-    "tái diển": ("tái diễn", "Từ đúng chính tả là “tái diễn” (dấu ngã)."),
-    "chấn chĩnh": ("chấn chỉnh", "Từ đúng chính tả là “chấn chỉnh” (dấu hỏi)."),
-    "giãi quyết": ("giải quyết", "Từ đúng chính tả là “giải quyết” (dấu hỏi)."),
-    "thừơng xuyên": ("thường xuyên", "Từ đúng chính tả là “thường xuyên”."),
-    "thừơng": ("thường", "Từ đúng chính tả là “thường”."),
-    "rà sóat": ("rà soát", "Dấu thanh trong âm tiết “soát” phải đặt ở nguyên âm chính a."),
-    "một cữa": ("một cửa", "Từ đúng chính tả là “một cửa” (dấu hỏi)."),
-    "giửa": ("giữa", "Từ đúng chính tả là “giữa” (dấu ngã)."),
-    "sở nội vụ": ("Sở Nội vụ", "Theo Nghị định 30/2020/NĐ-CP, tên cơ quan nên được viết hoa."),
-    "phòng nội vụ": ("Phòng Nội vụ", "Theo Nghị định 30/2020/NĐ-CP, tên cơ quan nên được viết hoa."),
-    # Phụ âm đầu / vần / chữ cái
-    "bố chí": ("bố trí", "Từ đúng chính tả là “bố trí” (ch/tr)."),
-    "đề suất": ("đề xuất", "Từ đúng chính tả là “đề xuất” (s/x)."),
-    "che dấu": ("che giấu", "Từ đúng chính tả là “che giấu” (d/gi)."),
-    "sắp sếp": ("sắp xếp", "Từ đúng chính tả là “sắp xếp” (s/x)."),
-    "kinh ngiệm": ("kinh nghiệm", "Âm tiết đứng trước i, e, ê phải dùng phụ âm đầu “ngh”."),
-    "theo giỏi": ("theo dõi", "Từ đúng chính tả là “theo dõi” (gi/d)."),
-    "hoàn thàh": ("hoàn thành", "Từ đúng chính tả là “hoàn thành”."),
-    "hài lồng": ("hài lòng", "Từ đúng chính tả là “hài lòng”."),
-    "công dâng": ("công dân", "Từ đúng chính tả là “công dân” (n/ng)."),
-    "thị chấn": ("thị trấn", "Từ đúng chính tả là “thị trấn” (ch/tr)."),
-    "nghiệp vu": ("nghiệp vụ", "Từ đúng chính tả là “nghiệp vụ”."),
-    "bỏ xót": ("bỏ sót", "Từ đúng chính tả là “bỏ sót” (x/s)."),
-    "quan trọn": ("quan trọng", "Từ đúng chính tả là “quan trọng” (n/ng)."),
-    "nhắt nhở": ("nhắc nhở", "Từ đúng chính tả là “nhắc nhở” (t/c)."),
-    "đột suất": ("đột xuất", "Từ đúng chính tả là “đột xuất” (s/x)."),
-    "khó khăng": ("khó khăn", "Từ đúng chính tả là “khó khăn” (ng/n)."),
-    "đôn đôc": ("đôn đốc", "Từ đúng chính tả là “đôn đốc”."),
-    "tình hìng": ("tình hình", "Từ đúng chính tả là “tình hình”."),
-    "thực trạn": ("thực trạng", "Từ đúng chính tả là “thực trạng”."),
-    # Hạn / Hạng
-    "đúng hạng": ("đúng hạn", "Cụm từ đúng là “đúng hạn”."),
-    "thời hạng": ("thời hạn", "Cụm từ đúng là “thời hạn”."),
-    "quá hạng": ("quá hạn", "Cụm từ đúng là “quá hạn”."),
-    "trể hạng": ("trễ hạn", "Cụm từ đúng là “trễ hạn”."),
-    "hạng chế": ("hạn chế", "Từ đúng chính tả là “hạn chế”."),
-    "xếp lọai": ("xếp loại", "Từ đúng chính tả là “xếp loại”."),
-    "định giạng": ("định dạng", "Từ đúng chính tả là “định dạng”."),
-    # Phương ngữ hành chính
+    # === Từ gây nhầm lẫn (cả hai từ đều hợp lệ nhưng cụm sai) ===
+    "sát nhập": ("sáp nhập", "Cụm từ chuẩn là \u201csáp nhập\u201d."),
+    "chỉnh chu": ("chỉn chu", "Từ đúng chính tả là \u201cchỉn chu\u201d."),
+    # === Lỗi vị trí dấu thanh (Unikey/Telex, không thể sửa bằng tone-swap) ===
+    "qủa": ("quả", "Dấu thanh trong âm tiết \u201cquả\u201d phải đặt ở nguyên âm chính."),
+    "kế họach": ("kế hoạch", "Dấu thanh phải đặt ở nguyên âm chính a: \u201ckế hoạch\u201d."),
+    "tìm kíêm": ("tìm kiếm", "Dấu thanh phải đặt ở nguyên âm chính: \u201ctìm kiếm\u201d."),
+    "điện thọai": ("điện thoại", "Dấu thanh phải đặt ở nguyên âm chính a: \u201cđiện thoại\u201d."),
+    "rà sóat": ("rà soát", "Dấu thanh trong âm tiết \u201csoát\u201d phải đặt ở nguyên âm chính a."),
+    # === Phương ngữ hợp lệ nhưng không chuẩn văn bản hành chính ===
     "hành chánh": ("hành chính", "Khuyến nghị dùng “hành chính” chuẩn văn bản quản lý nhà nước."),
     "nhơn dân": ("nhân dân", "Khuyến nghị dùng “nhân dân” chuẩn văn bản quản lý nhà nước."),
     "cá nhơn": ("cá nhân", "Khuyến nghị dùng “cá nhân” chuẩn văn bản quản lý nhà nước."),
@@ -116,26 +28,32 @@ CONFUSIONS: dict[str, tuple[str, str]] = {
     "thống nhứt": ("thống nhất", "Khuyến nghị dùng “thống nhất” chuẩn văn bản quản lý nhà nước."),
     "cập nhựt": ("cập nhật", "Khuyến nghị dùng “cập nhật” chuẩn văn bản quản lý nhà nước."),
     "gởi": ("gửi", "Khuyến nghị dùng “gửi” thống nhất trong văn bản hành chính."),
-    # Bộ gõ / dính phím / vị trí dấu
-    "đựơc": ("được", "Lỗi gõ dấu: viết đúng là “được”."),
-    "số liêu": ("số liệu", "Từ đúng chính tả là “số liệu”."),
-    "cung câp": ("cung cấp", "Từ đúng chính tả là “cung cấp”."),
-    "nâng câp": ("nâng cấp", "Từ đúng chính tả là “nâng cấp”."),
-    "thòi gian": ("thời gian", "Từ đúng chính tả là “thời gian”."),
-    "thòi": ("thời", "Từ đúng chính tả là “thời”."),
-    "trừơng": ("trường", "Lỗi gõ dấu: viết đúng là “trường”."),
-    "kế họach": ("kế hoạch", "Dấu thanh phải đặt ở nguyên âm chính a: “kế hoạch”."),
+    # === Viết hoa tên cơ quan (NĐ 30/2020) ===
+    "sở nội vụ": ("Sở Nội vụ", "Theo Nghị định 30/2020/NĐ-CP, tên cơ quan nên được viết hoa."),
+    "phòng nội vụ": ("Phòng Nội vụ", "Theo Nghị định 30/2020/NĐ-CP, tên cơ quan nên được viết hoa."),
+    # === Lỗi dính phím / thiếu khoảng trắng ===
     "hằngtháng": ("hằng tháng", "Thiếu khoảng trắng giữa hai từ: “hằng tháng”."),
     "kịpthời": ("kịp thời", "Thiếu khoảng trắng giữa hai từ: “kịp thời”."),
-    "tìm kíêm": ("tìm kiếm", "Dấu thanh phải đặt ở nguyên âm chính: “tìm kiếm”."),
-    "điện thọai": ("điện thoại", "Dấu thanh phải đặt ở nguyên âm chính a: “điện thoại”."),
-    "đi lạị": ("đi lại", "Từ đúng chính tả là “đi lại”."),
-    "nhìêu": ("nhiều", "Dấu thanh phải đặt ở nguyên âm chính: “nhiều”."),
+    # === Chuẩn hoá lí/lý, qui/quy ===
+    "xử lí": ("xử lý", "Khuyến nghị dùng “xử lý” thống nhất trong văn bản."),
+    "qui định": ("quy định", "Khuyến nghị dùng “quy định” thống nhất trong văn bản."),
+    "qui trình": ("quy trình", "Khuyến nghị dùng “quy trình” thống nhất trong văn bản."),
+    "quản lí": ("quản lý", "Khuyến nghị dùng “quản lý” thống nhất trong văn bản."),
+    # === Hạn / Hạng (cả hai hợp lệ nhưng khác nghĩa) ===
+    "đúng hạng": ("đúng hạn", "Cụm từ đúng là “đúng hạn”."),
+    "thời hạng": ("thời hạn", "Cụm từ đúng là “thời hạn”."),
+    "quá hạng": ("quá hạn", "Cụm từ đúng là “quá hạn”."),
+    "trể hạng": ("trễ hạn", "Cụm từ đúng là “trễ hạn”."),
+    "hạng chế": ("hạn chế", "Từ đúng chính tả là “hạn chế”."),
 }
 
 WORD_PATTERN = re.compile(r"[A-Za-zÀ-ỹĐđ]+")
 FRONT_VOWELS = frozenset("iíìỉĩịeéèẻẽẹêếềểễệyýỳỷỹỵ")
 PUNCTUATION_WITHOUT_TRAILING_SPACE = frozenset("/\\)]}»”’\"'")
+_VIETNAMESE_MARKERS = frozenset(
+    "đăằắẳẵặâầấẩẫậêềếểễệôồốổỗộơờớởỡợưừứửữự"
+    "àáảãạèéẻẽẹìíỉĩịòóỏõọùúủũụỳýỷỹỵ"
+)
 
 
 def _syllable_repair(word: str) -> tuple[str, str] | None:
@@ -248,6 +166,12 @@ class RuleEngine:
             if config.administrative_capitalization:
                 block_candidates.extend(
                     self._administrative(normalized_block, normalized, ignored, limit)
+                )
+            if config.dictionary:
+                if cancellation:
+                    cancellation()
+                block_candidates.extend(
+                    self._dictionary_check(normalized_block, normalized, ignored, limit)
                 )
             candidates.extend(
                 _to_source_coordinates(item, block.text, source_map) for item in block_candidates
@@ -425,6 +349,70 @@ class RuleEngine:
                 )
                 if len(found) >= limit:
                     return found
+        return found
+
+    def _dictionary_check(
+        self, block: Block, text: str, ignored: set[str], limit: int
+    ) -> list[Finding]:
+        """Check syllables against the Vietnamese vocabulary dictionary.
+
+        For each word that is NOT in the syllable set and contains Vietnamese
+        diacritics, flag it as a spelling error and suggest corrections using
+        tone-swap (hỏi↔ngã) and REP rules (ch↔tr, s↔x, d↔gi, ng↔ngh).
+        """
+        found: list[Finding] = []
+        vocab = VietnameseVocabulary()
+        words = list(WORD_PATTERN.finditer(text))
+        # Collect already-flagged spans to avoid duplicates with _confusions / _syllables
+        flagged_spans: set[tuple[int, int]] = set()
+        for f in found:
+            flagged_spans.add((f.start, f.end))
+
+        for i, match in enumerate(words):
+            word = match.group(0)
+            lowered = word.casefold()
+            if lowered in ignored:
+                continue
+            # Skip words without Vietnamese diacritics (ASCII, abbreviations, foreign words)
+            if not any(c in _VIETNAMESE_MARKERS for c in lowered):
+                continue
+            # Skip if already a valid syllable
+            if vocab.is_valid_syllable(word):
+                continue
+
+            # Word is NOT in the dictionary → likely a typo
+            prev_word = words[i - 1].group(0) if i > 0 else ""
+            suggestion = vocab.suggest_for_compound(prev_word, word) if prev_word else None
+            if suggestion is None:
+                suggestions = vocab.suggest_corrections(word)
+                suggestion = suggestions[0] if suggestions else ""
+
+            if suggestion:
+                found.append(
+                    self._make(
+                        block,
+                        *match.span(),
+                        "spelling",
+                        "dictionary.syllable.v1",
+                        suggestion,
+                        f"Từ \u201c{word}\u201d không có trong từ điển. Đề xuất: \u201c{suggestion}\u201d.",
+                        0.95,
+                    )
+                )
+            else:
+                found.append(
+                    self._make(
+                        block,
+                        *match.span(),
+                        "spelling",
+                        "dictionary.unknown.v1",
+                        "",
+                        f"Từ \u201c{word}\u201d không có trong từ điển tiếng Việt.",
+                        0.80,
+                    )
+                )
+            if len(found) >= limit:
+                return found
         return found
 
     @staticmethod

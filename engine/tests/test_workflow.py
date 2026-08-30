@@ -107,7 +107,7 @@ def test_hybrid_pipeline_filters_candidates_and_records_model_provenance(tmp_pat
             tmp_path / "source.docx",
             tmp_path / "output.docx",
             Preset.STANDARD,
-            RuleConfig(True, True, True, True, False),
+            RuleConfig(True, True, True, True, False, True),
             True,
             "Chỉ giữ lỗi chắc chắn",
         ),

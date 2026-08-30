@@ -2,12 +2,12 @@ from soatvan.checking import Block, Preset, RuleConfig, RuleEngine
 
 
 def test_presets_map_to_structured_rule_configuration() -> None:
-    assert RuleConfig.for_preset(Preset.STANDARD) == RuleConfig(True, True, True, True, False)
+    assert RuleConfig.for_preset(Preset.STANDARD) == RuleConfig(True, True, True, True, False, True)
     assert RuleConfig.for_preset(Preset.ADMINISTRATIVE) == RuleConfig(
-        True, True, True, True, True
+        True, True, True, True, True, True
     )
     assert RuleConfig.for_preset(Preset.SPELLING) == RuleConfig(
-        False, False, True, True, False
+        False, False, True, True, False, True
     )
 
 
@@ -60,7 +60,7 @@ def test_spelling_preset_excludes_technical_rules() -> None:
         Preset.SPELLING,
     )
     assert [(item.detector_id, item.suggestion) for item in findings] == [
-        ("confusion.ngiên_cứu.v1", "nghiên cứu")
+        ("syllable.onset.v2", "nghiên")
     ]
 
 
@@ -109,7 +109,7 @@ def test_rule_limit_is_global_and_deterministic() -> None:
 
 
 def test_explicit_rule_configuration_overrides_preset() -> None:
-    config = RuleConfig(False, False, True, False, False)
+    config = RuleConfig(False, False, True, False, False, False)
     findings = RuleEngine().check(
         [Block("document:p0", "Nội  dung sát nhập gế")],
         Preset.STANDARD,

@@ -18,12 +18,13 @@ class RuleConfig:
     confusions: bool
     syllables: bool
     administrative_capitalization: bool
+    dictionary: bool
 
     @classmethod
     def for_preset(cls, preset: Preset) -> RuleConfig:
         if preset is Preset.SPELLING:
-            return cls(False, False, True, True, False)
-        return cls(True, True, True, True, preset is Preset.ADMINISTRATIVE)
+            return cls(False, False, True, True, False, True)
+        return cls(True, True, True, True, preset is Preset.ADMINISTRATIVE, True)
 
     @classmethod
     def from_dict(cls, value: dict[str, object]) -> RuleConfig:
@@ -33,6 +34,7 @@ class RuleConfig:
             "confusions",
             "syllables",
             "administrative_capitalization",
+            "dictionary",
         )
         if set(value) != set(fields) or any(not isinstance(value[field], bool) for field in fields):
             raise ValueError("RULE_CONFIG_INVALID")
