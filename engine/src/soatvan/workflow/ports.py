@@ -135,3 +135,22 @@ class ClassifierProvider(Protocol):
     def classifier(self) -> ContextClassifier | None: ...
 
     def supports_full_review(self) -> bool: ...
+
+
+class Seq2SeqProvider(Protocol):
+    """Provider for a lightweight seq2seq spelling correction model (e.g. nrl-ai/vn-spell-correction-small).
+
+    Unlike llama.cpp GGUF classifiers this model runs directly inside the Python
+    engine process via Hugging Face Transformers / safetensors and produces
+    additional `Finding` objects at the block level without requiring LLM
+    classification approval.
+    """
+
+    def is_ready(self) -> bool: ...
+
+    def check_blocks(
+        self,
+        blocks: list[Block],
+        ignored_words: frozenset[str],
+        cancellation: CancellationToken,
+    ) -> list[Finding]: ...

@@ -21,6 +21,7 @@ from .ports import (
     FullTextReviewer,
     ProgressSink,
     ReviewCandidate,
+    Seq2SeqProvider,
 )
 
 # Stored rule text is capped at 4,000 characters. The transport also carries
@@ -36,6 +37,7 @@ class ProcessRequest:
     preset: Preset
     rule_config: RuleConfig | None = None
     use_model: bool = False
+    use_seq2seq: bool = False
     custom_prompt: str = ""
     ignored_words: frozenset[str] = frozenset()
     full_review: bool = False
@@ -57,11 +59,13 @@ class ProcessDocument:
         dictionary: DictionaryRepository,
         rules: RuleEngine,
         classifiers: ClassifierProvider | None = None,
+        seq2seq: Seq2SeqProvider | None = None,
     ) -> None:
         self._documents = documents
         self._dictionary = dictionary
         self._rules = rules
         self._classifiers = classifiers
+        self._seq2seq = seq2seq
 
     def execute(
         self, request: ProcessRequest, progress: ProgressSink, cancel: CancellationToken
@@ -94,6 +98,16 @@ class ProcessDocument:
                 config=request.rule_config,
             )
             cancel.raise_if_cancelled()
+
+        # Seq2Seq spelling correction pass — runs independently of the LLM slot.
+        # Produces additional findings from vn-spell-correction-small without
+        # requiring cloud AI or a GGUF model to be installed.
+        if request.use_seq2seq and self._seq2seq is not None and self._seq2seq.is_ready():
+            progress("seq2seq", 55, "job.seq2seq_correction")
+            seq2seq_findings = self._seq2seq.check_blocks(blocks, ignored_words, cancel)
+            findings = _merge_seq2seq_findings(findings, seq2seq_findings)
+            cancel.raise_if_cancelled()
+
         review_summary: dict[str, int | str] | None = None
         review_failed_block_ids: frozenset[str] = frozenset()
         if request.use_model:
@@ -165,6 +179,23 @@ class ProcessDocument:
             {"category": category_counts, "origin": origin_counts},
             review_summary,
         )
+
+
+def _merge_seq2seq_findings(
+    rule_findings: list[Finding], seq2seq_findings: list[Finding]
+) -> list[Finding]:
+    """Merge seq2seq findings with rule findings, skipping overlapping spans."""
+    if not seq2seq_findings:
+        return rule_findings
+    result = list(rule_findings)
+    for s2s in seq2seq_findings:
+        overlaps = any(
+            s2s.block_id == r.block_id and s2s.start < r.end and r.start < s2s.end
+            for r in result
+        )
+        if not overlaps:
+            result.append(s2s)
+    return result
 
 
 def _apply_classifier(

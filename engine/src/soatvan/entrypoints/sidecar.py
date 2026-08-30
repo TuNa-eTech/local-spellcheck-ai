@@ -113,8 +113,10 @@ class Sidecar:
         self.ai_config = SqliteAiConfigRepository(local_data / "preferences.db")
         self.models = ModelRegistry(local_data / "models")
         self.classifiers = DynamicClassifierProvider(self.models, self.ai_config)
+        from soatvan.workflow.seq2seq_provider import LocalSeq2SeqProvider
+        self.seq2seq = LocalSeq2SeqProvider()
         self.processor = ProcessDocument(
-            self.documents, self.dictionary, RuleEngine(), self.classifiers
+            self.documents, self.dictionary, RuleEngine(), self.classifiers, self.seq2seq
         )
         self.jobs: dict[str, Token] = {}
 
@@ -181,15 +183,16 @@ class Sidecar:
         sys.stderr.flush()
         try:
             request = ProcessRequest(
-                Path(params["source_path"]),
-                temporary_output,
-                Preset(params.get("preset", "standard")),
-                _rule_config(params.get("rule_config")),
-                _boolean_param(params, "use_model"),
-                _custom_prompt(params.get("custom_prompt", "")),
-                _ignored_words(params.get("ignored_words", [])),
-                _boolean_param(params, "full_review"),
-                _boolean_param(params, "include_rule_findings"),
+                source=Path(params["source_path"]),
+                temporary_output=temporary_output,
+                preset=Preset(params.get("preset", "standard")),
+                rule_config=_rule_config(params.get("rule_config")),
+                use_model=_boolean_param(params, "use_model"),
+                use_seq2seq=_boolean_param(params, "use_seq2seq"),
+                custom_prompt=_custom_prompt(params.get("custom_prompt", "")),
+                ignored_words=_ignored_words(params.get("ignored_words", [])),
+                full_review=_boolean_param(params, "full_review"),
+                include_rule_findings=_boolean_param(params, "include_rule_findings"),
             )
 
             def progress(stage: str, percent: int, message_code: str) -> None:
