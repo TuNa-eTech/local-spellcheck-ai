@@ -307,13 +307,11 @@ function customRuleSelectionHtml(): string {
         const checked = state.selectedRuleIds.includes(rule.id) ? "checked" : "";
         return `<li class="prompt-picker__item"><label class="setting-row prompt-picker__row"><span><strong>${escape(rule.title)}</strong></span><input type="checkbox" data-select-rule="${id}" ${checked} ${applies ? "" : "disabled"}></label></li>`;
       }).join("")}</ul>`;
-  // Only show the setup warning when there is truly NO AI configured at all (not even local model active)
-  const noAiAtAll = !cloud && !modelFilterAvailable() && state.aiConfig.active_provider === "local" && state.model.state === "not_installed";
-  const warningHtml = count > 0 && !applies && noAiAtAll
-    ? `<p class="settings-message settings-message--error" role="alert">Nhập model GGUF để áp dụng các prompt riêng. <button class="inline-button" id="open-model-settings" type="button">Thiết lập AI</button></p>`
-    : count > 0 && !applies
-      ? `<p class="settings-message settings-message--status" role="status">Prompt riêng sẽ được áp dụng khi có AI rà soát (GGUF) được cài và kích hoạt.</p>`
-      : "";
+  // Custom rules require an LLM (GGUF or Cloud) — seq2seq alone is not enough.
+  // Show a calm informational note, never a red error alarm.
+  const warningHtml = count > 0 && !applies
+    ? `<p class="settings-message settings-message--status" role="status">Prompt riêng cần AI rà soát (GGUF hoặc Cloud) để được áp dụng. <button class="inline-button" id="open-model-settings" type="button">Cấu hình AI</button></p>`
+    : "";
   return `<fieldset class="prompt-picker-group"><legend class="sr-only">Quy tắc riêng áp dụng cho lần rà soát này</legend><div class="prompt-picker-group__header"><div><strong>${count.toLocaleString("vi-VN")} quy tắc riêng</strong><span>${summary}</span></div></div>${picker}</fieldset>${warningHtml}`;
 }
 
