@@ -967,7 +967,7 @@ describe("four-step desktop workflow", () => {
     await vi.waitFor(() => expect((document.activeElement as HTMLElement | null)?.id).toBe("settings-models-title"));
     await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>("#model-import")?.disabled).toBe(false));
     document.querySelector<HTMLButtonElement>("#model-import")!.click();
-    await vi.waitFor(() => expect(document.querySelector("#model-status-title")?.textContent).toBe("AI cục bộ đã sẵn sàng"));
+    await vi.waitFor(() => expect(document.body.textContent).toContain("Đang kích hoạt"));
     await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>("#settings-back")?.hasAttribute("aria-disabled")).toBe(false));
     document.querySelector<HTMLButtonElement>("#settings-back")!.click();
 
@@ -1142,12 +1142,12 @@ describe("four-step desktop workflow", () => {
     expect(document.body.textContent).toContain("Đang nhập gói model");
     document.querySelector<HTMLButtonElement>("#model-action")!.click();
     await vi.waitFor(() => expect(api.modelCancel).toHaveBeenCalledOnce());
-    expect(document.body.textContent).toContain("Chưa cài AI cục bộ");
+    expect(document.body.textContent).toContain("Chưa có model");
 
     imported.resolve(signedReadyModel);
     await Promise.resolve();
     await Promise.resolve();
-    expect(document.body.textContent).toContain("Chưa cài AI cục bộ");
+    expect(document.body.textContent).toContain("Chưa có model");
     expect(document.body.textContent).not.toContain("AI cục bộ đã sẵn sàng");
   });
 
@@ -1189,14 +1189,14 @@ describe("four-step desktop workflow", () => {
 
     document.querySelector<HTMLButtonElement>("#model-action")!.click();
     await vi.waitFor(() => expect(api.modelCancel).toHaveBeenCalled());
-    expect(document.body.textContent).toContain("Chưa cài AI cục bộ");
+    expect(document.body.textContent).toContain("Chưa có model");
     expect(document.querySelector<HTMLButtonElement>("#settings-back")?.hasAttribute("aria-disabled")).toBe(false);
     expect(
       [...document.querySelectorAll<HTMLButtonElement>("[data-settings-section]")].every(button => !button.disabled && !button.hasAttribute("aria-disabled")),
     ).toBe(true);
     imported.resolve(signedReadyModel);
     await Promise.resolve();
-    expect(document.body.textContent).toContain("Chưa cài AI cục bộ");
+    expect(document.body.textContent).toContain("Chưa có model");
   });
 
   it("allows switching between AI sources in Settings and displays privacy notices for cloud providers", async () => {

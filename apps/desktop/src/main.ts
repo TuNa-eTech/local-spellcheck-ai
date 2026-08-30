@@ -475,6 +475,98 @@ function promptDiscardConfirmationHtml(): string {
   if (!state.pendingPromptAction) return "";
   return `<div class="destructive-confirm" id="prompt-discard-confirmation" role="alert" aria-labelledby="prompt-discard-title"><p id="prompt-discard-title"><strong>Prompt có thay đổi chưa lưu.</strong> Tiếp tục chỉnh sửa hoặc bỏ thay đổi để thực hiện thao tác vừa chọn.</p><div class="button-row"><button class="button button--secondary button--small" id="cancel-prompt-discard" type="button">Tiếp tục chỉnh sửa</button><button class="button button--danger button--small" id="confirm-prompt-discard" type="button">Bỏ thay đổi</button></div></div>`;
 }
+function ggufModelCardHtml(installed: boolean, isLocalActive: boolean, controlsLocked: boolean, activeModelId: string | undefined | null): string {
+  const s = state.model;
+
+  // ── BUSY: import / verify in progress ──────────────────────────
+  if (s.state === "importing" || s.state === "verifying") {
+    const label = s.state === "importing" ? "Đang nhập gói model…" : "Đang xác minh và khởi động model…";
+    const desc  = s.state === "importing"  ? "Vui lòng chờ, đừng đóng ứng dụng trong khi đang nhập." : "Model đã nhập thành công, đang kiểm tra tính toàn vẹn và khởi động.";
+    return `<div class="model-card">
+      <div class="model-card__header">
+        <div><strong>${label}</strong><p>${desc}</p></div>
+        <button class="button button--secondary button--small" id="model-action" type="button" aria-busy="true">Huỷ</button>
+      </div>
+    </div>`;
+  }
+
+  // ── ERROR / INVALID ─────────────────────────────────────────────
+  if (s.state === "error" || s.state === "invalid" || s.state === "incompatible" || s.state === "cancelled") {
+    const label = s.state === "cancelled" ? "Đã huỷ thao tác" : s.state === "error" ? "Không thể cài model" : "Gói model không hợp lệ hoặc không tương thích";
+    const desc  = s.state === "cancelled" ? "Quá trình nhập đã bị dừng. Bạn có thể thử nhập lại." : "Có lỗi xảy ra khi nhập. Hãy thử nhập lại tệp khác hoặc kiểm tra định dạng.";
+    return `<div class="model-card">
+      <div class="model-card__header">
+        <div><strong>${label}</strong><p>${desc}</p></div>
+        <button class="button button--secondary button--small" id="model-import" type="button" ${controlsLocked ? "disabled" : ""}>📂 Thử nhập lại</button>
+      </div>
+    </div>`;
+  }
+
+  // ── NOT INSTALLED ────────────────────────────────────────────────
+  if (!installed) {
+    return `<div class="model-card">
+      <div class="model-card__header">
+        <div>
+          <strong>Chưa có model</strong>
+          <p>Ứng dụng vẫn soát đầy đủ bằng bộ quy tắc. Nhập model để bật thêm tính năng rà soát sâu bằng AI.</p>
+        </div>
+        <button class="button button--secondary button--small" id="model-import" type="button" ${controlsLocked ? "disabled" : ""}>📂 Nhập file model</button>
+      </div>
+    </div>`;
+  }
+
+  // ── INSTALLED — removal pending ──────────────────────────────────
+  if (state.modelRemovalPending) {
+    return `<div class="model-card">
+      <div class="model-card__header">
+        <div><strong>${escape(activeModelId ?? "Model")} · v${escape(s.version ?? "")}</strong><p>Xác nhận để gỡ và giải phóng dung lượng. Bạn có thể nhập lại bất cứ lúc nào.</p></div>
+      </div>
+      <div class="destructive-confirm" role="alert">
+        <div class="button-row">
+          <button class="button button--secondary button--small" id="cancel-model-remove" type="button" ${state.modelRemovalRunning ? "disabled" : ""}>Giữ lại</button>
+          <button class="button button--danger button--small" id="confirm-model-remove" type="button" ${state.modelRemovalRunning ? 'disabled aria-busy="true"' : ""}>${state.modelRemovalRunning ? "Đang gỡ…" : "Xác nhận gỡ model"}</button>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  // ── INSTALLED — ACTIVE ───────────────────────────────────────────
+  if (isLocalActive) {
+    const trust = s.trust === "local_unverified"
+      ? `<p class="settings-message settings-message--error" role="status">Model nhập cục bộ, chưa có chữ ký phát hành. Chỉ dùng để đánh giá nội bộ.</p>`
+      : `<p class="settings-message settings-message--status" role="status">✓ Đang kích hoạt — AI này sẽ xử lý khi soát văn bản.</p>`;
+    return `<div class="model-card model-card--active">
+      <div class="model-card__header">
+        <div>
+          <strong>${escape(activeModelId ?? "Model")}</strong>
+          <p>v${escape(s.version ?? "")} · ${s.release_approved ? "Đã phê duyệt phát hành" : "Chế độ đánh giá"}</p>
+        </div>
+        <div class="button-row">
+          <button class="button button--secondary button--small" id="model-import" type="button" ${controlsLocked ? "disabled" : ""}>📂 Thay model</button>
+          <button class="delete-button" id="model-remove" type="button" ${controlsLocked ? "disabled" : ""}>Gỡ</button>
+        </div>
+      </div>
+      ${trust}
+    </div>`;
+  }
+
+  // ── INSTALLED — INACTIVE (AI đang tắt) ──────────────────────────
+  return `<div class="model-card">
+    <div class="model-card__header">
+      <div>
+        <strong>${escape(activeModelId ?? "Model")}</strong>
+        <p>v${escape(s.version ?? "")} · Model đã cài nhưng chưa được kích hoạt${s.code ? " — có lỗi khi khởi động" : ""}.</p>
+      </div>
+      <div class="button-row">
+        <button class="button button--primary button--small" id="activate-local-provider" type="button" ${controlsLocked ? "disabled" : ""}>Kích hoạt</button>
+        <button class="button button--secondary button--small" id="model-import" type="button" ${controlsLocked ? "disabled" : ""}>📂 Thay</button>
+        <button class="delete-button" id="model-remove" type="button" ${controlsLocked ? "disabled" : ""}>Gỡ</button>
+      </div>
+    </div>
+    ${s.trust === "local_unverified" ? `<p class="settings-message settings-message--error" role="status">Model nhập cục bộ, chưa có chữ ký phát hành. Chỉ dùng để đánh giá nội bộ.</p>` : ""}
+  </div>`;
+}
+
 function settingsContent(section: SettingsSection): { body: string; footer: string } {
   if (section === "prompts") {
     const editing = state.customRules.find(rule => rule.id === state.editingCustomRuleId);
@@ -507,7 +599,6 @@ function settingsContent(section: SettingsSection): { body: string; footer: stri
   const busy = modelOperationBusy();
   const controlsLocked = busy || modelOperationBaseline !== null || state.modelRemovalPending || state.settingsLoading || state.cloudTestLoading || state.cloudSaving;
   const activeModelId = state.model.model_id;
-  const title = state.modelRemovalRunning ? "Đang gỡ model…" : state.model.state === "ready" ? (state.model.release_approved ? "AI cục bộ đã sẵn sàng" : "AI cục bộ đang ở chế độ đánh giá") : state.model.state === "installed" ? (state.model.code ? "Model đã cài nhưng chưa thể khởi động" : "Model đã cài; AI đang tắt") : state.model.state === "importing" ? "Đang nhập gói model…" : state.model.state === "verifying" ? "Đang xác minh và khởi động model…" : state.model.state === "cancelled" ? "Đã dừng thao tác model" : state.model.state === "invalid" || state.model.state === "incompatible" ? "Gói model không hợp lệ hoặc không tương thích" : state.model.state === "error" ? "Không thể cài model" : "Chưa cài AI cục bộ";
 
   const currentTab = state.selectedProviderTab;
 
@@ -549,22 +640,7 @@ function settingsContent(section: SettingsSection): { body: string; footer: stri
       ${providerTabsHtml}
 
       <div class="section-copy model-section-copy"><h3>AI rà soát toàn văn (GGUF)</h3><p>Mô hình ngôn ngữ lớn chạy offline. Dùng để xác nhận cảnh báo và rà soát sâu toàn văn bản. Nhập file <code>.gguf</code> hoặc gói <code>.svmodel</code> đã ký.</p></div>
-      <div class="model-card">
-        <div class="model-card__header">
-          <div>
-            <strong id="model-status-title">${title}</strong>
-            <p>${installed ? `${escape(activeModelId ?? "model")} · v${escape(state.model.version ?? "1.0.0")}` : "Chưa cài. Ứng dụng vẫn kiểm tra đầy đủ bằng bộ quy tắc."}</p>
-          </div>
-          <div class="button-row">
-            <button class="button button--secondary button--small" id="model-import" type="button" ${controlsLocked ? "disabled" : ""}>📂 Nhập file model</button>
-            ${installed && !state.modelRemovalPending ? `<button class="delete-button" id="model-remove" type="button" ${controlsLocked ? "disabled" : ""}>Gỡ</button>` : ""}
-          </div>
-        </div>
-        ${state.modelRemovalPending ? `<div class="destructive-confirm" role="alert"><p>Gỡ model sẽ giải phóng dung lượng ổ đĩa. Bạn có thể nhập lại bất cứ lúc nào.</p><div class="button-row"><button class="button button--secondary button--small" id="cancel-model-remove" type="button" ${state.modelRemovalRunning ? "disabled" : ""}>Giữ lại</button><button class="button button--danger button--small" id="confirm-model-remove" type="button" ${state.modelRemovalRunning ? 'disabled aria-busy="true"' : ""}>${state.modelRemovalRunning ? "Đang gỡ…" : "Xác nhận gỡ"}</button></div></div>` : ""}
-        ${installed && state.model.trust === "local_unverified" ? `<p class="settings-message settings-message--error" role="status">Model GGUF nhập cục bộ chưa có chữ ký phát hành. Chỉ dùng để đánh giá nội bộ.</p>` : ""}
-        ${installed && isLocalActive ? `<p class="settings-message settings-message--status" role="status">✓ Đang kích hoạt cho rà soát.</p>` : ""}
-        ${installed && !isLocalActive ? `<div class="activate-provider-row"><button class="button button--primary button--small" id="activate-local-provider" type="button" ${controlsLocked ? "disabled" : ""}>Kích hoạt</button></div>` : ""}
-      </div>
+      ${ggufModelCardHtml(installed, isLocalActive, controlsLocked, activeModelId)}
 
       <div class="section-copy model-section-copy" style="margin-top:1.5rem"><h3>AI sửa lỗi ngữ cảnh (Seq2Seq Offline)</h3><p>Mô hình nhỏ gọn <code>vn-spell-correction-small</code> chạy hoàn toàn trên máy, không cần mạng. Phát hiện lỗi chính tả theo ngữ cảnh tiếng Việt. Chọn thư mục chứa model một lần — tự động dùng mỗi khi soát.</p></div>
       <div class="model-card" id="seq2seq-card">
