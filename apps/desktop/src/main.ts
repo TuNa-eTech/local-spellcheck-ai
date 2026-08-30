@@ -559,11 +559,12 @@ function ggufModelCardHtml(installed: boolean, isLocalActive: boolean, controlsL
   }
 
   // ── INSTALLED — INACTIVE (AI đang tắt) ──────────────────────────
+  const versionStr = s.version && /\d/.test(s.version) ? ` · v${escape(s.version)}` : "";
   return `<div class="model-card">
     <div class="model-card__header">
       <div>
         <strong>${escape(activeModelId ?? "Model")}</strong>
-        <p>v${escape(s.version ?? "")} · Model đã cài nhưng chưa được kích hoạt${s.code ? " — có lỗi khi khởi động" : ""}.</p>
+        <p>Model GGUF đã cài${versionStr} — chưa kích hoạt${s.code ? " (có lỗi khi tải)" : ""}. Nhấn "Kích hoạt" để chuyển sang dùng model cục bộ này.</p>
       </div>
       <div class="button-row">
         <button class="button button--primary button--small" id="activate-local-provider" type="button" ${controlsLocked ? "disabled" : ""}>Kích hoạt</button>
