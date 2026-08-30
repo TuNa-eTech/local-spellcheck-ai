@@ -31,6 +31,7 @@ describe("desktop API", () => {
       confusions: true,
       syllables: true,
       administrative_capitalization: false,
+      dictionary: true,
     };
 
     await api.startJob(

@@ -7,6 +7,7 @@ export interface RuleOptions {
   confusions: boolean;
   syllables: boolean;
   administrative_capitalization: boolean;
+  dictionary: boolean;
 }
 
 export interface DocumentInfo {

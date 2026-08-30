@@ -122,6 +122,7 @@ struct RuleOptions {
     confusions: bool,
     syllables: bool,
     administrative_capitalization: bool,
+    dictionary: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1257,7 +1258,8 @@ mod tests {
                 "repeated_words": true,
                 "confusions": true,
                 "syllables": true,
-                "administrative_capitalization": false
+                "administrative_capitalization": false,
+                "dictionary": true
             },
             "ignoredWords": []
         })
@@ -1335,6 +1337,7 @@ mod tests {
             confusions: true,
             syllables: true,
             administrative_capitalization: false,
+            dictionary: true,
         };
         let ignored_words = vec!["SoátVăn".to_owned()];
         let payload = serde_json::to_value(SidecarJobParams {
