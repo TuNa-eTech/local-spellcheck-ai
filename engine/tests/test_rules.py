@@ -125,3 +125,43 @@ def test_administrative_capitalization_reason_cites_the_required_authority() -> 
     )[0]
     assert "Nghị định 30/2020/NĐ-CP" in finding.reason
     assert "Phụ lục II" in finding.reason
+
+
+def test_dictionary_check_recovers_a_glued_word() -> None:
+    # Only the dictionary detector runs so the assertion cannot be satisfied by
+    # the hardcoded CONFUSIONS whitelist.
+    config = RuleConfig(False, False, False, False, False, True)
+    findings = RuleEngine().check(
+        [Block("document:p0", "Cần bổsung hồ sơ.")],
+        Preset.STANDARD,
+        config=config,
+    )
+    assert [(item.detector_id, item.source_text, item.suggestion) for item in findings] == [
+        ("dictionary.syllable.v1", "bổsung", "bổ sung")
+    ]
+
+
+def test_dictionary_check_warns_without_guessing_an_unsupported_split() -> None:
+    config = RuleConfig(False, False, False, False, False, True)
+    findings = RuleEngine().check(
+        [Block("document:p0", "Thực hiện hằngtháng.")],
+        Preset.STANDARD,
+        config=config,
+    )
+    # "hằng tháng" is absent from the compound list, so the detector must warn
+    # instead of inventing a split.
+    assert [(item.detector_id, item.suggestion) for item in findings] == [
+        ("dictionary.unknown.v1", "")
+    ]
+
+
+def test_administrative_and_standardization_sentence() -> None:
+    text = "Thực hiện Công văn số 128/CV-SNV ngày 03/8/2026 của sở Nội vụ về việc tăng cường kỉ cương hành chính"
+    findings = RuleEngine().check(
+        [Block("document:p0", text)],
+        Preset.ADMINISTRATIVE,
+    )
+    assert [(item.source_text, item.suggestion, item.category) for item in findings] == [
+        ("sở Nội vụ", "Sở Nội vụ", "capitalization"),
+        ("kỉ cương", "kỷ cương", "spelling"),
+    ]

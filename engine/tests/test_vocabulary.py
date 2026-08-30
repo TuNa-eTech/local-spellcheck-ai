@@ -78,3 +78,31 @@ def test_is_valid_syllable_handles_unicode_normalization() -> None:
     # Test that NFC normalization works
     assert vocab.is_valid_syllable("được")
     assert vocab.is_valid_syllable("ĐƯỢC")  # case insensitive
+
+
+def test_suggest_split_recovers_the_missing_space() -> None:
+    vocab = _vocab()
+    assert vocab.suggest_split("bổsung") == "bổ sung"
+    assert vocab.suggest_split("vănbản") == "văn bản"
+    assert vocab.suggest_split("nghiêncứu") == "nghiên cứu"
+
+
+def test_suggest_split_requires_a_known_compound() -> None:
+    vocab = _vocab()
+    # "thựchiện" also splits into the two valid syllables "thự" + "chiện".
+    # Only "thực hiện" is a real compound, so the earlier split must lose.
+    assert vocab.suggest_split("thựchiện") == "thực hiện"
+    # No compound backs "hằng tháng", so the split is refused rather than guessed.
+    assert vocab.suggest_split("hằngtháng") is None
+
+
+def test_suggest_split_leaves_correct_words_alone() -> None:
+    vocab = _vocab()
+    assert vocab.suggest_split("sung") is None
+    assert vocab.suggest_split("bổ sung") is None
+    assert vocab.suggest_split("") is None
+
+
+def test_suggest_split_preserves_capitalisation() -> None:
+    vocab = _vocab()
+    assert vocab.suggest_split("Bổsung") == "Bổ sung"

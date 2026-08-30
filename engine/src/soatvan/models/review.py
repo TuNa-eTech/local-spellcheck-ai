@@ -31,7 +31,9 @@ REVIEW_SYSTEM_PROMPT = (
     "Không bỏ qua lỗi rõ ràng chỉ vì chưa có candidate. Mỗi lỗi mới là một discovery riêng; "
     "source_text phải sao chép nguyên văn đúng phần sai ngắn nhất và suggestion là cách sửa. "
     "occurrence_index của discovery là số lần xuất hiện tính từ 0 trong đúng "
-    "segment target. Không báo lỗi ở context. Chỉ trả JSON theo schema, không sửa toàn đoạn, "
+    "segment target. suggestion phải KHÁC source_text; nếu không sửa được thì bỏ hẳn "
+    "discovery đó, tuyệt đối không trả suggestion sao chép y nguyên source_text. "
+    "Không báo lỗi ở context. Chỉ trả JSON theo schema, không sửa toàn đoạn, "
     "chỉ sao chép candidate_id/segment_id đã cung cấp, không tự bịa ID và không dùng offset. "
     "Dùng category=technical cho lỗi khoảng trắng, dấu câu hoặc lặp từ."
 )
@@ -48,7 +50,9 @@ LLM_ONLY_REVIEW_SYSTEM_PROMPT = (
     "TUYỆT ĐỐI KHÔNG sửa các cụm từ viết IN HOA TOÀN BỘ (ALL CAPS) ở Quốc hiệu, Tiêu ngữ, Tên cơ quan, Tiêu đề văn bản (BÁO CÁO, KẾT QUẢ...) và Tiêu đề các mục La Mã (I., II., III...). "
     "Mỗi lỗi là một discovery riêng; source_text phải sao chép nguyên văn đúng phần sai ngắn nhất và "
     "suggestion là cách sửa ngắn gọn. occurrence_index là số lần xuất hiện tính từ 0 trong "
-    "đúng segment target. Không báo lỗi ở context, không sửa toàn đoạn, không tự bịa "
+    "đúng segment target. suggestion phải KHÁC source_text; nếu không sửa được thì bỏ hẳn "
+    "discovery đó, tuyệt đối không trả suggestion sao chép y nguyên source_text. "
+    "Không báo lỗi ở context, không sửa toàn đoạn, không tự bịa "
     "segment_id và không dùng offset. Chỉ trả JSON theo schema: {\"discoveries\": [{\"segment_id\": \"...\", \"source_text\": \"...\", \"suggestion\": \"...\", \"category\": \"spelling\", \"occurrence_index\": 0}]}. "
     'Nếu không có lỗi, trả {"discoveries":[]}. Dùng category=technical cho lỗi khoảng '
     "trắng, dấu câu hoặc lặp từ."

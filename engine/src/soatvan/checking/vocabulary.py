@@ -102,6 +102,37 @@ class VietnameseVocabulary:
 
         return suggestions
 
+    def suggest_split(self, word: str) -> str | None:
+        """Split a glued word such as "bổsung" back into "bổ sung".
+
+        Typing without a space produces one token that is never a valid
+        syllable, so ``suggest_corrections`` cannot repair it: tone and
+        consonant substitution both keep the token glued.
+
+        Every split point is tried, but a candidate is only accepted when the
+        two halves are valid syllables *and* the resulting bigram is a known
+        compound. The compound check is what makes this safe: "thựchiện" splits
+        into both "thự chiện" and "thực hiện" with two valid syllables each, and
+        only the second is a real word. Without lexical evidence for the pair
+        this returns ``None`` and the caller falls back to a warning with no
+        suggestion.
+        """
+        self._ensure_loaded()
+        normalized = _normalize(word)
+        if len(normalized) < 2 or " " in normalized:
+            return None
+        for index in range(1, len(normalized)):
+            head, tail = normalized[:index], normalized[index:]
+            if head not in self._syllables or tail not in self._syllables:
+                continue
+            if f"{head} {tail}" not in self._compounds:
+                continue
+            # Slice the original token so existing capitalisation survives.
+            if len(word) == len(normalized):
+                return f"{word[:index]} {word[index:]}"
+            return f"{head} {tail}"
+        return None
+
     def suggest_for_compound(
         self, prev_word: str, wrong_word: str
     ) -> str | None:

@@ -32,7 +32,13 @@ CONFUSIONS: dict[str, tuple[str, str]] = {
     # === Lỗi dính phím / thiếu khoảng trắng ===
     "hằngtháng": ("hằng tháng", "Thiếu khoảng trắng giữa hai từ: “hằng tháng”."),
     "kịpthời": ("kịp thời", "Thiếu khoảng trắng giữa hai từ: “kịp thời”."),
-    # === Chuẩn hoá lí/lý, qui/quy ===
+    # === Chuẩn hoá lí/lý, qui/quy, kỉ/kỷ ===
+    "kỉ cương": ("kỷ cương", "Khuyến nghị dùng “kỷ cương” thống nhất trong văn bản."),
+    "kỉ luật": ("kỷ luật", "Khuyến nghị dùng “kỷ luật” thống nhất trong văn bản."),
+    "kỉ niệm": ("kỷ niệm", "Khuyến nghị dùng “kỷ niệm” thống nhất trong văn bản."),
+    "kỉ lục": ("kỷ lục", "Khuyến nghị dùng “kỷ lục” thống nhất trong văn bản."),
+    "kỉ thuật": ("kỹ thuật", "Từ đúng chính tả là “kỹ thuật” (dấu ngã)."),
+    "kỉ năng": ("kỹ năng", "Từ đúng chính tả là “kỹ năng” (dấu ngã)."),
     "xử lí": ("xử lý", "Khuyến nghị dùng “xử lý” thống nhất trong văn bản."),
     "qui định": ("quy định", "Khuyến nghị dùng “quy định” thống nhất trong văn bản."),
     "qui trình": ("quy trình", "Khuyến nghị dùng “quy trình” thống nhất trong văn bản."),
@@ -386,6 +392,10 @@ class RuleEngine:
             if suggestion is None:
                 suggestions = vocab.suggest_corrections(word)
                 suggestion = suggestions[0] if suggestions else ""
+            if not suggestion:
+                # A glued word ("bổsung") yields no substitution candidate;
+                # recover the missing space when the dictionary confirms it.
+                suggestion = vocab.suggest_split(word) or ""
 
             if suggestion:
                 found.append(
