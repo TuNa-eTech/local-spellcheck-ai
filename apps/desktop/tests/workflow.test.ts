@@ -866,7 +866,7 @@ describe("four-step desktop workflow", () => {
     expect(document.querySelector("#settings-models")?.getAttribute("aria-labelledby")).toBe("settings-models-title");
     expect(
       [...document.querySelectorAll<HTMLButtonElement>(".settings-footer button")].map(button => button.id),
-    ).toEqual(["model-import", "seq2seq-choose-dir", "model-action"]);
+    ).toEqual(["model-action"]);
 
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
     expect(document.querySelector("#settings-page")).not.toBeNull();
@@ -1118,7 +1118,7 @@ describe("four-step desktop workflow", () => {
     document.querySelector<HTMLButtonElement>("#settings")!.click();
     await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')?.disabled).toBe(false));
     document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')!.click();
-    expect(document.body.textContent).toContain("kết quả chưa được phê duyệt cho phát hành");
+    expect(document.body.textContent).toContain("Chỉ dùng để đánh giá nội bộ");
     document.querySelector<HTMLButtonElement>("#settings-back")!.click();
     document.querySelector<HTMLButtonElement>("#start")!.click();
     await vi.waitFor(() => expect(api.startJob).toHaveBeenCalled());
@@ -1162,7 +1162,7 @@ describe("four-step desktop workflow", () => {
     expect(document.querySelector("[data-model-download]")).toBeNull();
     expect(document.querySelector("#model-download-progress")).toBeNull();
     expect(document.querySelector<HTMLButtonElement>("#model-action")!.disabled).toBe(true);
-    expect(document.body.textContent).toContain("Ứng dụng không kết nối mạng để lấy model");
+    expect(document.body.textContent).toContain("Nội dung tài liệu không được gửi đi");
 
     document.querySelector<HTMLButtonElement>("#model-import")!.click();
     await vi.waitFor(() => expect(api.modelImport).toHaveBeenCalledOnce());

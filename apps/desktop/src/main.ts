@@ -534,53 +534,56 @@ function settingsContent(section: SettingsSection): { body: string; footer: stri
     const isLocalActive = state.aiConfig.active_provider === "local";
     const seq2seqCfg = state.seq2seqConfig;
     const seq2seqTitle = seq2seqCfg?.is_configured
-      ? (seq2seqCfg.is_valid ? '✓ Model seq2seq đã cấu hình' : '✕ Thư mục không hợp lệ')
-      : 'Chưa cấu hình model seq2seq';
+      ? (seq2seqCfg.is_valid ? "✓ Model seq2seq đã sẵn sàng" : "✕ Thư mục không hợp lệ")
+      : "Chưa cấu hình";
     const seq2seqDesc = seq2seqCfg?.is_configured
       ? escape(seq2seqCfg.model_dir)
-      : 'Nhấn nút bên dưới để chọn thư mục chứa vn-spell-correction-small.';
+      : "Chưa chọn thư mục. Nhấn 'Chọn thư mục' để cấu hình.";
     const seq2seqStatusHtml = seq2seqCfg?.is_valid
-      ? `<p class="settings-message settings-message--status" role="status">✓ Sẽ tự động chạy AI seq2seq khi soát văn bản.</p>`
-      : (seq2seqCfg?.is_configured ? `<p class="settings-message settings-message--error" role="alert">Không tìm thấy config.json trong thư mục đã chọn. Hãy chọn lại thư mục đúng.</p>` : '');
+      ? `<p class="settings-message settings-message--status" role="status">✓ Sẽ tự động chạy khi soát văn bản.</p>`
+      : (seq2seqCfg?.is_configured ? `<p class="settings-message settings-message--error" role="alert">Không tìm thấy model trong thư mục này. Hãy chọn lại đúng thư mục chứa vn-spell-correction-small.</p>` : "");
     return {
       body: `
       <section class="settings-section settings-models" id="settings-models" aria-labelledby="settings-models-title">
-      <header class="settings-section__header"><div class="section-copy"><h2 id="settings-models-title">Mô hình AI</h2><p>Chọn nguồn AI: mô hình chạy offline trên máy hoặc kết nối qua API đám mây.</p></div></header>
+      <header class="settings-section__header"><div class="section-copy"><h2 id="settings-models-title">Mô hình AI</h2><p>Cấu hình nguồn AI để hỗ trợ soát văn bản. Có thể dùng đồng thời nhiều nguồn.</p></div></header>
       ${providerTabsHtml}
+
+      <div class="section-copy model-section-copy"><h3>AI rà soát toàn văn (GGUF)</h3><p>Mô hình ngôn ngữ lớn chạy offline. Dùng để xác nhận cảnh báo và rà soát sâu toàn văn bản. Nhập file <code>.gguf</code> hoặc gói <code>.svmodel</code> đã ký.</p></div>
       <div class="model-card">
         <div class="model-card__header">
           <div>
             <strong id="model-status-title">${title}</strong>
-            <p>${installed ? `${escape(activeModelId ?? "model")} · ${escape(state.model.version ?? "1.0.0")}` : "Ứng dụng vẫn kiểm tra đầy đủ bằng bộ quy tắc cục bộ."}</p>
+            <p>${installed ? `${escape(activeModelId ?? "model")} · v${escape(state.model.version ?? "1.0.0")}` : "Chưa cài. Ứng dụng vẫn kiểm tra đầy đủ bằng bộ quy tắc."}</p>
           </div>
-          ${installed && !state.modelRemovalPending ? `<button class="delete-button" id="model-remove" type="button" ${controlsLocked ? "disabled" : ""}>Gỡ model</button>` : ""}
+          <div class="button-row">
+            <button class="button button--secondary button--small" id="model-import" type="button" ${controlsLocked ? "disabled" : ""}>📂 Nhập file model</button>
+            ${installed && !state.modelRemovalPending ? `<button class="delete-button" id="model-remove" type="button" ${controlsLocked ? "disabled" : ""}>Gỡ</button>` : ""}
+          </div>
         </div>
-        ${state.modelRemovalPending ? `<div class="destructive-confirm" role="alert"><p>Gỡ model sẽ giải phóng dung lượng, nhưng bạn phải nhập lại gói nếu muốn dùng AI sau này.</p><div class="button-row"><button class="button button--secondary button--small" id="cancel-model-remove" type="button" ${state.modelRemovalRunning ? "disabled" : ""}>Giữ lại</button><button class="button button--danger button--small" id="confirm-model-remove" type="button" ${state.modelRemovalRunning ? 'disabled aria-busy="true"' : ""}>${state.modelRemovalRunning ? "Đang gỡ…" : "Gỡ model"}</button></div></div>` : ""}
+        ${state.modelRemovalPending ? `<div class="destructive-confirm" role="alert"><p>Gỡ model sẽ giải phóng dung lượng ổ đĩa. Bạn có thể nhập lại bất cứ lúc nào.</p><div class="button-row"><button class="button button--secondary button--small" id="cancel-model-remove" type="button" ${state.modelRemovalRunning ? "disabled" : ""}>Giữ lại</button><button class="button button--danger button--small" id="confirm-model-remove" type="button" ${state.modelRemovalRunning ? 'disabled aria-busy="true"' : ""}>${state.modelRemovalRunning ? "Đang gỡ…" : "Xác nhận gỡ"}</button></div></div>` : ""}
+        ${installed && state.model.trust === "local_unverified" ? `<p class="settings-message settings-message--error" role="status">Model GGUF nhập cục bộ chưa có chữ ký phát hành. Chỉ dùng để đánh giá nội bộ.</p>` : ""}
+        ${installed && isLocalActive ? `<p class="settings-message settings-message--status" role="status">✓ Đang kích hoạt cho rà soát.</p>` : ""}
+        ${installed && !isLocalActive ? `<div class="activate-provider-row"><button class="button button--primary button--small" id="activate-local-provider" type="button" ${controlsLocked ? "disabled" : ""}>Kích hoạt</button></div>` : ""}
       </div>
-      ${installed && state.model.trust === "local_unverified" ? `<p class="settings-message settings-message--error" role="status">Model GGUF nhập cục bộ chưa có chữ ký và benchmark phát hành. Có thể rà soát sâu để đánh giá trên máy này, nhưng kết quả chưa được phê duyệt cho phát hành.</p>` : ""}
-      ${installed && isLocalActive ? `<p class="settings-message settings-message--status" role="status">✓ Đang sử dụng mô hình AI cục bộ này để rà soát.</p>` : ""}
-      ${installed && !isLocalActive ? `<div class="activate-provider-row"><button class="button button--primary" id="activate-local-provider" type="button" ${controlsLocked ? "disabled" : ""}>Kích hoạt mô hình cục bộ</button></div>` : ""}
-      <div class="section-copy model-section-copy">
-        <h3>Nhập gói model</h3>
-        <p>Chấp nhận gói <code>.svmodel</code> đã ký hoặc tệp <code>.gguf</code> nhập cục bộ. Gói ký số mới được coi là đã phê duyệt phát hành.</p>
-      </div>
-      <p class="notice">Ứng dụng không kết nối mạng để lấy model. Nội dung tài liệu không được gửi đi.</p>
-      <div class="section-copy model-section-copy">
-        <h3>AI Sửa lỗi ngữ cảnh (Seq2Seq Offline)</h3>
-        <p>Cấu hình thư mục chứa mô hình <code>vn-spell-correction-small</code> để bật sửa lỗi chính tả theo ngữ cảnh. Mô hình chạy hoàn toàn trên máy, không cần kết nối mạng.</p>
-      </div>
+
+      <div class="section-copy model-section-copy" style="margin-top:1.5rem"><h3>AI sửa lỗi ngữ cảnh (Seq2Seq Offline)</h3><p>Mô hình nhỏ gọn <code>vn-spell-correction-small</code> chạy hoàn toàn trên máy, không cần mạng. Phát hiện lỗi chính tả theo ngữ cảnh tiếng Việt. Chọn thư mục chứa model một lần — tự động dùng mỗi khi soát.</p></div>
       <div class="model-card" id="seq2seq-card">
         <div class="model-card__header">
           <div>
             <strong id="seq2seq-status-title">${seq2seqTitle}</strong>
             <p>${seq2seqDesc}</p>
           </div>
-          ${state.seq2seqConfig?.is_configured ? `<button class="delete-button" id="seq2seq-remove" type="button" ${controlsLocked ? 'disabled' : ''}>Xóa cấu hình</button>` : ''}
+          <div class="button-row">
+            <button class="button button--secondary button--small" id="seq2seq-choose-dir" type="button" ${controlsLocked || state.seq2seqSaving ? "disabled" : ""} ${state.seq2seqSaving ? 'aria-busy="true"' : ""}>${state.seq2seqSaving ? "Đang lưu…" : seq2seqCfg?.is_configured ? "📂 Chọn lại thư mục" : "📂 Chọn thư mục model"}</button>
+            ${seq2seqCfg?.is_configured ? `<button class="delete-button" id="seq2seq-remove" type="button" ${controlsLocked || state.seq2seqSaving ? "disabled" : ""}>Xóa</button>` : ""}
+          </div>
         </div>
         ${seq2seqStatusHtml}
       </div>
+
+      <p class="notice" style="margin-top:1rem">🔒 Mọi xử lý diễn ra trên máy của bạn. Nội dung tài liệu không được gửi đi.</p>
       </section>`,
-      footer: `<footer class="settings-footer"><div class="settings-footer__inner"><div class="button-row"><button class="button button--primary" id="model-import" type="button" ${controlsLocked ? "disabled" : ""}>Nhập gói có sẵn</button><button class="button button--secondary" id="seq2seq-choose-dir" type="button" ${controlsLocked || state.seq2seqSaving ? 'disabled' : ''} ${state.seq2seqSaving ? 'aria-busy="true"' : ''}>${state.seq2seqSaving ? 'Đang lưu…' : 'Chọn thư mục seq2seq'}</button><button class="button button--secondary" id="model-action" type="button" ${busy && !state.modelRemovalRunning ? "" : "disabled"} ${busy ? 'aria-busy="true"' : ""}>Huỷ thao tác</button></div></div></footer>`,
+      footer: `<footer class="settings-footer"><div class="settings-footer__inner"><div class="button-row"><button class="button button--secondary" id="model-action" type="button" ${busy && !state.modelRemovalRunning ? "" : "disabled"} ${busy ? 'aria-busy="true"' : ""}>Huỷ thao tác đang chạy</button></div></div></footer>`,
     };
   }
 
