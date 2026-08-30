@@ -290,7 +290,8 @@ function settingsSectionHeading(section: SettingsSection): string {
 function customRuleSelectionHtml(): string {
   const count = state.customRules.length;
   const cloud = isCloudActive();
-  const applies = count > 0 && (cloud || (state.useModel && modelFilterAvailable()));
+  const hasAnyAi = cloud || modelFilterAvailable();
+  const applies = count > 0 && hasAnyAi;
   const selected = state.selectedRuleIds.filter(id => state.customRules.some(rule => rule.id === id)).length;
   const summary = count === 0
     ? "Không có yêu cầu bổ sung; AI vẫn dùng prompt mặc định."
@@ -298,7 +299,7 @@ function customRuleSelectionHtml(): string {
       ? `Đang chọn ${selected.toLocaleString("vi-VN")}/${count.toLocaleString("vi-VN")}; các prompt được chọn sẽ gộp thành yêu cầu bổ sung cho prompt mặc định.`
       : cloud
         ? "Chưa được áp dụng vì AI đang tắt."
-        : "Chưa được áp dụng vì AI cục bộ đang tắt hoặc chưa sẵn sàng.";
+        : "Chưa được áp dụng — cần AI rà soát (GGUF) để dùng prompt riêng.";
   const picker = count === 0
     ? `<div class="empty-state"><strong>Chưa có prompt riêng.</strong><span>Tạo prompt trong Cài đặt để cung cấp thuật ngữ hoặc tiêu chí riêng cho AI.</span></div>`
     : `<ul class="prompt-picker">${state.customRules.map(rule => {
@@ -306,7 +307,14 @@ function customRuleSelectionHtml(): string {
         const checked = state.selectedRuleIds.includes(rule.id) ? "checked" : "";
         return `<li class="prompt-picker__item"><label class="setting-row prompt-picker__row"><span><strong>${escape(rule.title)}</strong></span><input type="checkbox" data-select-rule="${id}" ${checked} ${applies ? "" : "disabled"}></label></li>`;
       }).join("")}</ul>`;
-  return `<fieldset class="prompt-picker-group"><legend class="sr-only">Quy tắc riêng áp dụng cho lần rà soát này</legend><div class="prompt-picker-group__header"><div><strong>${count.toLocaleString("vi-VN")} quy tắc riêng</strong><span>${summary}</span></div></div>${picker}</fieldset>${count > 0 && !applies ? `<p class="settings-message settings-message--error" role="alert">${cloud ? "Bật AI để áp dụng các quy tắc riêng." : "Bật AI cục bộ để áp dụng các quy tắc riêng."} <button class="inline-button" id="open-model-settings" type="button">Thiết lập AI</button></p>` : ""}`;
+  // Only show the setup warning when there is truly NO AI configured at all (not even local model active)
+  const noAiAtAll = !cloud && !modelFilterAvailable() && state.aiConfig.active_provider === "local" && state.model.state === "not_installed";
+  const warningHtml = count > 0 && !applies && noAiAtAll
+    ? `<p class="settings-message settings-message--error" role="alert">Nhập model GGUF để áp dụng các prompt riêng. <button class="inline-button" id="open-model-settings" type="button">Thiết lập AI</button></p>`
+    : count > 0 && !applies
+      ? `<p class="settings-message settings-message--status" role="status">Prompt riêng sẽ được áp dụng khi có AI rà soát (GGUF) được cài và kích hoạt.</p>`
+      : "";
+  return `<fieldset class="prompt-picker-group"><legend class="sr-only">Quy tắc riêng áp dụng cho lần rà soát này</legend><div class="prompt-picker-group__header"><div><strong>${count.toLocaleString("vi-VN")} quy tắc riêng</strong><span>${summary}</span></div></div>${picker}</fieldset>${warningHtml}`;
 }
 
 function render(preferredFocus?: string): void {

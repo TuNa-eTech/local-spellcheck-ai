@@ -1076,7 +1076,7 @@ describe("four-step desktop workflow", () => {
     await chooseDocument();
     await vi.waitFor(() => expect(document.querySelector("[data-select-rule]")).not.toBeNull());
     expect(document.querySelector<HTMLInputElement>('[data-select-rule="rule-1"]')!.disabled).toBe(true);
-    expect(document.body.textContent).toContain("Chưa được áp dụng vì AI cục bộ đang tắt");
+    expect(document.body.textContent).toContain("Chưa được áp dụng");
 
     document.querySelector<HTMLButtonElement>("#start")!.click();
     await vi.waitFor(() => expect(api.startJob).toHaveBeenCalled());
