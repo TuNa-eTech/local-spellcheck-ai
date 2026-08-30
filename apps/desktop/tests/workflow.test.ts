@@ -196,9 +196,10 @@ describe("four-step desktop workflow", () => {
     expect(api.startJob.mock.calls[0][2]).toBe("standard");
     expect(api.startJob.mock.calls[0][3]).toBe("");
     expect(api.startJob.mock.calls[0][4]).toBe(false);
-    expect(api.startJob.mock.calls[0][7]).toBe(false);
+    expect(api.startJob.mock.calls[0][5]).toBe(false);
     expect(api.startJob.mock.calls[0][8]).toBe(false);
-    expect(api.startJob.mock.calls[0][5]).toEqual({
+    expect(api.startJob.mock.calls[0][9]).toBe(false);
+    expect(api.startJob.mock.calls[0][6]).toEqual({
       technical: true,
       repeated_words: true,
       confusions: true,
@@ -206,7 +207,7 @@ describe("four-step desktop workflow", () => {
       administrative_capitalization: true,
       dictionary: true,
     });
-    expect(api.startJob.mock.calls[0][6]).toEqual([]);
+    expect(api.startJob.mock.calls[0][7]).toEqual([]);
     job.resolve({
       job_id: "job",
       status: "completed",
@@ -1037,7 +1038,7 @@ describe("four-step desktop workflow", () => {
     await vi.waitFor(() => expect(api.startJob).toHaveBeenCalled());
     expect(api.startJob.mock.calls[0][3]).toBe("Giữ nguyên tên SoátVăn.\n\nDùng thuật ngữ khách hàng.");
     expect(api.startJob.mock.calls[0][4]).toBe(true);
-    expect(api.startJob.mock.calls[0][7]).toBe(true);
+    expect(api.startJob.mock.calls[0][8]).toBe(true);
   });
 
   it("only compiles the prompts ticked in the review step", async () => {
@@ -1121,8 +1122,8 @@ describe("four-step desktop workflow", () => {
     await vi.waitFor(() => expect(api.startJob).toHaveBeenCalled());
     expect(api.startJob.mock.calls[0][3]).toBe("Không đổi tên đơn vị.");
     expect(api.startJob.mock.calls[0][4]).toBe(true);
-    expect(api.startJob.mock.calls[0][7]).toBe(true);
     expect(api.startJob.mock.calls[0][8]).toBe(true);
+    expect(api.startJob.mock.calls[0][9]).toBe(true);
   });
 
   it("cancels an import and ignores its late success", async () => {
@@ -1316,7 +1317,7 @@ describe("four-step desktop workflow", () => {
     await vi.waitFor(() => expect(api.startJob).toHaveBeenCalled());
     expect(api.startJob.mock.calls[0][3]).toBe("Giữ nguyên SoátVăn.");
     expect(api.startJob.mock.calls[0][4]).toBe(true);
-    expect(api.startJob.mock.calls[0][7]).toBe(true);
+    expect(api.startJob.mock.calls[0][8]).toBe(true);
   });
 });
 

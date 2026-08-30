@@ -61,6 +61,7 @@ const state: {
   step: Step;
   document: DocumentInfo | null;
   useModel: boolean;
+  useSeq2Seq: boolean;
   fullReview: boolean;
   includeRuleFindings: boolean;
   jobId: string;
@@ -104,6 +105,7 @@ const state: {
   jobStarting: false,
   cancelPending: false,
   useModel: false,
+  useSeq2Seq: false,
   fullReview: false,
   includeRuleFindings: true,
   result: null,
@@ -281,6 +283,20 @@ function settingsSectionHeading(section: SettingsSection): string {
   return section === "prompts" ? "#settings-prompts-title" : section === "review-rules" ? "#settings-review-rules-title" : "#settings-models-title";
 }
 
+function seq2seqToggleHtml(): string {
+  return `<fieldset class="prompt-picker-group">
+    <legend class="sr-only">Tùy chọn AI bổ sung</legend>
+    <div class="prompt-picker-group__header">
+      <div><strong>AI Sửa lỗi ngữ cảnh (vn-spell-correction-small)</strong>
+      <span>Dùng mô hình AI nhẹ (115M) cục bộ để phát hiện thêm lỗi chính tả theo ngữ cảnh tiếng Việt. Không cần kết nối mạng.</span></div>
+    </div>
+    <ul class="prompt-picker"><li class="prompt-picker__item"><label class="setting-row prompt-picker__row">
+      <span><strong>Bật AI seq2seq offline</strong></span>
+      <input type="checkbox" id="use-seq2seq" ${state.useSeq2Seq ? "checked" : ""}>
+    </label></li></ul>
+  </fieldset>`;
+}
+
 function customRuleSelectionHtml(): string {
   const count = state.customRules.length;
   const cloud = isCloudActive();
@@ -327,7 +343,7 @@ function render(preferredFocus?: string): void {
     </nav>
     <main class="workflow-shell">
       ${state.step === "file" ? `<section class="workflow-card workflow-card--file"><div class="section-copy"><h1>Chọn tệp Word cần kiểm tra</h1><p>Ứng dụng tạo một bản kết quả mới và luôn giữ nguyên tệp gốc.</p></div><button class="drop-zone" id="choose"><strong>Chọn hoặc kéo thả tệp .docx</strong><span>Nhấn Ctrl+O để mở nhanh</span></button>${errorHtml()}</section>` : ""}
-      ${state.step === "rules" && doc ? `<section class="workflow-card"><div class="workflow-context"><button class="back-button" id="back">← Chọn tệp khác</button><div class="file-chip"><strong>${escape(doc.name)}</strong><span>${documentMetadata(doc)}</span></div></div><div class="workflow-lead"><div class="section-copy"><div class="ai-provider-badge" id="workflow-ai-badge"><span class="badge-dot ${isCloudActive() ? "badge-dot--cloud" : "badge-dot--local"}"></span><span>${escape(activeAiLabel())}</span></div><h1>Chuẩn bị rà soát</h1><p>${reviewModeDescription()}</p></div><div class="workflow-actions workflow-actions--lead"><button class="button button--primary" id="start">Bắt đầu xử lý</button></div></div>${customRuleSelectionHtml()}${errorHtml()}</section>` : ""}
+      ${state.step === "rules" && doc ? `<section class="workflow-card"><div class="workflow-context"><button class="back-button" id="back">← Chọn tệp khác</button><div class="file-chip"><strong>${escape(doc.name)}</strong><span>${documentMetadata(doc)}</span></div></div><div class="workflow-lead"><div class="section-copy"><div class="ai-provider-badge" id="workflow-ai-badge"><span class="badge-dot ${isCloudActive() ? "badge-dot--cloud" : "badge-dot--local"}"></span><span>${escape(activeAiLabel())}</span></div><h1>Chuẩn bị rà soát</h1><p>${reviewModeDescription()}</p></div><div class="workflow-actions workflow-actions--lead"><button class="button button--primary" id="start">Bắt đầu xử lý</button></div></div>${customRuleSelectionHtml()}${seq2seqToggleHtml()}${errorHtml()}</section>` : ""}
       ${state.step === "processing" ? `<section class="workflow-card processing-panel"><div class="processing-status"><span class="spinner" aria-hidden="true"></span><div class="section-copy"><h1>${progressTitle()}</h1><p class="progress-subtitle">${progressSubtitle()}</p></div></div><div class="progress-row"><div class="progress" role="progressbar" aria-label="Tiến độ xử lý" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${state.progress}"><span style="--progress-scale:${state.progress / 100}"></span></div><strong class="progress-value">${state.progress}%</strong></div><p class="sr-only progress-announcement" aria-live="polite" aria-atomic="true">${progressTitle()} ${state.progress}%</p><div class="workflow-actions"><button class="button button--secondary" id="cancel" ${state.jobStarting || state.cancelPending ? "disabled" : ""} ${state.jobStarting || state.cancelPending ? 'aria-busy="true"' : ""}>${state.jobStarting ? "Đang chuẩn bị…" : state.cancelPending ? "Đang dừng…" : "Dừng xử lý"}</button></div>${errorHtml()}</section>` : ""}
       ${(state.step === "result" || state.step === "no-findings") ? resultHtml() : ""}
     </main>` : settingsHtml()}
@@ -626,6 +642,10 @@ function bind(): void {
   document.querySelector("#manage-custom-rules")?.addEventListener("click", () => void openSettings("prompts", "#manage-custom-rules"));
   document.querySelector("#manage-review-rules")?.addEventListener("click", () => void openSettings("review-rules", "#manage-review-rules"));
   document.querySelector<HTMLInputElement>("#use-model")?.addEventListener("change", event => { void setModelEnabled((event.target as HTMLInputElement).checked); });
+  document.querySelector<HTMLInputElement>("#use-seq2seq")?.addEventListener("change", event => {
+    state.useSeq2Seq = (event.target as HTMLInputElement).checked;
+    render("#use-seq2seq");
+  });
   document.querySelectorAll<HTMLInputElement>("[data-select-rule]").forEach(input => input.addEventListener("change", () => {
     const id = input.dataset.selectRule!;
     state.selectedRuleIds = input.checked
@@ -852,7 +872,7 @@ async function start(): Promise<void> {
   updateCancelControl();
   try {
     console.log("[SoatVan-UI] Dispatching api.startJob with jobId:", currentJobId);
-    const result = await api.startJob(currentJobId, state.document.path, defaultPreset, customPrompt, effectiveUseModel, defaultRuleOptions, [], effectiveFullReview, effectiveFullReview ? true : false);
+    const result = await api.startJob(currentJobId, state.document.path, defaultPreset, customPrompt, effectiveUseModel, state.useSeq2Seq, defaultRuleOptions, [], effectiveFullReview, effectiveFullReview ? true : false);
     console.log("[SoatVan-UI] api.startJob result:", result);
     if (state.jobId === currentJobId && state.step === "processing") {
       state.jobId = "";
