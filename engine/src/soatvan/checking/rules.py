@@ -5,6 +5,7 @@ import unicodedata
 from collections.abc import Callable, Iterable
 from dataclasses import replace
 
+from .administrative import scan_administrative_capitalization
 from .domain import Block, Finding, Preset, RuleConfig
 from .vocabulary import VietnameseVocabulary
 
@@ -28,9 +29,6 @@ CONFUSIONS: dict[str, tuple[str, str]] = {
     "thống nhứt": ("thống nhất", "Khuyến nghị dùng “thống nhất” chuẩn văn bản quản lý nhà nước."),
     "cập nhựt": ("cập nhật", "Khuyến nghị dùng “cập nhật” chuẩn văn bản quản lý nhà nước."),
     "gởi": ("gửi", "Khuyến nghị dùng “gửi” thống nhất trong văn bản hành chính."),
-    # === Viết hoa tên cơ quan (NĐ 30/2020) ===
-    "sở nội vụ": ("Sở Nội vụ", "Theo Nghị định 30/2020/NĐ-CP, tên cơ quan nên được viết hoa."),
-    "phòng nội vụ": ("Phòng Nội vụ", "Theo Nghị định 30/2020/NĐ-CP, tên cơ quan nên được viết hoa."),
     # === Lỗi dính phím / thiếu khoảng trắng ===
     "hằngtháng": ("hằng tháng", "Thiếu khoảng trắng giữa hai từ: “hằng tháng”."),
     "kịpthời": ("kịp thời", "Thiếu khoảng trắng giữa hai từ: “kịp thời”."),
@@ -332,23 +330,25 @@ class RuleEngine:
     def _administrative(
         self, block: Block, text: str, ignored: set[str], limit: int
     ) -> list[Finding]:
+        """Comprehensive administrative capitalization check under Decree 30/2020/ND-CP Appendix II."""
         found: list[Finding] = []
-        for match in re.finditer(r"(?<!\w)(ủy ban nhân dân)(?!\w)", text, re.IGNORECASE):
-            if _contains_ignored(match.group(1), ignored):
+        for match in scan_administrative_capitalization(text):
+            if _contains_ignored(match.source, ignored):
                 continue
-            if match.group(1) == match.group(1).lower():
-                found.append(
-                    self._make(
-                        block,
-                        *match.span(),
-                        "capitalization",
-                        "capitalization.agency.v1",
-                        "Ủy ban nhân dân",
-                        "Theo Nghị định 30/2020/NĐ-CP, Phụ lục II, tên cơ quan nên được viết hoa.",
-                    )
+            found.append(
+                self._make(
+                    block,
+                    match.span[0],
+                    match.span[1],
+                    "capitalization",
+                    f"administrative.{match.rule_id}.v1",
+                    match.suggestion,
+                    match.reason,
+                    0.98,
                 )
-                if len(found) >= limit:
-                    return found
+            )
+            if len(found) >= limit:
+                return found
         return found
 
     def _dictionary_check(

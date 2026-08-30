@@ -146,7 +146,7 @@ const defaultRuleOptions: RuleOptions = {
   repeated_words: true,
   confusions: true,
   syllables: true,
-  administrative_capitalization: false,
+  administrative_capitalization: true,
 };
 const fixedReviewRules: { id: keyof RuleOptions; name: string; description: string }[] = [
   { id: "technical", name: "Khoảng trắng và dấu câu", description: "Phát hiện khoảng trắng thừa hoặc thiếu và dấu câu đặt sai vị trí." },

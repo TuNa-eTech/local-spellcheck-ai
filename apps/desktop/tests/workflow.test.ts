@@ -203,7 +203,7 @@ describe("four-step desktop workflow", () => {
       repeated_words: true,
       confusions: true,
       syllables: true,
-      administrative_capitalization: false,
+      administrative_capitalization: true,
     });
     expect(api.startJob.mock.calls[0][6]).toEqual([]);
     job.resolve({
