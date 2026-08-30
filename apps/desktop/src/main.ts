@@ -105,7 +105,7 @@ const state: {
   cancelPending: false,
   useModel: false,
   fullReview: false,
-  includeRuleFindings: false,
+  includeRuleFindings: true,
   result: null,
   model: { state: "not_installed" },
   aiConfig: {
@@ -852,7 +852,7 @@ async function start(): Promise<void> {
   updateCancelControl();
   try {
     console.log("[SoatVan-UI] Dispatching api.startJob with jobId:", currentJobId);
-    const result = await api.startJob(currentJobId, state.document.path, defaultPreset, customPrompt, effectiveUseModel, defaultRuleOptions, [], effectiveFullReview, effectiveFullReview && state.includeRuleFindings);
+    const result = await api.startJob(currentJobId, state.document.path, defaultPreset, customPrompt, effectiveUseModel, defaultRuleOptions, [], effectiveFullReview, effectiveFullReview ? true : false);
     console.log("[SoatVan-UI] api.startJob result:", result);
     if (state.jobId === currentJobId && state.step === "processing") {
       state.jobId = "";

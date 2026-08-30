@@ -29,7 +29,18 @@ CONFUSIONS: dict[str, tuple[str, str]] = {
     "thống nhứt": ("thống nhất", "Khuyến nghị dùng “thống nhất” chuẩn văn bản quản lý nhà nước."),
     "cập nhựt": ("cập nhật", "Khuyến nghị dùng “cập nhật” chuẩn văn bản quản lý nhà nước."),
     "gởi": ("gửi", "Khuyến nghị dùng “gửi” thống nhất trong văn bản hành chính."),
-    # === Lỗi dính phím / thiếu khoảng trắng ===
+    # === Lỗi dính phím / thiếu khoảng trắng / mất dấu ===
+    "giayphep": ("giấy phép", "Thiếu dấu cách và dấu thanh: “giấy phép”."),
+    "donnghi": ("đơn nghỉ", "Thiếu dấu cách và dấu thanh: “đơn nghỉ”."),
+    "xacnhan": ("xác nhận", "Thiếu dấu cách và dấu thanh: “xác nhận”."),
+    "hopdong": ("hợp đồng", "Thiếu dấu cách và dấu thanh: “hợp đồng”."),
+    "baocao": ("báo cáo", "Thiếu dấu cách và dấu thanh: “báo cáo”."),
+    "kehoach": ("kế hoạch", "Thiếu dấu cách và dấu thanh: “kế hoạch”."),
+    "quyetdinh": ("quyết định", "Thiếu dấu cách và dấu thanh: “quyết định”."),
+    "thongbao": ("thông báo", "Thiếu dấu cách và dấu thanh: “thông báo”."),
+    "kiemtra": ("kiểm tra", "Thiếu dấu cách và dấu thanh: “kiểm tra”."),
+    "vanban": ("văn bản", "Thiếu dấu cách và dấu thanh: “văn bản”."),
+    "tochuc": ("tổ chức", "Thiếu dấu cách và dấu thanh: “tổ chức”."),
     "hằngtháng": ("hằng tháng", "Thiếu khoảng trắng giữa hai từ: “hằng tháng”."),
     "kịpthời": ("kịp thời", "Thiếu khoảng trắng giữa hai từ: “kịp thời”."),
     # === Chuẩn hoá lí/lý, qui/quy, kỉ/kỷ ===

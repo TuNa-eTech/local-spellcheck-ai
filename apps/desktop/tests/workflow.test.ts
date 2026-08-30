@@ -1122,7 +1122,7 @@ describe("four-step desktop workflow", () => {
     expect(api.startJob.mock.calls[0][3]).toBe("Không đổi tên đơn vị.");
     expect(api.startJob.mock.calls[0][4]).toBe(true);
     expect(api.startJob.mock.calls[0][7]).toBe(true);
-    expect(api.startJob.mock.calls[0][8]).toBe(false);
+    expect(api.startJob.mock.calls[0][8]).toBe(true);
   });
 
   it("cancels an import and ignores its late success", async () => {
