@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import unicodedata
+from collections.abc import Iterator
 from typing import Any
 
 from soatvan.checking.domain import Block, Finding
@@ -22,7 +23,7 @@ DEFAULT_SPELL_MODEL = "nrl-ai/vn-spell-correction-small"
 
 
 @contextlib.contextmanager
-def _no_grad_ctx():
+def _no_grad_ctx() -> Iterator[None]:
     try:
         import torch
 

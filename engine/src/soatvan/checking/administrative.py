@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
 
 REASON_AGENCY = "Theo Nghị định 30/2020/NĐ-CP (Phụ lục II), tên cơ quan, tổ chức, doanh nghiệp nhà nước phải được viết hoa đúng thể thức."
 REASON_INSTITUTION = "Theo Nghị định 30/2020/NĐ-CP (Phụ lục II), tên trường đại học, học viện, bệnh viện công lập phải được viết hoa đúng thể thức."

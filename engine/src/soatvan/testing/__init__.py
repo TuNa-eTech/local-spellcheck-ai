@@ -1,6 +1,8 @@
 """Testing and synthetic evaluation utilities for SoatVan."""
 from __future__ import annotations
 
+from typing import Any
+
 from soatvan.testing.noise import NoiseConfig, NoiseGenerator, heavy_noise, light_noise
 
 __all__ = [
@@ -13,7 +15,7 @@ __all__ = [
 ]
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> Any:
     if name in ("BenchmarkReport", "SyntheticBenchmarkRunner"):
         from soatvan.testing.benchmark import BenchmarkReport, SyntheticBenchmarkRunner
 

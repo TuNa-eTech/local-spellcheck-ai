@@ -79,9 +79,7 @@ def merge_tone_only(source: str, candidate: str) -> str:
         s_tok = s_m.group(0)
         c_tok = c_m.group(0)
 
-        if not _ALPHA_TOKEN.match(s_tok) or not _ALPHA_TOKEN.match(c_tok):
-            out_parts.append(s_tok)
-        elif _detone(s_tok).casefold() != _detone(c_tok).casefold():
+        if not _ALPHA_TOKEN.match(s_tok) or not _ALPHA_TOKEN.match(c_tok) or _detone(s_tok).casefold() != _detone(c_tok).casefold():
             out_parts.append(s_tok)
         else:
             # Preserve original casing

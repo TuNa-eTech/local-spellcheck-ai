@@ -47,5 +47,9 @@ strict = true
 packages = ["soatvan"]
 
 [[tool.mypy.overrides]]
-module = "lxml.*"
+module = [
+    "lxml.*",
+    "torch.*",
+    "transformers.*",
+]
 ignore_missing_imports = true
