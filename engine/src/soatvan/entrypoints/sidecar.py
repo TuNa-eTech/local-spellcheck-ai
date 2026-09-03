@@ -100,14 +100,15 @@ class DynamicClassifierProvider:
 
 
 class Sidecar:
-    def __init__(self) -> None:
-        configured_data = os.environ.get("SOATVAN_DATA_DIR")
-        local_data = (
-            Path(configured_data)
-            if configured_data
-            else Path(os.environ.get("LOCALAPPDATA", Path.home() / ".local" / "share"))
-            / "SoatVan"
-        )
+    def __init__(self, local_data: Path | None = None) -> None:
+        if local_data is None:
+            configured_data = os.environ.get("SOATVAN_DATA_DIR")
+            local_data = (
+                Path(configured_data)
+                if configured_data
+                else Path(os.environ.get("LOCALAPPDATA", Path.home() / ".local" / "share"))
+                / "SoatVan"
+            )
         self.documents = DocxPackage()
         self.dictionary = SqliteDictionaryRepository(local_data / "dictionary.db")
         self.custom_rules = SqliteCustomRuleRepository(local_data / "preferences.db")
@@ -187,13 +188,18 @@ class Sidecar:
         )
         sys.stderr.flush()
         try:
+            _seq2seq_cfg = self.seq2seq_config_repo.get_config()
             request = ProcessRequest(
                 source=Path(params["source_path"]),
                 temporary_output=temporary_output,
                 preset=Preset(params.get("preset", "standard")),
                 rule_config=_rule_config(params.get("rule_config")),
                 use_model=_boolean_param(params, "use_model"),
-                use_seq2seq=self.seq2seq is not None and self.seq2seq.is_ready(),
+                use_seq2seq=(
+                    self.seq2seq is not None
+                    and self.seq2seq.is_ready()
+                    and _seq2seq_cfg.is_enabled
+                ),
                 custom_prompt=_custom_prompt(params.get("custom_prompt", "")),
                 ignored_words=_ignored_words(params.get("ignored_words", [])),
                 full_review=_boolean_param(params, "full_review"),
@@ -470,20 +476,35 @@ class Sidecar:
             "model_dir": cfg.model_dir,
             "is_configured": cfg.is_configured,
             "is_valid": cfg.is_valid(),
+            "is_enabled": cfg.is_enabled,
         }
 
     def seq2seq_config_update(self, params: dict[str, Any]) -> dict[str, Any]:
-        model_dir = str(params.get("model_dir", "")).strip()
-        cfg = self.seq2seq_config_repo.set_config(model_dir)
-        # Reload provider with new path
-        from soatvan.workflow.seq2seq_provider import LocalSeq2SeqProvider
-        self.seq2seq = LocalSeq2SeqProvider(model_dir=model_dir if cfg.is_configured else None)
-        self.processor._seq2seq = self.seq2seq
+        model_dir = params.get("model_dir")
+        is_enabled = params.get("is_enabled")
+        if is_enabled is not None:
+            is_enabled = bool(is_enabled)
+
+        cfg = self.seq2seq_config_repo.set_config(
+            model_dir=str(model_dir) if model_dir is not None else None,
+            is_enabled=is_enabled,
+        )
+        if model_dir is not None:
+            from soatvan.workflow.seq2seq_provider import LocalSeq2SeqProvider
+
+            self.seq2seq = LocalSeq2SeqProvider(
+                model_dir=cfg.model_dir if cfg.is_configured else None
+            )
+            self.processor._seq2seq = self.seq2seq
         return {
             "model_dir": cfg.model_dir,
             "is_configured": cfg.is_configured,
             "is_valid": cfg.is_valid(),
+            "is_enabled": cfg.is_enabled,
         }
+
+
+EngineSidecar = Sidecar
 
 
 def _rule_config(value: object) -> RuleConfig | None:
