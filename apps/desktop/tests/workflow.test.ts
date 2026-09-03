@@ -1450,3 +1450,144 @@ describe("four-step desktop workflow", () => {
   });
 });
 
+describe("AI model selection and configuration UX", () => {
+  it("shows active AI provider in top selector radio cards", async () => {
+    await loadApp({
+      aiConfigGet: () => Promise.resolve({
+        active_provider: "local",
+        configs: [],
+      }),
+    });
+    document.querySelector<HTMLButtonElement>("#settings")!.click();
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')?.disabled).toBe(false));
+    document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')!.click();
+
+    await vi.waitFor(() => expect(document.querySelector("#active-ai-card-local")?.classList.contains("active")).toBe(true));
+    expect(document.querySelector("#active-ai-card-openai")?.classList.contains("active")).toBe(false);
+  });
+
+  it("redirects and prompts user when clicking an unconfigured AI provider radio", async () => {
+    await loadApp({
+      aiConfigGet: () => Promise.resolve({
+        active_provider: "local",
+        configs: [],
+      }),
+    });
+    document.querySelector<HTMLButtonElement>("#settings")!.click();
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')?.disabled).toBe(false));
+    document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')!.click();
+
+    // Click OpenAI radio card when no API key configured
+    document.querySelector<HTMLButtonElement>("#active-ai-card-openai")!.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector("#provider-tab-openai, #config-tab-openai")?.classList.contains("selected")).toBe(true);
+      expect(document.body.textContent).toContain("Vui lòng nhập API Key");
+    });
+    // Active radio remains local
+    expect(document.querySelector("#active-ai-card-local")?.classList.contains("active")).toBe(true);
+  });
+
+  it("switches active AI provider when clicking a configured provider radio card directly", async () => {
+    let currentActive = "local";
+    const api = await loadApp({
+      aiConfigGet: () => Promise.resolve({
+        active_provider: currentActive,
+        configs: [
+          { provider: "openai", api_key: "sk-test", masked_key: "sk-...test", base_url: "https://api.openai.com/v1", model_name: "gpt-4o-mini", is_active: currentActive === "openai" },
+        ],
+      }),
+      aiConfigSetActive: (provider: string) => {
+        currentActive = provider;
+        return Promise.resolve({ active_provider: provider });
+      },
+    });
+    document.querySelector<HTMLButtonElement>("#settings")!.click();
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')?.disabled).toBe(false));
+    document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')!.click();
+
+    // Click OpenAI radio card when it is already configured with an API key
+    document.querySelector<HTMLButtonElement>("#active-ai-card-openai")!.click();
+    await vi.waitFor(() => expect(api.aiConfigSetActive).toHaveBeenCalledWith("openai"));
+    await vi.waitFor(() => expect(document.querySelector("#active-ai-card-openai")?.classList.contains("active")).toBe(true));
+  });
+
+  it("saves configuration without changing the active provider", async () => {
+    const api = await loadApp({
+      aiConfigGet: () => Promise.resolve({
+        active_provider: "local",
+        configs: [],
+      }),
+    });
+    document.querySelector<HTMLButtonElement>("#settings")!.click();
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')?.disabled).toBe(false));
+    document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')!.click();
+
+    // Switch to OpenAI detail tab
+    document.querySelector<HTMLButtonElement>("#provider-tab-openai, #config-tab-openai")!.click();
+    const keyInput = document.querySelector<HTMLInputElement>("#cloud-api-key")!;
+    keyInput.value = "sk-saved-only-key";
+    keyInput.dispatchEvent(new InputEvent("input", { bubbles: true }));
+
+    // Click Save Config
+    document.querySelector<HTMLButtonElement>("#cloud-save-config")!.click();
+    await vi.waitFor(() => expect(api.aiConfigUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      provider: "openai",
+      apiKey: "sk-saved-only-key",
+    })));
+    // Should NOT have called setActive
+    expect(api.aiConfigSetActive).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(document.body.textContent).toContain("Đã lưu cấu hình OpenAI"));
+  });
+
+  it("activates provider via button and updates top selector and workflow badge", async () => {
+    let currentActive = "local";
+    const api = await loadApp({
+      aiConfigGet: () => Promise.resolve({
+        active_provider: currentActive,
+        configs: [
+          { provider: "openai", api_key: "sk-test", masked_key: "sk-...test", base_url: "https://api.openai.com/v1", model_name: "gpt-4o-mini", is_active: currentActive === "openai" },
+        ],
+      }),
+      aiConfigSetActive: (provider: string) => {
+        currentActive = provider;
+        return Promise.resolve({ active_provider: provider });
+      },
+    });
+    await chooseDocument();
+    document.querySelector<HTMLButtonElement>("#settings")!.click();
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')?.disabled).toBe(false));
+    document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')!.click();
+
+    // Switch to OpenAI tab and click Activate
+    document.querySelector<HTMLButtonElement>("#provider-tab-openai, #config-tab-openai")!.click();
+    document.querySelector<HTMLButtonElement>("#provider-activate-btn")!.click();
+    await vi.waitFor(() => expect(api.aiConfigSetActive).toHaveBeenCalledWith("openai"));
+    await vi.waitFor(() => expect(document.querySelector("#active-ai-card-openai")?.classList.contains("active")).toBe(true));
+
+    // Back to workflow view and check workflow badge
+    document.querySelector<HTMLButtonElement>("#settings-back")!.click();
+    await vi.waitFor(() => expect(document.querySelector("#workflow-ai-badge")?.textContent).toContain("OpenAI (gpt-4o-mini)"));
+  });
+
+  it("displays an error message if provider activation fails", async () => {
+    const api = await loadApp({
+      aiConfigGet: () => Promise.resolve({
+        active_provider: "local",
+        configs: [
+          { provider: "openai", api_key: "sk-test", masked_key: "sk-...test", base_url: "https://api.openai.com/v1", model_name: "gpt-4o-mini", is_active: false },
+        ],
+      }),
+      aiConfigSetActive: () => Promise.reject(new Error("Activation failed")),
+    });
+    document.querySelector<HTMLButtonElement>("#settings")!.click();
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')?.disabled).toBe(false));
+    document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')!.click();
+
+    document.querySelector<HTMLButtonElement>("#provider-tab-openai, #config-tab-openai")!.click();
+    document.querySelector<HTMLButtonElement>("#provider-activate-btn")!.click();
+    await vi.waitFor(() => expect(api.aiConfigSetActive).toHaveBeenCalledWith("openai"));
+    await vi.waitFor(() => expect(document.body.textContent).toContain("Không kích hoạt được OpenAI. Hãy thử lại."));
+  });
+});
+
+

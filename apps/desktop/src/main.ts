@@ -854,7 +854,7 @@ function settingsContent(section: SettingsSection): { body: string; footer: stri
     </div>
     ${cloudTestResultHtml()}
     </section>`,
-    footer: `<footer class="settings-footer"><div class="settings-footer__inner"><div class="button-row" style="justify-content: space-between; width: 100%;"><button class="button button--secondary" id="cloud-test-connection" type="button" ${state.cloudTestLoading || controlsLocked ? 'disabled aria-busy="true"' : ""}>${state.cloudTestLoading ? "Đang kiểm tra…" : "Kiểm tra kết nối"}</button><div class="button-row"><button class="button button--secondary" id="cloud-save-config" type="button" ${state.cloudSaving || controlsLocked ? 'disabled aria-busy="true"' : ""}>${state.cloudSaving ? "Đang lưu…" : "Lưu cấu hình"}</button><button class="button button--primary" id="provider-activate-btn" type="button" ${isCloudCurrentActive || controlsLocked ? "disabled" : ""}>${isCloudCurrentActive ? "✓ Đang kích hoạt" : "Kích hoạt nguồn này"}</button><button id="cloud-save-active" type="button" style="display:none;" ${isCloudCurrentActive || controlsLocked ? "disabled" : ""}></button></div></div></div></footer>`,
+    footer: `<footer class="settings-footer"><div class="settings-footer__inner"><div class="button-row" style="justify-content: space-between; width: 100%;"><button class="button button--secondary" id="cloud-test-connection" type="button" ${state.cloudTestLoading || controlsLocked ? 'disabled aria-busy="true"' : ""}>${state.cloudTestLoading ? "Đang kiểm tra…" : "Kiểm tra kết nối"}</button><div class="button-row"><button class="button button--secondary" id="cloud-save-config" type="button" ${state.cloudSaving || controlsLocked ? 'disabled aria-busy="true"' : ""}>${state.cloudSaving ? "Đang lưu…" : "Lưu cấu hình"}</button><button class="button button--primary" id="provider-activate-btn" type="button" ${isCloudCurrentActive || controlsLocked ? "disabled" : ""} ${state.cloudSaving ? 'aria-busy="true"' : ""}>${isCloudCurrentActive ? "✓ Đang kích hoạt" : "Kích hoạt nguồn này"}</button><button id="cloud-save-active" type="button" style="display:none;" ${isCloudCurrentActive || controlsLocked ? "disabled" : ""}></button></div></div></div></footer>`,
   };
 }
 
@@ -1699,21 +1699,24 @@ async function saveCloudConfigOnly(): Promise<void> {
 }
 
 async function activateProvider(provider: ProviderTab): Promise<void> {
-  if (provider !== "local") {
-    syncInputDrafts();
-    const draft = state.cloudDrafts[provider];
-    if (draft.apiKey.trim() || draft.baseUrl.trim() || draft.modelName.trim()) {
-      await api.aiConfigUpdate({
-        provider,
-        apiKey: draft.apiKey.trim() || undefined,
-        baseUrl: draft.baseUrl.trim() || undefined,
-        modelName: draft.modelName.trim() || undefined,
-      });
-      draft.apiKey = "";
-    }
-  }
+  if (state.cloudSaving) return;
+  state.cloudSaving = true;
   state.settingsMessage = null;
+  render();
   try {
+    if (provider !== "local") {
+      syncInputDrafts();
+      const draft = state.cloudDrafts[provider];
+      if (draft.apiKey.trim() || draft.baseUrl.trim() || draft.modelName.trim()) {
+        await api.aiConfigUpdate({
+          provider,
+          apiKey: draft.apiKey.trim() || undefined,
+          baseUrl: draft.baseUrl.trim() || undefined,
+          modelName: draft.modelName.trim() || undefined,
+        });
+        draft.apiKey = "";
+      }
+    }
     await api.aiConfigSetActive(provider);
     state.aiConfig = await api.aiConfigGet();
     state.model = await api.modelStatus(true);
@@ -1731,6 +1734,7 @@ async function activateProvider(provider: ProviderTab): Promise<void> {
       text: `Không kích hoạt được ${provider === "local" ? "Mô hình cục bộ" : provider === "openai" ? "OpenAI" : "Gemini"}. Hãy thử lại.`,
     };
   } finally {
+    state.cloudSaving = false;
     render();
   }
 }
