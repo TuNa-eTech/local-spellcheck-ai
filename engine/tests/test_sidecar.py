@@ -339,3 +339,35 @@ def test_partial_review_without_findings_is_not_emitted_as_no_findings(
         if frame.get("event") in {"job.completed", "job.no_findings", "job.failed"}
     ]
     assert [frame["event"] for frame in terminals] == ["job.completed"]
+
+
+def test_sidecar_ai_config_update_preserves_active_state_when_omitted(tmp_path: Path) -> None:
+    sidecar = Sidecar(local_data=tmp_path)
+    # Configure and activate openai
+    sidecar.dispatch(
+        "ai_config.update",
+        {
+            "provider": "openai",
+            "api_key": "sk-test-key",
+            "base_url": "https://api.openai.com/v1",
+            "model_name": "gpt-4o-mini",
+            "is_active": True,
+        },
+    )
+    get_res = sidecar.dispatch("ai_config.get", {})
+    assert get_res["active_provider"] == "openai"
+
+    # Update base_url without specifying is_active
+    sidecar.dispatch(
+        "ai_config.update",
+        {
+            "provider": "openai",
+            "base_url": "https://custom.endpoint.com/v1",
+        },
+    )
+    get_res_after = sidecar.dispatch("ai_config.get", {})
+    # Active provider should remain openai
+    assert get_res_after["active_provider"] == "openai"
+    cfg = next(c for c in get_res_after["configs"] if c["provider"] == "openai")
+    assert cfg["is_active"] is True
+    assert cfg["base_url"] == "https://custom.endpoint.com/v1"
