@@ -157,5 +157,28 @@ describe("desktop API", () => {
       modelName: "gpt-4o-mini",
     });
   });
+
+  it("handles seq2seq config get and update with isEnabled", async () => {
+    const fakeConfig = {
+      model_dir: "C:\\models\\seq2seq",
+      is_configured: true,
+      is_valid: true,
+      is_enabled: false,
+    };
+    mocks.invoke.mockResolvedValueOnce(fakeConfig);
+
+    const got = await api.seq2seqConfigGet();
+    expect(got).toEqual(fakeConfig);
+    expect(mocks.invoke).toHaveBeenNthCalledWith(1, "seq2seq_config_get");
+
+    mocks.invoke.mockResolvedValueOnce({ ...fakeConfig, is_enabled: true });
+    const updated = await api.seq2seqConfigUpdate(undefined, true);
+    expect(updated.is_enabled).toBe(true);
+    expect(mocks.invoke).toHaveBeenNthCalledWith(2, "seq2seq_config_update", {
+      modelDir: null,
+      isEnabled: true,
+    });
+  });
 });
+
 

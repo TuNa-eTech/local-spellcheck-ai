@@ -13,6 +13,7 @@ import type {
   Preset,
   ProgressEvent,
   RuleOptions,
+  Seq2SeqConfig,
 } from "./contracts";
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
@@ -139,13 +140,23 @@ export const api = {
       modelName: params.modelName ?? params.model_name,
     });
   },
-  async seq2seqConfigGet(): Promise<{ model_dir: string; is_configured: boolean; is_valid: boolean }> {
-    if (!isTauri()) return { model_dir: "", is_configured: false, is_valid: false };
+  async seq2seqConfigGet(): Promise<Seq2SeqConfig> {
+    if (!isTauri()) return { model_dir: "", is_configured: false, is_valid: false, is_enabled: true };
     return invoke("seq2seq_config_get");
   },
-  async seq2seqConfigUpdate(modelDir: string): Promise<{ model_dir: string; is_configured: boolean; is_valid: boolean }> {
-    if (!isTauri()) return { model_dir: modelDir, is_configured: !!modelDir, is_valid: false };
-    return invoke("seq2seq_config_update", { modelDir });
+  async seq2seqConfigUpdate(modelDir?: string, isEnabled?: boolean): Promise<Seq2SeqConfig> {
+    if (!isTauri()) {
+      return {
+        model_dir: modelDir ?? "",
+        is_configured: Boolean(modelDir),
+        is_valid: Boolean(modelDir),
+        is_enabled: isEnabled ?? true,
+      };
+    }
+    return invoke("seq2seq_config_update", {
+      modelDir: modelDir ?? null,
+      isEnabled: isEnabled ?? null,
+    });
   },
   async chooseSeq2SeqModelDir(): Promise<string | null> {
     if (!isTauri()) return null;

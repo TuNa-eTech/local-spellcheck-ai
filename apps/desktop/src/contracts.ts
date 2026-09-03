@@ -100,3 +100,11 @@ export interface AiTestConnectionResult {
   message?: string;
 }
 
+export interface Seq2SeqConfig {
+  model_dir: string;
+  is_configured: boolean;
+  is_valid: boolean;
+  is_enabled: boolean;
+}
+
+
