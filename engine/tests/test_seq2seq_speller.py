@@ -24,7 +24,9 @@ def test_seq2seq_speller_initialization_defaults() -> None:
 def test_seq2seq_speller_raises_when_transformers_missing() -> None:
     speller = Seq2SeqSpeller()
     with patch("soatvan.models.seq2seq_speller.is_transformers_available", return_value=False):
-        with pytest.raises(ModelRuntimeUnavailable, match="transformers and torch are required"):
+        with pytest.raises(
+            ModelRuntimeUnavailable, match="transformers, torch, and sentencepiece are required"
+        ):
             speller.load()
 
 

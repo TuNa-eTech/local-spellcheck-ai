@@ -12,7 +12,7 @@ from __future__ import annotations
 import contextlib
 import unicodedata
 from collections.abc import Iterator
-from typing import Any
+from typing import Any, cast
 
 from soatvan.checking.domain import Block, Finding
 from soatvan.checking.heading import is_heading, merge_tone_only
@@ -34,8 +34,9 @@ def _no_grad_ctx() -> Iterator[None]:
 
 
 def is_transformers_available() -> bool:
-    """Check if torch and transformers are importable."""
+    """Check if torch, transformers, and sentencepiece are importable."""
     try:
+        import sentencepiece  # noqa: F401
         import torch  # noqa: F401
         import transformers  # noqa: F401
 
@@ -75,8 +76,8 @@ class Seq2SeqSpeller:
 
         if not is_transformers_available():
             raise ModelRuntimeUnavailable(
-                "transformers and torch are required for Seq2SeqSpeller. "
-                "Install with: pip install 'transformers>=4.40,<5' torch"
+                "transformers, torch, and sentencepiece are required for Seq2SeqSpeller. "
+                "Install with: uv sync --project engine --extra seq2seq"
             )
 
         import torch
@@ -91,7 +92,7 @@ class Seq2SeqSpeller:
             self._resolved_device = self.device
 
         try:
-            self._tokenizer = AutoTokenizer.from_pretrained(self.model_id)
+            self._tokenizer = cast(Any, AutoTokenizer).from_pretrained(self.model_id)
             self._model = AutoModelForSeq2SeqLM.from_pretrained(self.model_id)
             self._model.to(self._resolved_device)
             self._model.eval()

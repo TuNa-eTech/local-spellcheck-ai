@@ -23,6 +23,8 @@ dev = [
 ]
 model = ["llama-cpp-python>=0.3.8,<1"]
 seq2seq = [
+    "protobuf>=3.20.0,<6",
+    "sentencepiece>=0.2.0,<1",
     "torch>=2.0,<3",
     "transformers>=4.40,<5",
 ]

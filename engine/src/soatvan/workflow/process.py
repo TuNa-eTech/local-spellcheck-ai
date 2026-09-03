@@ -109,12 +109,20 @@ class ProcessDocument:
             )
             sys.stderr.flush()
             progress("seq2seq", 55, "job.seq2seq_correction")
-            seq2seq_findings = self._seq2seq.check_blocks(blocks, ignored_words, cancel)
-            sys.stderr.write(
-                f"[SoatVan-Process] Seq2Seq spell-check finished with {len(seq2seq_findings)} finding(s).\n"
-            )
-            sys.stderr.flush()
-            findings = _merge_seq2seq_findings(findings, seq2seq_findings)
+            try:
+                seq2seq_findings = self._seq2seq.check_blocks(blocks, ignored_words, cancel)
+                sys.stderr.write(
+                    f"[SoatVan-Process] Seq2Seq spell-check finished with {len(seq2seq_findings)} finding(s).\n"
+                )
+                sys.stderr.flush()
+                findings = _merge_seq2seq_findings(findings, seq2seq_findings)
+            except Exception as exc:
+                if "CANCEL" in str(type(exc).__name__).upper() or "CANCEL" in str(exc).upper():
+                    raise
+                sys.stderr.write(
+                    f"[SoatVan-Process] WARNING: Seq2Seq pass failed ({exc}). Skipping Seq2Seq and continuing.\n"
+                )
+                sys.stderr.flush()
             cancel.raise_if_cancelled()
 
         review_summary: dict[str, int | str] | None = None
