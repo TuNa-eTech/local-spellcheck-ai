@@ -586,8 +586,19 @@ function ggufModelCardHtml(installed: boolean, isLocalActive: boolean, controlsL
   </div>`;
 }
 
+function isLocalModelCloudLeaked(): boolean {
+  if (state.aiConfig?.active_provider === "local") return false;
+  const activeCloudConfig = state.aiConfig?.configs.find(c => c.provider === state.aiConfig.active_provider);
+  return (
+    state.model.version === "openai" ||
+    state.model.version === "gemini" ||
+    (Boolean(activeCloudConfig?.model_name) && state.model.model_id === activeCloudConfig?.model_name)
+  );
+}
+
 function isProviderReady(provider: ProviderTab): boolean {
   if (provider === "local") {
+    if (isLocalModelCloudLeaked()) return false;
     return state.model.state === "ready" || state.model.state === "installed";
   }
   const cfg = state.aiConfig?.configs.find(c => c.provider === provider);
@@ -597,9 +608,10 @@ function isProviderReady(provider: ProviderTab): boolean {
 
 function providerStatusSubtitle(provider: ProviderTab): string {
   if (provider === "local") {
-    const installed = state.model.state === "ready" || state.model.state === "installed";
+    const isLeaked = isLocalModelCloudLeaked();
+    const installed = !isLeaked && (state.model.state === "ready" || state.model.state === "installed");
     if (!installed) return "Chưa nạp file model";
-    const ver = state.model.version ? `v${state.model.version}` : "";
+    const ver = state.model.version && !isLeaked ? `v${state.model.version}` : "";
     return ver ? `Đã cài đặt (${ver})` : "Đã cài đặt model";
   }
   const cfg = state.aiConfig?.configs.find(c => c.provider === provider);
@@ -726,10 +738,11 @@ function settingsContent(section: SettingsSection): { body: string; footer: stri
     };
   }
 
-  const installed = state.model.state === "ready" || state.model.state === "installed";
+  const isLeaked = isLocalModelCloudLeaked();
+  const installed = !isLeaked && (state.model.state === "ready" || state.model.state === "installed");
   const busy = modelOperationBusy();
   const controlsLocked = busy || modelOperationBaseline !== null || state.modelRemovalPending || state.settingsLoading || state.cloudTestLoading || state.cloudSaving;
-  const activeModelId = state.model.model_id;
+  const activeModelId = isLeaked ? undefined : state.model.model_id;
 
   const activeProvider = state.aiConfig.active_provider;
   const currentTab = state.selectedProviderTab;
