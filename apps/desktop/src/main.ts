@@ -1700,12 +1700,22 @@ async function saveCloudConfigOnly(): Promise<void> {
 
 async function activateProvider(provider: ProviderTab): Promise<void> {
   if (state.cloudSaving) return;
+  syncInputDrafts();
+  if (!isProviderReady(provider)) {
+    state.settingsMessage = {
+      tone: "error",
+      text: provider === "local"
+        ? "Vui lòng nhập file model GGUF trước khi kích hoạt mô hình cục bộ."
+        : `Vui lòng nhập API Key trước khi kích hoạt ${provider === "openai" ? "OpenAI" : "Gemini"}.`,
+    };
+    render(provider === "local" ? "#model-import" : "#cloud-api-key");
+    return;
+  }
   state.cloudSaving = true;
   state.settingsMessage = null;
   render();
   try {
     if (provider !== "local") {
-      syncInputDrafts();
       const draft = state.cloudDrafts[provider];
       if (draft.apiKey.trim() || draft.baseUrl.trim() || draft.modelName.trim()) {
         await api.aiConfigUpdate({

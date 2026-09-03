@@ -1588,6 +1588,25 @@ describe("AI model selection and configuration UX", () => {
     await vi.waitFor(() => expect(api.aiConfigSetActive).toHaveBeenCalledWith("openai"));
     await vi.waitFor(() => expect(document.body.textContent).toContain("Không kích hoạt được OpenAI. Hãy thử lại."));
   });
+
+  it("guards activate button and shows error when activating unconfigured provider directly in tab", async () => {
+    const api = await loadApp({
+      aiConfigGet: () => Promise.resolve({
+        active_provider: "local",
+        configs: [],
+      }),
+    });
+    document.querySelector<HTMLButtonElement>("#settings")!.click();
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')?.disabled).toBe(false));
+    document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')!.click();
+
+    // Switch to unconfigured OpenAI tab and directly click Activate button
+    document.querySelector<HTMLButtonElement>("#provider-tab-openai, #config-tab-openai")!.click();
+    document.querySelector<HTMLButtonElement>("#provider-activate-btn")!.click();
+    expect(api.aiConfigSetActive).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(document.body.textContent).toContain("Vui lòng nhập API Key trước khi kích hoạt OpenAI."));
+  });
 });
+
 
 
