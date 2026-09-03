@@ -577,7 +577,7 @@ function ggufModelCardHtml(installed: boolean, isLocalActive: boolean, controlsL
         <p>Model GGUF đã cài${versionStr} — chưa kích hoạt${s.code ? " (có lỗi khi tải)" : ""}. Nhấn "Kích hoạt" để chuyển sang dùng model cục bộ này.</p>
       </div>
       <div class="button-row">
-        <button class="button button--primary button--small" id="activate-local-provider" type="button" ${controlsLocked ? "disabled" : ""}>Kích hoạt</button>
+        <button class="button button--primary button--small" id="activate-local-provider" type="button" ${controlsLocked ? "disabled" : ""}>Kích hoạt nguồn này</button>
         <button class="button button--secondary button--small" id="model-import" type="button" ${controlsLocked ? "disabled" : ""}>📂 Thay</button>
         <button class="delete-button" id="model-remove" type="button" ${controlsLocked ? "disabled" : ""}>Gỡ</button>
       </div>
@@ -586,7 +586,28 @@ function ggufModelCardHtml(installed: boolean, isLocalActive: boolean, controlsL
   </div>`;
 }
 
+function isProviderReady(provider: ProviderTab): boolean {
+  if (provider === "local") {
+    return state.model.state === "ready" || state.model.state === "installed";
+  }
+  const cfg = state.aiConfig?.configs.find(c => c.provider === provider);
+  const draft = state.cloudDrafts[provider];
+  return Boolean((cfg && (cfg.api_key || cfg.masked_key)) || (draft && draft.apiKey.trim()));
+}
 
+function providerStatusSubtitle(provider: ProviderTab): string {
+  if (provider === "local") {
+    const installed = state.model.state === "ready" || state.model.state === "installed";
+    if (!installed) return "Chưa nạp file model";
+    const ver = state.model.version ? `v${state.model.version}` : "";
+    return ver ? `Đã cài đặt (${ver})` : "Đã cài đặt model";
+  }
+  const cfg = state.aiConfig?.configs.find(c => c.provider === provider);
+  const draft = state.cloudDrafts[provider];
+  if (cfg?.masked_key) return `Đã lưu key: ${cfg.masked_key}`;
+  if (draft?.apiKey.trim()) return "Đã nhập key mới";
+  return "Chưa lưu API key";
+}
 
 function settingsContent(section: SettingsSection): { body: string; footer: string } {
   if (section === "prompts") {
@@ -694,25 +715,56 @@ function settingsContent(section: SettingsSection): { body: string; footer: stri
   const controlsLocked = busy || modelOperationBaseline !== null || state.modelRemovalPending || state.settingsLoading || state.cloudTestLoading || state.cloudSaving;
   const activeModelId = state.model.model_id;
 
+  const activeProvider = state.aiConfig.active_provider;
   const currentTab = state.selectedProviderTab;
 
-  const providerTabsHtml = `
-    <div class="provider-tabs" role="tablist" aria-label="Nguồn AI">
-      <button class="provider-tab ${currentTab === "local" ? "selected" : ""}" id="provider-tab-local" data-provider-tab="local" type="button" role="tab" aria-selected="${currentTab === "local"}" ${controlsLocked ? "disabled" : ""}>
-        <span class="provider-tab__badge">${state.aiConfig.active_provider === "local" ? "Đang dùng" : "Offline"}</span>
-        <strong>Mô hình cục bộ</strong>
-        <small>Offline GGUF / .svmodel</small>
-      </button>
-      <button class="provider-tab ${currentTab === "openai" ? "selected" : ""}" id="provider-tab-openai" data-provider-tab="openai" type="button" role="tab" aria-selected="${currentTab === "openai"}" ${controlsLocked ? "disabled" : ""}>
-        <span class="provider-tab__badge">${state.aiConfig.active_provider === "openai" ? "Đang dùng" : "Cloud"}</span>
-        <strong>OpenAI / Tương thích</strong>
-        <small>OpenAI, DeepSeek, Groq...</small>
-      </button>
-      <button class="provider-tab ${currentTab === "gemini" ? "selected" : ""}" id="provider-tab-gemini" data-provider-tab="gemini" type="button" role="tab" aria-selected="${currentTab === "gemini"}" ${controlsLocked ? "disabled" : ""}>
-        <span class="provider-tab__badge">${state.aiConfig.active_provider === "gemini" ? "Đang dùng" : "Cloud"}</span>
-        <strong>Google Gemini API</strong>
-        <small>Gemini 2.5 Flash</small>
-      </button>
+  const activeAiSelectorHtml = `
+    <section class="active-ai-section" aria-label="Nguồn AI rà soát chính">
+      <header class="active-ai-section__header">
+        <h3>Nguồn AI rà soát văn bản</h3>
+        <p>Chọn 1 nguồn AI duy nhất để kiểm tra và rà soát tài liệu.</p>
+      </header>
+      <div class="active-ai-selector" role="radiogroup" aria-label="Chọn nguồn AI kích hoạt">
+        <button class="active-ai-card ${activeProvider === "local" ? "active" : ""}" id="active-ai-card-local" data-active-ai-select="local" type="button" role="radio" aria-checked="${activeProvider === "local"}" ${controlsLocked ? "disabled" : ""}>
+          <div class="active-ai-card__top">
+            <span class="active-ai-radio" aria-hidden="true"></span>
+            <span class="active-ai-card__title">Mô hình cục bộ</span>
+          </div>
+          <span class="active-ai-card__subtitle">${escape(providerStatusSubtitle("local"))}</span>
+          ${activeProvider === "local" ? `<span class="active-ai-card__badge">Đang hoạt động</span>` : ""}
+        </button>
+        <button class="active-ai-card ${activeProvider === "openai" ? "active" : ""}" id="active-ai-card-openai" data-active-ai-select="openai" type="button" role="radio" aria-checked="${activeProvider === "openai"}" ${controlsLocked ? "disabled" : ""}>
+          <div class="active-ai-card__top">
+            <span class="active-ai-radio" aria-hidden="true"></span>
+            <span class="active-ai-card__title">OpenAI / Tương thích</span>
+          </div>
+          <span class="active-ai-card__subtitle">${escape(providerStatusSubtitle("openai"))}</span>
+          ${activeProvider === "openai" ? `<span class="active-ai-card__badge">Đang hoạt động</span>` : ""}
+        </button>
+        <button class="active-ai-card ${activeProvider === "gemini" ? "active" : ""}" id="active-ai-card-gemini" data-active-ai-select="gemini" type="button" role="radio" aria-checked="${activeProvider === "gemini"}" ${controlsLocked ? "disabled" : ""}>
+          <div class="active-ai-card__top">
+            <span class="active-ai-radio" aria-hidden="true"></span>
+            <span class="active-ai-card__title">Google Gemini API</span>
+          </div>
+          <span class="active-ai-card__subtitle">${escape(providerStatusSubtitle("gemini"))}</span>
+          ${activeProvider === "gemini" ? `<span class="active-ai-card__badge">Đang hoạt động</span>` : ""}
+        </button>
+      </div>
+    </section>`;
+
+  const configTabsHtml = `
+    <div class="config-tabs-container">
+      <div class="config-tabs" role="tablist" aria-label="Cấu hình chi tiết nguồn AI">
+        <button class="config-tab ${currentTab === "local" ? "selected" : ""}" id="provider-tab-local" data-provider-tab="local" type="button" role="tab" aria-selected="${currentTab === "local"}" ${controlsLocked ? "disabled" : ""}>
+          🖥️ Mô hình cục bộ ${activeProvider === "local" ? `<span class="config-tab__active-dot" title="Đang kích hoạt"></span>` : ""}
+        </button>
+        <button class="config-tab ${currentTab === "openai" ? "selected" : ""}" id="provider-tab-openai" data-provider-tab="openai" type="button" role="tab" aria-selected="${currentTab === "openai"}" ${controlsLocked ? "disabled" : ""}>
+          🌐 OpenAI / Tương thích ${activeProvider === "openai" ? `<span class="config-tab__active-dot" title="Đang kích hoạt"></span>` : ""}
+        </button>
+        <button class="config-tab ${currentTab === "gemini" ? "selected" : ""}" id="provider-tab-gemini" data-provider-tab="gemini" type="button" role="tab" aria-selected="${currentTab === "gemini"}" ${controlsLocked ? "disabled" : ""}>
+          ✨ Google Gemini API ${activeProvider === "gemini" ? `<span class="config-tab__active-dot" title="Đang kích hoạt"></span>` : ""}
+        </button>
+      </div>
     </div>`;
 
   if (currentTab === "local") {
@@ -721,7 +773,8 @@ function settingsContent(section: SettingsSection): { body: string; footer: stri
       body: `
       <section class="settings-section settings-models" id="settings-models" aria-labelledby="settings-models-title">
       <header class="settings-section__header"><div class="section-copy"><h2 id="settings-models-title">Mô hình LLM</h2><p>Cấu hình nguồn AI để hỗ trợ rà soát toàn văn (chạy offline trên máy hoặc kết nối qua API đám mây).</p></div></header>
-      ${providerTabsHtml}
+      ${activeAiSelectorHtml}
+      ${configTabsHtml}
 
       <div class="section-copy model-section-copy"><h3>AI rà soát toàn văn (GGUF)</h3><p>Mô hình ngôn ngữ lớn chạy offline. Dùng để xác nhận cảnh báo và rà soát sâu toàn văn bản. Nhập file <code>.gguf</code> hoặc gói <code>.svmodel</code> đã ký.</p></div>
       ${ggufModelCardHtml(installed, isLocalActive, controlsLocked, activeModelId)}
@@ -756,7 +809,8 @@ function settingsContent(section: SettingsSection): { body: string; footer: stri
     body: `
     <section class="settings-section settings-models" id="settings-models" aria-labelledby="settings-models-title">
     <header class="settings-section__header"><div class="section-copy"><h2 id="settings-models-title">Mô hình LLM</h2><p>Chọn nguồn AI: mô hình chạy offline trên máy hoặc kết nối qua API đám mây.</p></div></header>
-    ${providerTabsHtml}
+    ${activeAiSelectorHtml}
+    ${configTabsHtml}
     <div class="privacy-banner" role="note">
       <div class="privacy-banner__icon" aria-hidden="true">🔒</div>
       <div>
@@ -784,7 +838,7 @@ function settingsContent(section: SettingsSection): { body: string; footer: stri
     </div>
     ${cloudTestResultHtml()}
     </section>`,
-    footer: `<footer class="settings-footer"><div class="settings-footer__inner"><div class="button-row"><button class="button button--secondary" id="cloud-test-connection" type="button" ${state.cloudTestLoading || controlsLocked ? 'disabled aria-busy="true"' : ""}>${state.cloudTestLoading ? "Đang kiểm tra…" : "Kiểm tra kết nối"}</button><button class="button button--primary" id="cloud-save-active" type="button" ${state.cloudSaving || controlsLocked ? 'disabled aria-busy="true"' : ""}>${state.cloudSaving ? "Đang lưu…" : isCloudCurrentActive ? "Lưu cấu hình" : "Lưu & Kích hoạt"}</button></div></div></footer>`,
+    footer: `<footer class="settings-footer"><div class="settings-footer__inner"><div class="button-row" style="justify-content: space-between; width: 100%;"><button class="button button--secondary" id="cloud-test-connection" type="button" ${state.cloudTestLoading || controlsLocked ? 'disabled aria-busy="true"' : ""}>${state.cloudTestLoading ? "Đang kiểm tra…" : "Kiểm tra kết nối"}</button><div class="button-row"><button class="button button--secondary" id="cloud-save-config" type="button" ${state.cloudSaving || controlsLocked ? 'disabled aria-busy="true"' : ""}>${state.cloudSaving ? "Đang lưu…" : "Lưu cấu hình"}</button><button class="button button--primary" id="provider-activate-btn" type="button" ${isCloudCurrentActive || controlsLocked ? "disabled" : ""}>${isCloudCurrentActive ? "✓ Đang kích hoạt" : "Kích hoạt nguồn này"}</button><button id="cloud-save-active" type="button" style="display:none;" ${isCloudCurrentActive || controlsLocked ? "disabled" : ""}></button></div></div></div></footer>`,
   };
 }
 
@@ -850,6 +904,12 @@ function bind(): void {
   document.querySelector("#undo-delete-rule")?.addEventListener("click", () => void undoDeleteCustomRule());
 
   // Model & AI Provider events
+  document.querySelectorAll<HTMLButtonElement>("[data-active-ai-select]").forEach(button => {
+    button.addEventListener("click", () => {
+      const provider = button.dataset.activeAiSelect as ProviderTab;
+      if (provider) void handleActiveAiSelect(provider);
+    });
+  });
   document.querySelectorAll<HTMLButtonElement>("[data-provider-tab]").forEach(button => {
     button.addEventListener("click", () => {
       const tab = button.dataset.providerTab as ProviderTab;
@@ -880,6 +940,8 @@ function bind(): void {
     }
   });
   document.querySelector("#cloud-test-connection")?.addEventListener("click", () => void testCloudConnection());
+  document.querySelector("#cloud-save-config")?.addEventListener("click", () => void saveCloudConfigOnly());
+  document.querySelector("#provider-activate-btn")?.addEventListener("click", () => void activateProvider(state.selectedProviderTab));
   document.querySelector("#cloud-save-active")?.addEventListener("click", () => void saveAndActivateCloud());
 
   document.querySelector("#model-import")?.addEventListener("click", () => void modelImport());
@@ -1529,9 +1591,9 @@ async function modelAction(): Promise<void> {
   if (modelOperationBusy()) await cancelModelOperation();
 }
 
-async function testCloudConnection(): Promise<void> {
+function syncInputDrafts(): void {
   const provider = state.selectedProviderTab;
-  if (provider === "local" || state.cloudTestLoading) return;
+  if (provider === "local") return;
   const keyInput = document.querySelector<HTMLInputElement>("#cloud-api-key")?.value;
   const urlInput = document.querySelector<HTMLInputElement>("#cloud-base-url")?.value;
   const modelInput = document.querySelector<HTMLInputElement>("#cloud-model-name")?.value;
@@ -1539,9 +1601,16 @@ async function testCloudConnection(): Promise<void> {
   if (keyInput !== undefined) draft.apiKey = keyInput;
   if (urlInput !== undefined) draft.baseUrl = urlInput;
   if (modelInput !== undefined) draft.modelName = modelInput;
+}
+
+async function testCloudConnection(): Promise<void> {
+  const provider = state.selectedProviderTab;
+  if (provider === "local" || state.cloudTestLoading) return;
+  syncInputDrafts();
+  const draft = state.cloudDrafts[provider];
 
   const saved = state.aiConfig?.configs.find(c => c.provider === provider);
-  if (!draft.apiKey.trim() && (!saved || !saved.api_key)) {
+  if (!draft.apiKey.trim() && (!saved || (!saved.api_key && !saved.masked_key))) {
     state.cloudTestResult = {
       ok: false,
       error: "API_KEY_REQUIRED",
@@ -1574,19 +1643,100 @@ async function testCloudConnection(): Promise<void> {
   }
 }
 
+async function saveCloudConfigOnly(): Promise<void> {
+  const provider = state.selectedProviderTab;
+  if (provider === "local" || state.cloudSaving) return;
+  syncInputDrafts();
+  const draft = state.cloudDrafts[provider];
+  const saved = state.aiConfig?.configs.find(c => c.provider === provider);
+  if (!draft.apiKey.trim() && (!saved || (!saved.api_key && !saved.masked_key))) {
+    state.settingsMessage = { tone: "error", text: "Vui lòng nhập API Key trước khi lưu cấu hình." };
+    render("#cloud-api-key");
+    return;
+  }
+  state.cloudSaving = true;
+  state.settingsMessage = null;
+  render("#cloud-save-config");
+  try {
+    await api.aiConfigUpdate({
+      provider,
+      apiKey: draft.apiKey.trim() || undefined,
+      baseUrl: draft.baseUrl.trim() || undefined,
+      modelName: draft.modelName.trim() || undefined,
+    });
+    state.aiConfig = await api.aiConfigGet();
+    state.cloudDrafts[provider].apiKey = "";
+    state.settingsMessage = { tone: "status", text: `Đã lưu cấu hình ${provider === "openai" ? "OpenAI / Tương thích" : "Google Gemini"}.` };
+  } catch {
+    state.settingsMessage = { tone: "error", text: `Không lưu được cấu hình ${provider === "openai" ? "OpenAI" : "Gemini"}. Hãy thử lại.` };
+  } finally {
+    state.cloudSaving = false;
+    render();
+  }
+}
+
+async function activateProvider(provider: ProviderTab): Promise<void> {
+  if (provider !== "local") {
+    syncInputDrafts();
+    const draft = state.cloudDrafts[provider];
+    if (draft.apiKey.trim() || draft.baseUrl.trim() || draft.modelName.trim()) {
+      await api.aiConfigUpdate({
+        provider,
+        apiKey: draft.apiKey.trim() || undefined,
+        baseUrl: draft.baseUrl.trim() || undefined,
+        modelName: draft.modelName.trim() || undefined,
+      });
+      draft.apiKey = "";
+    }
+  }
+  state.settingsMessage = null;
+  try {
+    await api.aiConfigSetActive(provider);
+    state.aiConfig = await api.aiConfigGet();
+    state.model = await api.modelStatus(true);
+    state.useModel = provider !== "local" || modelCanFilter(state.model);
+    state.fullReview = state.useModel && (provider !== "local" || state.model.capabilities?.full_review === true);
+    saveModelPreference(true);
+    state.selectedProviderTab = provider;
+    state.settingsMessage = {
+      tone: "status",
+      text: `Đã kích hoạt ${provider === "local" ? "Mô hình cục bộ (Offline)" : provider === "openai" ? "OpenAI / Tương thích" : "Google Gemini"} làm nguồn rà soát chính.`,
+    };
+  } catch {
+    state.settingsMessage = {
+      tone: "error",
+      text: `Không kích hoạt được ${provider === "local" ? "Mô hình cục bộ" : provider === "openai" ? "OpenAI" : "Gemini"}. Hãy thử lại.`,
+    };
+  } finally {
+    render();
+  }
+}
+
+async function handleActiveAiSelect(provider: ProviderTab): Promise<void> {
+  if (state.settingsLoading || state.cloudSaving || modelOperationBusy()) return;
+  syncInputDrafts();
+  if (!isProviderReady(provider)) {
+    state.selectedProviderTab = provider;
+    state.settingsMessage = {
+      tone: "status",
+      text: provider === "local"
+        ? "Vui lòng nhập file model GGUF trước khi kích hoạt mô hình cục bộ."
+        : `Vui lòng nhập API Key và lưu cấu hình trước khi kích hoạt ${provider === "openai" ? "OpenAI" : "Gemini"}.`,
+    };
+    render(provider === "local" ? "#model-import" : "#cloud-api-key");
+    return;
+  }
+  await activateProvider(provider);
+}
+
 async function saveAndActivateCloud(): Promise<void> {
   const provider = state.selectedProviderTab;
   if (provider === "local" || state.cloudSaving) return;
-  const keyInput = document.querySelector<HTMLInputElement>("#cloud-api-key")?.value;
-  const urlInput = document.querySelector<HTMLInputElement>("#cloud-base-url")?.value;
-  const modelInput = document.querySelector<HTMLInputElement>("#cloud-model-name")?.value;
+  syncInputDrafts();
   const draft = state.cloudDrafts[provider];
-  if (keyInput !== undefined) draft.apiKey = keyInput;
-  if (urlInput !== undefined) draft.baseUrl = urlInput;
-  if (modelInput !== undefined) draft.modelName = modelInput;
 
   const saved = state.aiConfig?.configs.find(c => c.provider === provider);
-  if (!draft.apiKey.trim() && (!saved || !saved.api_key)) {
+  if (!draft.apiKey.trim() && (!saved || (!saved.api_key && !saved.masked_key))) {
     state.settingsMessage = {
       tone: "error",
       text: "Vui lòng nhập API Key trước khi lưu và kích hoạt.",
@@ -1637,25 +1787,7 @@ async function saveAndActivateCloud(): Promise<void> {
 }
 
 async function activateLocalProvider(): Promise<void> {
-  state.settingsMessage = null;
-  try {
-    await api.aiConfigSetActive("local");
-    const updatedState = await api.aiConfigGet();
-    state.aiConfig = updatedState;
-    state.model = await api.modelStatus(true);
-    state.useModel = modelCanFilter(state.model);
-    state.fullReview = state.useModel && state.model.capabilities?.full_review === true;
-    state.settingsMessage = {
-      tone: "status",
-      text: "Đã kích hoạt chế độ AI cục bộ (Offline).",
-    };
-  } catch {
-    state.settingsMessage = {
-      tone: "error",
-      text: "Không chuyển được sang AI cục bộ. Hãy thử lại.",
-    };
-  }
-  render("#activate-local-provider");
+  await activateProvider("local");
 }
 
 // Initial render immediately paints the UI
