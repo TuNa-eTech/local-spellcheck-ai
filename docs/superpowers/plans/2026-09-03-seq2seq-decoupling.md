@@ -47,7 +47,7 @@
       ) -> Seq2SeqConfig: ...
   ```
 
-- [ ] **Step 1: Viết failing test cho Seq2SeqConfig và migration cột `is_enabled`**
+- [x] **Step 1: Viết failing test cho Seq2SeqConfig và migration cột `is_enabled`**
 
 Tạo file `engine/tests/test_seq2seq_config_repository.py`:
 
@@ -145,12 +145,12 @@ def test_sqlite_seq2seq_config_migration_from_legacy_db(tmp_path: Path) -> None:
     assert cfg.is_enabled is False
 ```
 
-- [ ] **Step 2: Chạy test để xác nhận test thất bại**
+- [x] **Step 2: Chạy test để xác nhận test thất bại**
 
 Run: `uv run --project engine pytest engine/tests/test_seq2seq_config_repository.py -v`
 Expected: FAIL do `Seq2SeqConfig` chưa có `is_enabled`, `set_config` chưa nhận tham số mới.
 
-- [ ] **Step 3: Cập nhật code trong `seq2seq_config_repository.py`**
+- [x] **Step 3: Cập nhật code trong `seq2seq_config_repository.py`**
 
 Thay thế nội dung `engine/src/soatvan/custom_rules/seq2seq_config_repository.py`:
 
@@ -241,12 +241,12 @@ class SqliteSeq2SeqConfigRepository:
         return Seq2SeqConfig(model_dir=new_model_dir, is_enabled=new_is_enabled)
 ```
 
-- [ ] **Step 4: Chạy lại test để xác nhận pass**
+- [x] **Step 4: Chạy lại test để xác nhận pass**
 
 Run: `uv run --project engine pytest engine/tests/test_seq2seq_config_repository.py -v`
 Expected: PASS (3 tests passed).
 
-- [ ] **Step 5: Commit task 1**
+- [x] **Step 5: Commit task 1**
 
 ```bash
 git add engine/src/soatvan/custom_rules/seq2seq_config_repository.py engine/tests/test_seq2seq_config_repository.py
@@ -268,7 +268,7 @@ git commit -m "feat(engine): add is_enabled column and migration to seq2seq_conf
   - `seq2seq_config.update` params: `{"model_dir"?: str, "is_enabled"?: bool}`
   - `_run_job`: `use_seq2seq = self.seq2seq is not None and self.seq2seq.is_ready() and _seq2seq_cfg.is_enabled`
 
-- [ ] **Step 1: Viết test cho Sidecar Seq2Seq methods và `_run_job`**
+- [x] **Step 1: Viết test cho Sidecar Seq2Seq methods và `_run_job`**
 
 Tạo file `engine/tests/test_sidecar_seq2seq.py`:
 
@@ -349,12 +349,12 @@ def test_sidecar_run_job_disables_seq2seq_when_is_enabled_false(tmp_path: Path) 
     assert req.use_seq2seq is False
 ```
 
-- [ ] **Step 2: Chạy test để xác nhận test thất bại**
+- [x] **Step 2: Chạy test để xác nhận test thất bại**
 
 Run: `uv run --project engine pytest engine/tests/test_sidecar_seq2seq.py -v`
 Expected: FAIL do sidecar chưa trả về `is_enabled` và `seq2seq_config_update` chưa nhận `is_enabled`.
 
-- [ ] **Step 3: Cập nhật code trong `engine/src/soatvan/entrypoints/sidecar.py`**
+- [x] **Step 3: Cập nhật code trong `engine/src/soatvan/entrypoints/sidecar.py`**
 
 Trong file `engine/src/soatvan/entrypoints/sidecar.py`:
 
@@ -418,12 +418,12 @@ Tại phương thức `seq2seq_config_update` (dòng 475-485):
         }
 ```
 
-- [ ] **Step 4: Chạy lại test để xác nhận pass**
+- [x] **Step 4: Chạy lại test để xác nhận pass**
 
 Run: `uv run --project engine pytest engine/tests/test_sidecar_seq2seq.py -v`
 Expected: PASS (2 tests passed).
 
-- [ ] **Step 5: Commit task 2**
+- [x] **Step 5: Commit task 2**
 
 ```bash
 git add engine/src/soatvan/entrypoints/sidecar.py engine/tests/test_sidecar_seq2seq.py
@@ -457,7 +457,7 @@ git commit -m "feat(sidecar): support is_enabled in seq2seq config and job execu
   ) -> AppResult<Seq2SeqConfig>;
   ```
 
-- [ ] **Step 1: Cập nhật struct `Seq2SeqConfig` và command `seq2seq_config_update` trong Rust**
+- [x] **Step 1: Cập nhật struct `Seq2SeqConfig` và command `seq2seq_config_update` trong Rust**
 
 Tại `apps/desktop/src-tauri/src/lib.rs`:
 
@@ -496,7 +496,7 @@ async fn seq2seq_config_update(
 }
 ```
 
-- [ ] **Step 2: Thêm unit test kiểm tra struct serialization trong Rust**
+- [x] **Step 2: Thêm unit test kiểm tra struct serialization trong Rust**
 
 Thêm vào phần `#[cfg(test)] mod tests` trong `apps/desktop/src-tauri/src/lib.rs`:
 ```rust
@@ -511,12 +511,12 @@ Thêm vào phần `#[cfg(test)] mod tests` trong `apps/desktop/src-tauri/src/lib
     }
 ```
 
-- [ ] **Step 3: Chạy cargo test để kiểm tra**
+- [x] **Step 3: Chạy cargo test để kiểm tra**
 
 Run: `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml`
 Expected: PASS (All rust tests pass).
 
-- [ ] **Step 4: Commit task 3**
+- [x] **Step 4: Commit task 3**
 
 ```bash
 git add apps/desktop/src-tauri/src/lib.rs
@@ -547,7 +547,7 @@ git commit -m "feat(tauri): add is_enabled to Seq2SeqConfig and seq2seq_config_u
   api.seq2seqConfigUpdate(modelDir?: string, isEnabled?: boolean): Promise<Seq2SeqConfig>;
   ```
 
-- [ ] **Step 1: Cập nhật `contracts.ts`**
+- [x] **Step 1: Cập nhật `contracts.ts`**
 
 Thêm interface `Seq2SeqConfig` vào cuối `apps/desktop/src/contracts.ts`:
 
@@ -560,7 +560,7 @@ export interface Seq2SeqConfig {
 }
 ```
 
-- [ ] **Step 2: Cập nhật `api.ts`**
+- [x] **Step 2: Cập nhật `api.ts`**
 
 Trong `apps/desktop/src/api.ts`:
 Import `Seq2SeqConfig` từ `./contracts`.
@@ -587,7 +587,7 @@ Cập nhật phương thức `seq2seqConfigGet` và `seq2seqConfigUpdate`:
   },
 ```
 
-- [ ] **Step 3: Cập nhật unit test trong `apps/desktop/tests/api.test.ts`**
+- [x] **Step 3: Cập nhật unit test trong `apps/desktop/tests/api.test.ts`**
 
 Thêm test case cho `seq2seqConfigGet` và `seq2seqConfigUpdate` vào `apps/desktop/tests/api.test.ts`:
 
@@ -615,12 +615,12 @@ Thêm test case cho `seq2seqConfigGet` và `seq2seqConfigUpdate` vào `apps/desk
   });
 ```
 
-- [ ] **Step 4: Chạy Vitest để xác nhận pass**
+- [x] **Step 4: Chạy Vitest để xác nhận pass**
 
 Run: `npm test --prefix apps/desktop`
 Expected: PASS (All tests pass).
 
-- [ ] **Step 5: Commit task 4**
+- [x] **Step 5: Commit task 4**
 
 ```bash
 git add apps/desktop/src/contracts.ts apps/desktop/src/api.ts apps/desktop/tests/api.test.ts
@@ -642,7 +642,7 @@ git commit -m "feat(desktop): add Seq2SeqConfig contract and update api methods"
   - Render Card Seq2Seq nằm độc lập ở phía dưới trang "Mô hình AI"
   - Công tắc Toggle Switch `#seq2seq-toggle-enabled` có nhãn On/Off và xử lý sự kiện change
 
-- [ ] **Step 1: Bổ sung style cho Toggle Switch trong `apps/desktop/src/styles.css`**
+- [x] **Step 1: Bổ sung style cho Toggle Switch trong `apps/desktop/src/styles.css`**
 
 Thêm css cho switch toggle nếu chưa có (theo chuẩn design system):
 
@@ -706,7 +706,7 @@ Thêm css cho switch toggle nếu chưa có (theo chuẩn design system):
 }
 ```
 
-- [ ] **Step 2: Cập nhật layout và rendering trong `apps/desktop/src/main.ts`**
+- [x] **Step 2: Cập nhật layout và rendering trong `apps/desktop/src/main.ts`**
 
 1. Cập nhật kiểu `state.seq2seqConfig`:
    Sử dụng `Seq2SeqConfig | null` đã import từ `./contracts`.
@@ -794,7 +794,7 @@ function seq2seqSectionHtml(controlsLocked: boolean): string {
   });
 ```
 
-- [ ] **Step 3: Chạy build và test của frontend để kiểm tra cú pháp**
+- [x] **Step 3: Chạy build và test của frontend để kiểm tra cú pháp**
 
 Run:
 ```bash
@@ -803,7 +803,7 @@ npm test --prefix apps/desktop
 ```
 Expected: PASS (build thành công và tất cả unit test pass).
 
-- [ ] **Step 4: Commit task 5**
+- [x] **Step 4: Commit task 5**
 
 ```bash
 git add apps/desktop/src/main.ts apps/desktop/src/styles.css
@@ -817,7 +817,7 @@ git commit -m "feat(desktop): decouple seq2seq card into independent section wit
 **Files:**
 - Toàn bộ các files liên quan trong backend và frontend.
 
-- [ ] **Step 1: Chạy toàn bộ test backend Python và linter**
+- [x] **Step 1: Chạy toàn bộ test backend Python và linter**
 
 Run:
 ```bash
@@ -827,7 +827,7 @@ uv run --project engine mypy --config-file engine/pyproject.toml
 ```
 Expected: PASS (Không có lỗi type, lint, và coverage >= 85%).
 
-- [ ] **Step 2: Chạy kiểm tra Rust Host clippy và test**
+- [x] **Step 2: Chạy kiểm tra Rust Host clippy và test**
 
 Run:
 ```bash
@@ -836,7 +836,7 @@ cargo clippy --all-targets --manifest-path apps/desktop/src-tauri/Cargo.toml -- 
 ```
 Expected: PASS (Không có warning clippy, mọi test pass).
 
-- [ ] **Step 3: Chạy kiểm tra Frontend test và build**
+- [x] **Step 3: Chạy kiểm tra Frontend test và build**
 
 Run:
 ```bash
@@ -845,7 +845,7 @@ npm run build --prefix apps/desktop
 ```
 Expected: PASS.
 
-- [ ] **Step 4: Commit và hoàn thiện kế hoạch**
+- [x] **Step 4: Commit và hoàn thiện kế hoạch**
 
 ```bash
 git add docs/superpowers/plans/2026-09-03-seq2seq-decoupling.md
