@@ -351,11 +351,14 @@ class Sidecar:
         timeout_seconds = params.get("timeout_seconds", 60)
         if not isinstance(timeout_seconds, int):
             raise ValueError("INVALID_PARAMS")
-        is_active = params.get("is_active", False)
-        if not isinstance(is_active, bool):
-            raise ValueError("INVALID_PARAMS")
-
         stored = self.ai_config.get_config(provider)
+        is_active_param = params.get("is_active")
+        if is_active_param is None:
+            is_active = stored.is_active if stored else False
+        elif isinstance(is_active_param, bool):
+            is_active = is_active_param
+        else:
+            raise ValueError("INVALID_PARAMS")
         api_key_param = params.get("api_key")
         if api_key_param is None:
             api_key = stored.api_key if stored else ""
