@@ -1046,7 +1046,8 @@ button:not(:disabled):not([aria-disabled="true"]):active,
 
 .settings-prompts,
 .settings-review-rules,
-.settings-models {
+.settings-models,
+.settings-seq2seq {
   inline-size: 100%;
 }
 

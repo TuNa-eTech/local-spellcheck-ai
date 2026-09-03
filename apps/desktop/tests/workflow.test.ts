@@ -847,7 +847,7 @@ describe("four-step desktop workflow", () => {
 
     const localNav = page.querySelector<HTMLElement>('nav.settings-nav[aria-label="Mục cài đặt"]')!;
     const sectionButtons = [...localNav.querySelectorAll<HTMLButtonElement>("[data-settings-section]")];
-    expect(sectionButtons.map(button => button.dataset.settingsSection)).toEqual(["prompts", "review-rules", "models"]);
+    expect(sectionButtons.map(button => button.dataset.settingsSection)).toEqual(["prompts", "review-rules", "models", "seq2seq"]);
     expect(localNav.querySelectorAll('[aria-current="page"]')).toHaveLength(1);
     expect(localNav.querySelector('[aria-current="page"]')?.getAttribute("data-settings-section")).toBe("prompts");
     expect(page.querySelectorAll(".settings-section")).toHaveLength(1);
@@ -870,6 +870,12 @@ describe("four-step desktop workflow", () => {
     expect(
       [...document.querySelectorAll<HTMLButtonElement>(".settings-footer button")].map(button => button.id),
     ).toEqual(["model-action"]);
+
+    document.querySelector<HTMLButtonElement>('[data-settings-section="seq2seq"]')!.click();
+    await vi.waitFor(() => expect((document.activeElement as HTMLElement | null)?.id).toBe("settings-seq2seq-title"));
+    expect(document.querySelector('[data-settings-section="seq2seq"]')?.getAttribute("aria-current")).toBe("page");
+    expect(document.querySelectorAll('[aria-current="page"][data-settings-section]')).toHaveLength(1);
+    expect(document.querySelector("#settings-seq2seq")?.getAttribute("aria-labelledby")).toBe("settings-seq2seq-title");
 
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
     expect(document.querySelector("#settings-page")).not.toBeNull();
@@ -1325,34 +1331,33 @@ describe("four-step desktop workflow", () => {
     expect(api.startJob.mock.calls[0][7]).toBe(true);
   });
 
-  it("displays decoupled seq2seq section across local and cloud provider tabs in settings", async () => {
+  it("displays dedicated seq2seq section in settings menu and keeps models tab focused on LLMs", async () => {
     await loadApp();
     document.querySelector<HTMLButtonElement>("#settings")!.click();
     await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')?.disabled).toBe(false));
+
+    // Verify 4 settings nav items exist
+    const navItems = [...document.querySelectorAll<HTMLButtonElement>("[data-settings-section]")];
+    expect(navItems.map(btn => btn.dataset.settingsSection)).toEqual(["prompts", "review-rules", "models", "seq2seq"]);
+    expect(document.querySelector('[data-settings-section="seq2seq"]')?.textContent).toBe("Mô hình Chính tả");
+    expect(document.querySelector('[data-settings-section="models"]')?.textContent).toBe("Mô hình LLM");
+
+    // 1. Models tab should only focus on LLMs and not have seq2seq card
     document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')!.click();
     await vi.waitFor(() => expect((document.activeElement as HTMLElement | null)?.id).toBe("settings-models-title"));
+    expect(document.querySelector("#settings-models-title")?.textContent).toBe("Mô hình LLM");
+    expect(document.querySelector("#seq2seq-card")).toBeNull();
 
-    // 1. Local tab should display seq2seq section at bottom
+    // 2. Switch to seq2seq tab
+    document.querySelector<HTMLButtonElement>('[data-settings-section="seq2seq"]')!.click();
+    await vi.waitFor(() => expect((document.activeElement as HTMLElement | null)?.id).toBe("settings-seq2seq-title"));
+    expect(document.querySelector("#settings-seq2seq-title")?.textContent).toBe("Mô hình Chính tả");
     expect(document.querySelector("#seq2seq-heading")).not.toBeNull();
     expect(document.querySelector("#seq2seq-card")).not.toBeNull();
     expect(document.querySelector("#seq2seq-status-title")?.textContent).toBe("Chưa cấu hình thư mục model");
     const toggle = document.querySelector<HTMLInputElement>("#seq2seq-toggle-enabled")!;
     expect(toggle).not.toBeNull();
     expect(toggle.disabled).toBe(true);
-
-    // 2. Switch to OpenAI cloud tab - seq2seq section should still be rendered
-    document.querySelector<HTMLButtonElement>("#provider-tab-openai")!.click();
-    await vi.waitFor(() => expect(document.querySelector("#cloud-base-url")).not.toBeNull());
-    expect(document.querySelector("#seq2seq-heading")).not.toBeNull();
-    expect(document.querySelector("#seq2seq-card")).not.toBeNull();
-    expect(document.querySelector("#seq2seq-toggle-enabled")).not.toBeNull();
-
-    // 3. Switch to Gemini cloud tab - seq2seq section should still be rendered
-    document.querySelector<HTMLButtonElement>("#provider-tab-gemini")!.click();
-    await vi.waitFor(() => expect(document.querySelector("#cloud-base-url")).not.toBeNull());
-    expect(document.querySelector("#seq2seq-heading")).not.toBeNull();
-    expect(document.querySelector("#seq2seq-card")).not.toBeNull();
-    expect(document.querySelector("#seq2seq-toggle-enabled")).not.toBeNull();
   });
 
   it("allows toggling seq2seq on and off when model is configured and valid", async () => {
@@ -1372,8 +1377,8 @@ describe("four-step desktop workflow", () => {
       },
     });
     document.querySelector<HTMLButtonElement>("#settings")!.click();
-    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')?.disabled).toBe(false));
-    document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')!.click();
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-settings-section="seq2seq"]')?.disabled).toBe(false));
+    document.querySelector<HTMLButtonElement>('[data-settings-section="seq2seq"]')!.click();
     await vi.waitFor(() => expect(document.querySelector("#seq2seq-toggle-enabled")).not.toBeNull());
 
     const toggle = document.querySelector<HTMLInputElement>("#seq2seq-toggle-enabled")!;
@@ -1413,8 +1418,8 @@ describe("four-step desktop workflow", () => {
       }),
     });
     document.querySelector<HTMLButtonElement>("#settings")!.click();
-    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')?.disabled).toBe(false));
-    document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')!.click();
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-settings-section="seq2seq"]')?.disabled).toBe(false));
+    document.querySelector<HTMLButtonElement>('[data-settings-section="seq2seq"]')!.click();
     await vi.waitFor(() => expect(document.querySelector("#seq2seq-toggle-enabled")).not.toBeNull());
 
     const toggle = document.querySelector<HTMLInputElement>("#seq2seq-toggle-enabled")!;
