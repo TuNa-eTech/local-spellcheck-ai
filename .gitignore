@@ -23,6 +23,6 @@ apps/desktop/src-tauri/resources/engine/*
 data-test/
 .tools
 .superpowers/
-models/
+/models/
 *.safetensors
 *.bpe.model

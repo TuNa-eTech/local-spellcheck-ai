@@ -90,3 +90,30 @@ def test_seq2seq_speller_handles_empty_input() -> None:
     assert speller.predict("") == ""
     assert speller.predict("   ") == "   "
     assert speller.check_block(Block("doc:p0", "")) == []
+
+
+def test_seq2seq_speller_check_block_multi_sentence_and_multi_error() -> None:
+    speller = Seq2SeqSpeller()
+    # Mock predict directly to return corrected sentences
+    def mock_predict(text: str) -> str:
+        if "đúng mẩu" in text:
+            return text.replace("đúng mẩu", "đúng mẫu")
+        if "hổ trợ" in text:
+            return text.replace("hổ trợ", "hỗ trợ")
+        return text
+
+    speller.predict = mock_predict  # type: ignore[method-assign]
+    block = Block("doc:p0", "Làm đúng mẩu quy định. Cần bàn hổ trợ riêng.")
+    findings = speller.check_block(block)
+
+    assert len(findings) == 2
+    f1, f2 = findings
+    assert f1.source_text == "mẩu"
+    assert f1.suggestion == "mẫu"
+    assert f1.start == 9
+    assert f1.end == 12
+
+    assert f2.source_text == "hổ"
+    assert f2.suggestion == "hỗ"
+    assert f2.start == 31
+    assert f2.end == 33

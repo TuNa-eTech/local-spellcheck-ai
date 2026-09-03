@@ -10,13 +10,14 @@ Supports HuggingFace seq2seq checkpoints:
 from __future__ import annotations
 
 import contextlib
+import re
 import unicodedata
 from collections.abc import Iterator
 from typing import Any, cast
 
 from soatvan.checking.domain import Block, Finding
 from soatvan.checking.heading import is_heading, merge_tone_only
-from soatvan.checking.localization import localize_llm_edit
+from soatvan.checking.localization import localize_llm_edits
 from soatvan.models.classifier import ModelLoadFailed, ModelRuntimeUnavailable
 
 DEFAULT_SPELL_MODEL = "nrl-ai/vn-spell-correction-small"
@@ -146,27 +147,53 @@ class Seq2SeqSpeller:
         if not block.text.strip():
             return []
 
-        predicted = self.predict(block.text)
-        if predicted == block.text:
+        chunks = _split_into_sentences(block.text)
+        if not chunks:
             return []
 
-        localized = localize_llm_edit(block.text, predicted, "spelling")
-        if not localized:
-            return []
+        findings: list[Finding] = []
+        for start_offset, _end_offset, chunk_text in chunks:
+            if not chunk_text.strip():
+                continue
+            predicted = self.predict(chunk_text)
+            if predicted == chunk_text:
+                continue
 
-        offset, source_text, suggestion = localized
-        finding = Finding(
-            id=f"{block.id}:m:{offset}",
-            category="spelling",
-            origin="model",
-            detector_id="model.seq2seq.v1",
-            block_id=block.id,
-            start=offset,
-            end=offset + len(source_text),
-            source_text=source_text,
-            suggestion=suggestion,
-            reason=f"Đề xuất chỉnh sửa chính tả theo ngữ cảnh: “{suggestion}”.",
-            rule_version="1.0",
-            confidence=0.92,
-        )
-        return [finding]
+            localized_edits = localize_llm_edits(chunk_text, predicted, "spelling")
+            for offset, source_text, suggestion in localized_edits:
+                global_offset = start_offset + offset
+                finding = Finding(
+                    id=f"{block.id}:m:{global_offset}",
+                    category="spelling",
+                    origin="model",
+                    detector_id="model.seq2seq.v1",
+                    block_id=block.id,
+                    start=global_offset,
+                    end=global_offset + len(source_text),
+                    source_text=source_text,
+                    suggestion=suggestion,
+                    reason=f"Đề xuất chỉnh sửa chính tả theo ngữ cảnh: “{suggestion}”.",
+                    rule_version="1.0",
+                    confidence=0.92,
+                )
+                findings.append(finding)
+        return findings
+
+
+def _split_into_sentences(text: str) -> list[tuple[int, int, str]]:
+    """Split block text into sentences while preserving exact character offsets."""
+    if not text.strip():
+        return []
+    spans: list[tuple[int, int, str]] = []
+    start = 0
+    for match in re.finditer(r"(?:(?<=[.!?])\s+|\n+)", text):
+        end = match.start()
+        chunk = text[start:end]
+        if chunk.strip():
+            spans.append((start, end, chunk))
+        start = match.end()
+    if start < len(text):
+        chunk = text[start:]
+        if chunk.strip():
+            spans.append((start, len(text), chunk))
+    return spans
