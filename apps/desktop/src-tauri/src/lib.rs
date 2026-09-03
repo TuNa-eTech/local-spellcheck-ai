@@ -155,11 +155,12 @@ struct SidecarJobParams<'a> {
     ignored_words: &'a [String],
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 struct Seq2SeqConfig {
     model_dir: String,
     is_configured: bool,
     is_valid: bool,
+    is_enabled: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -649,10 +650,21 @@ async fn seq2seq_config_get(state: State<'_, AppState>) -> AppResult<Seq2SeqConf
 }
 
 #[tauri::command]
-async fn seq2seq_config_update(model_dir: String, state: State<'_, AppState>) -> AppResult<Seq2SeqConfig> {
+async fn seq2seq_config_update(
+    model_dir: Option<String>,
+    is_enabled: Option<bool>,
+    state: State<'_, AppState>,
+) -> AppResult<Seq2SeqConfig> {
+    let mut params = json!({});
+    if let Some(dir) = model_dir {
+        params["model_dir"] = json!(dir);
+    }
+    if let Some(enabled) = is_enabled {
+        params["is_enabled"] = json!(enabled);
+    }
     let result = state.engine.call(
         "seq2seq_config.update",
-        json!({ "model_dir": model_dir }),
+        params,
         Duration::from_secs(5),
     )?;
     Ok(serde_json::from_value(result)?)
@@ -1806,5 +1818,15 @@ mod tests {
         assert!(model_operation_cancelled(&cancelled_generation, first));
         let second = next_model_generation(&generation);
         assert!(!model_operation_cancelled(&cancelled_generation, second));
+    }
+
+    #[test]
+    fn seq2seq_config_serialization_includes_is_enabled() {
+        let json_str = r#"{"model_dir":"/path/to/model","is_configured":true,"is_valid":true,"is_enabled":false}"#;
+        let config: Seq2SeqConfig = serde_json::from_str(json_str).expect("deserialize config");
+        assert_eq!(config.model_dir, "/path/to/model");
+        assert!(config.is_configured);
+        assert!(config.is_valid);
+        assert!(!config.is_enabled);
     }
 }
