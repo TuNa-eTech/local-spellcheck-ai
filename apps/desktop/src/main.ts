@@ -10,6 +10,7 @@ import type {
   ModelStatus,
   Preset,
   RuleOptions,
+  Seq2SeqConfig,
   Step,
 } from "./contracts";
 
@@ -61,7 +62,7 @@ const state: {
   step: Step;
   document: DocumentInfo | null;
   useModel: boolean;
-  seq2seqConfig: { model_dir: string; is_configured: boolean; is_valid: boolean } | null;
+  seq2seqConfig: Seq2SeqConfig | null;
   seq2seqSaving: boolean;
   fullReview: boolean;
   includeRuleFindings: boolean;
@@ -574,6 +575,58 @@ function ggufModelCardHtml(installed: boolean, isLocalActive: boolean, controlsL
   </div>`;
 }
 
+function seq2seqSectionHtml(controlsLocked: boolean): string {
+  const seq2seqCfg = state.seq2seqConfig;
+  const isConfigured = Boolean(seq2seqCfg?.is_configured);
+  const isValid = Boolean(seq2seqCfg?.is_valid);
+  const isEnabled = Boolean(seq2seqCfg?.is_enabled);
+
+  const statusTitle = !isConfigured
+    ? "Chưa cấu hình thư mục model"
+    : isValid
+      ? (isEnabled ? "✓ Đang bật — Tự động chạy rà soát chính tả trước LLM" : "○ Đã tắt — Bỏ qua bước sửa chính tả Seq2Seq")
+      : "✕ Thư mục không hợp lệ (không tìm thấy config.json)";
+
+  const desc = isConfigured
+    ? escape(seq2seqCfg?.model_dir ?? "")
+    : "Chưa chọn thư mục chứa model vn-spell-correction-small.";
+
+  const toggleDisabled = controlsLocked || state.seq2seqSaving || !isValid;
+  const toggleChecked = isValid && isEnabled ? "checked" : "";
+  const toggleTooltip = !isValid ? "title=\"Cần chọn thư mục model hợp lệ để kích hoạt\"" : "";
+
+  return `
+    <hr class="settings-divider" aria-hidden="true" />
+    <div class="section-copy model-section-copy">
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem;">
+        <div>
+          <h3 id="seq2seq-heading">AI sửa lỗi chính tả (Seq2Seq Offline)</h3>
+          <p>Mô hình <code>vn-spell-correction-small</code> chạy hoàn toàn trên máy, tự động sửa lỗi telex, dấu câu và chính tả ngữ cảnh trước khi LLM phân tích.</p>
+        </div>
+        <label class="toggle-control" ${toggleTooltip}>
+          <input type="checkbox" class="toggle-input sr-only" id="seq2seq-toggle-enabled" ${toggleChecked} ${toggleDisabled ? "disabled" : ""} aria-labelledby="seq2seq-heading">
+          <span class="toggle-switch" aria-hidden="true"></span>
+          <span class="toggle-label">${isEnabled && isValid ? "Bật" : "Tắt"}</span>
+        </label>
+      </div>
+    </div>
+    <div class="model-card" id="seq2seq-card">
+      <div class="model-card__header">
+        <div>
+          <strong id="seq2seq-status-title">${statusTitle}</strong>
+          <p>${desc}</p>
+        </div>
+        <div class="button-row">
+          <button class="button button--secondary button--small" id="seq2seq-choose-dir" type="button" ${controlsLocked || state.seq2seqSaving ? "disabled" : ""} ${state.seq2seqSaving ? 'aria-busy="true"' : ""}>
+            ${state.seq2seqSaving ? "Đang lưu…" : isConfigured ? "📂 Chọn lại thư mục" : "📂 Chọn thư mục model"}
+          </button>
+          ${isConfigured ? `<button class="delete-button" id="seq2seq-remove" type="button" ${controlsLocked || state.seq2seqSaving ? "disabled" : ""}>Xóa</button>` : ""}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function settingsContent(section: SettingsSection): { body: string; footer: string } {
   if (section === "prompts") {
     const editing = state.customRules.find(rule => rule.id === state.editingCustomRuleId);
@@ -630,16 +683,6 @@ function settingsContent(section: SettingsSection): { body: string; footer: stri
 
   if (currentTab === "local") {
     const isLocalActive = state.aiConfig.active_provider === "local";
-    const seq2seqCfg = state.seq2seqConfig;
-    const seq2seqTitle = seq2seqCfg?.is_configured
-      ? (seq2seqCfg.is_valid ? "✓ Model seq2seq đã sẵn sàng" : "✕ Thư mục không hợp lệ")
-      : "Chưa cấu hình";
-    const seq2seqDesc = seq2seqCfg?.is_configured
-      ? escape(seq2seqCfg.model_dir)
-      : "Chưa chọn thư mục. Nhấn 'Chọn thư mục' để cấu hình.";
-    const seq2seqStatusHtml = seq2seqCfg?.is_valid
-      ? `<p class="settings-message settings-message--status" role="status">✓ Sẽ tự động chạy khi soát văn bản.</p>`
-      : (seq2seqCfg?.is_configured ? `<p class="settings-message settings-message--error" role="alert">Không tìm thấy model trong thư mục này. Hãy chọn lại đúng thư mục chứa vn-spell-correction-small.</p>` : "");
     return {
       body: `
       <section class="settings-section settings-models" id="settings-models" aria-labelledby="settings-models-title">
@@ -649,22 +692,8 @@ function settingsContent(section: SettingsSection): { body: string; footer: stri
       <div class="section-copy model-section-copy"><h3>AI rà soát toàn văn (GGUF)</h3><p>Mô hình ngôn ngữ lớn chạy offline. Dùng để xác nhận cảnh báo và rà soát sâu toàn văn bản. Nhập file <code>.gguf</code> hoặc gói <code>.svmodel</code> đã ký.</p></div>
       ${ggufModelCardHtml(installed, isLocalActive, controlsLocked, activeModelId)}
 
-      <div class="section-copy model-section-copy" style="margin-top:1.5rem"><h3>AI sửa lỗi ngữ cảnh (Seq2Seq Offline)</h3><p>Mô hình nhỏ gọn <code>vn-spell-correction-small</code> chạy hoàn toàn trên máy, không cần mạng. Phát hiện lỗi chính tả theo ngữ cảnh tiếng Việt. Chọn thư mục chứa model một lần — tự động dùng mỗi khi soát.</p></div>
-      <div class="model-card" id="seq2seq-card">
-        <div class="model-card__header">
-          <div>
-            <strong id="seq2seq-status-title">${seq2seqTitle}</strong>
-            <p>${seq2seqDesc}</p>
-          </div>
-          <div class="button-row">
-            <button class="button button--secondary button--small" id="seq2seq-choose-dir" type="button" ${controlsLocked || state.seq2seqSaving ? "disabled" : ""} ${state.seq2seqSaving ? 'aria-busy="true"' : ""}>${state.seq2seqSaving ? "Đang lưu…" : seq2seqCfg?.is_configured ? "📂 Chọn lại thư mục" : "📂 Chọn thư mục model"}</button>
-            ${seq2seqCfg?.is_configured ? `<button class="delete-button" id="seq2seq-remove" type="button" ${controlsLocked || state.seq2seqSaving ? "disabled" : ""}>Xóa</button>` : ""}
-          </div>
-        </div>
-        ${seq2seqStatusHtml}
-      </div>
-
       <p class="notice" style="margin-top:1rem">🔒 Mọi xử lý diễn ra trên máy của bạn. Nội dung tài liệu không được gửi đi.</p>
+      ${seq2seqSectionHtml(controlsLocked)}
       </section>`,
       footer: `<footer class="settings-footer"><div class="settings-footer__inner"><div class="button-row"><button class="button button--secondary" id="model-action" type="button" ${busy && !state.modelRemovalRunning ? "" : "disabled"} ${busy ? 'aria-busy="true"' : ""}>Huỷ thao tác đang chạy</button></div></div></footer>`,
     };
@@ -721,6 +750,7 @@ function settingsContent(section: SettingsSection): { body: string; footer: stri
       </div>
     </div>
     ${cloudTestResultHtml()}
+    ${seq2seqSectionHtml(controlsLocked)}
     </section>`,
     footer: `<footer class="settings-footer"><div class="settings-footer__inner"><div class="button-row"><button class="button button--secondary" id="cloud-test-connection" type="button" ${state.cloudTestLoading || controlsLocked ? 'disabled aria-busy="true"' : ""}>${state.cloudTestLoading ? "Đang kiểm tra…" : "Kiểm tra kết nối"}</button><button class="button button--primary" id="cloud-save-active" type="button" ${state.cloudSaving || controlsLocked ? 'disabled aria-busy="true"' : ""}>${state.cloudSaving ? "Đang lưu…" : isCloudCurrentActive ? "Lưu cấu hình" : "Lưu & Kích hoạt"}</button></div></div></footer>`,
   };
@@ -825,6 +855,32 @@ function bind(): void {
   document.querySelector("#model-remove")?.addEventListener("click", () => { state.modelRemovalPending = true; state.settingsMessage = null; render("#cancel-model-remove"); });
   document.querySelector("#cancel-model-remove")?.addEventListener("click", () => { state.modelRemovalPending = false; state.settingsMessage = null; render("#model-remove"); });
   document.querySelector("#confirm-model-remove")?.addEventListener("click", () => void removeModel());
+  document.querySelector("#seq2seq-toggle-enabled")?.addEventListener("change", async (e) => {
+    if (state.seq2seqSaving || !state.seq2seqConfig?.is_valid) return;
+    const target = e.target as HTMLInputElement;
+    const wantEnabled = target.checked;
+    state.seq2seqSaving = true;
+    if (state.seq2seqConfig) {
+      state.seq2seqConfig.is_enabled = wantEnabled;
+    }
+    render();
+    try {
+      const cfg = await api.seq2seqConfigUpdate(undefined, wantEnabled);
+      state.seq2seqConfig = cfg;
+      state.settingsMessage = {
+        tone: "status",
+        text: wantEnabled ? "Đã bật mô hình chính tả Seq2Seq." : "Đã tắt mô hình chính tả Seq2Seq.",
+      };
+    } catch {
+      if (state.seq2seqConfig) {
+        state.seq2seqConfig.is_enabled = !wantEnabled;
+      }
+      state.settingsMessage = { tone: "error", text: "Không thể lưu trạng thái kích hoạt." };
+    } finally {
+      state.seq2seqSaving = false;
+      render("#seq2seq-toggle-enabled");
+    }
+  });
   document.querySelector("#seq2seq-choose-dir")?.addEventListener("click", () => void chooseSeq2SeqModelDir());
   document.querySelector("#seq2seq-remove")?.addEventListener("click", () => void removeSeq2SeqConfig());
 }

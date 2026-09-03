@@ -1428,6 +1428,69 @@ button:not(:disabled):not([aria-disabled="true"]):active,
   padding-block-start: 0;
 }
 
+/* Toggle Switch for Seq2Seq */
+.toggle-control {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  cursor: pointer;
+  user-select: none;
+}
+
+.toggle-switch {
+  position: relative;
+  width: 2.75rem;
+  height: 1.5rem;
+  background-color: var(--color-paper-3);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-pill);
+  transition: background-color var(--dur-short) var(--ease-out), border-color var(--dur-short) var(--ease-out);
+}
+
+.toggle-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 1.125rem;
+  height: 1.125rem;
+  background-color: var(--color-paper);
+  border-radius: 50%;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+  transition: transform var(--dur-short) var(--ease-out);
+}
+
+.toggle-input:checked + .toggle-switch {
+  background-color: var(--color-accent);
+  border-color: var(--color-accent);
+}
+
+.toggle-input:checked + .toggle-switch::after {
+  transform: translateX(1.25rem);
+}
+
+.toggle-input:disabled + .toggle-switch {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.toggle-input:focus-visible + .toggle-switch {
+  outline: var(--rule-focus) solid var(--color-focus);
+  outline-offset: var(--rule-focus-offset);
+}
+
+.toggle-label {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-ink);
+}
+
+.settings-divider {
+  border: 0;
+  border-top: 1px solid var(--color-rule);
+  margin: var(--space-xl) 0 var(--space-lg) 0;
+}
+
 .destructive-confirm {
   display: grid;
   gap: var(--space-2xs);

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { AiConfigState, AiTestConnectionResult, CustomRule, DocumentInfo, JobResult, ModelStatus, ProgressEvent } from "../src/contracts";
+import type { AiConfigState, AiTestConnectionResult, CustomRule, DocumentInfo, JobResult, ModelStatus, ProgressEvent, Seq2SeqConfig } from "../src/contracts";
 
 const documentInfo: DocumentInfo = {
   path: "C:\\Tài liệu\\nguồn.docx",
@@ -59,6 +59,9 @@ async function loadApp(options?: {
   aiConfigUpdate?: (params: any) => Promise<{ updated: boolean }>;
   aiConfigSetActive?: (provider: string) => Promise<{ active_provider: string }>;
   aiConfigTestConnection?: (params: any) => Promise<AiTestConnectionResult>;
+  seq2seqConfigGet?: () => Promise<Seq2SeqConfig>;
+  seq2seqConfigUpdate?: (modelDir?: string, isEnabled?: boolean) => Promise<Seq2SeqConfig>;
+  chooseSeq2SeqModelDir?: () => Promise<string | null>;
 }) {
   let progressHandler: ((event: ProgressEvent) => void) | undefined;
   let fileDropHandler: ((path: string) => void) | undefined;
@@ -110,9 +113,9 @@ async function loadApp(options?: {
     aiConfigUpdate: vi.fn(options?.aiConfigUpdate ?? (() => Promise.resolve({ updated: true }))),
     aiConfigSetActive: vi.fn(options?.aiConfigSetActive ?? ((provider: string) => Promise.resolve({ active_provider: provider }))),
     aiConfigTestConnection: vi.fn(options?.aiConfigTestConnection ?? ((params: any) => Promise.resolve({ ok: true, provider: params.provider, model: params.modelName || "gpt-4o-mini" }))),
-    seq2seqConfigGet: vi.fn(() => Promise.resolve({ model_dir: "", is_configured: false, is_valid: false })),
-    seq2seqConfigUpdate: vi.fn((dir: string) => Promise.resolve({ model_dir: dir, is_configured: !!dir, is_valid: false })),
-    chooseSeq2SeqModelDir: vi.fn(() => Promise.resolve(null)),
+    seq2seqConfigGet: vi.fn(options?.seq2seqConfigGet ?? (() => Promise.resolve({ model_dir: "", is_configured: false, is_valid: false, is_enabled: true }))),
+    seq2seqConfigUpdate: vi.fn(options?.seq2seqConfigUpdate ?? ((dir?: string, isEnabled?: boolean) => Promise.resolve({ model_dir: dir ?? "", is_configured: Boolean(dir), is_valid: false, is_enabled: isEnabled ?? true }))),
+    chooseSeq2SeqModelDir: vi.fn(options?.chooseSeq2SeqModelDir ?? (() => Promise.resolve(null))),
   };
   vi.doMock("../src/api", () => ({ api }));
   await import("../src/main");
@@ -1320,6 +1323,103 @@ describe("four-step desktop workflow", () => {
     expect(api.startJob.mock.calls[0][3]).toBe("Giữ nguyên SoátVăn.");
     expect(api.startJob.mock.calls[0][4]).toBe(true);
     expect(api.startJob.mock.calls[0][7]).toBe(true);
+  });
+
+  it("displays decoupled seq2seq section across local and cloud provider tabs in settings", async () => {
+    await loadApp();
+    document.querySelector<HTMLButtonElement>("#settings")!.click();
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')?.disabled).toBe(false));
+    document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')!.click();
+    await vi.waitFor(() => expect((document.activeElement as HTMLElement | null)?.id).toBe("settings-models-title"));
+
+    // 1. Local tab should display seq2seq section at bottom
+    expect(document.querySelector("#seq2seq-heading")).not.toBeNull();
+    expect(document.querySelector("#seq2seq-card")).not.toBeNull();
+    expect(document.querySelector("#seq2seq-status-title")?.textContent).toBe("Chưa cấu hình thư mục model");
+    const toggle = document.querySelector<HTMLInputElement>("#seq2seq-toggle-enabled")!;
+    expect(toggle).not.toBeNull();
+    expect(toggle.disabled).toBe(true);
+
+    // 2. Switch to OpenAI cloud tab - seq2seq section should still be rendered
+    document.querySelector<HTMLButtonElement>("#provider-tab-openai")!.click();
+    await vi.waitFor(() => expect(document.querySelector("#cloud-base-url")).not.toBeNull());
+    expect(document.querySelector("#seq2seq-heading")).not.toBeNull();
+    expect(document.querySelector("#seq2seq-card")).not.toBeNull();
+    expect(document.querySelector("#seq2seq-toggle-enabled")).not.toBeNull();
+
+    // 3. Switch to Gemini cloud tab - seq2seq section should still be rendered
+    document.querySelector<HTMLButtonElement>("#provider-tab-gemini")!.click();
+    await vi.waitFor(() => expect(document.querySelector("#cloud-base-url")).not.toBeNull());
+    expect(document.querySelector("#seq2seq-heading")).not.toBeNull();
+    expect(document.querySelector("#seq2seq-card")).not.toBeNull();
+    expect(document.querySelector("#seq2seq-toggle-enabled")).not.toBeNull();
+  });
+
+  it("allows toggling seq2seq on and off when model is configured and valid", async () => {
+    let currentConfig: Seq2SeqConfig = {
+      model_dir: "C:\\models\\seq2seq",
+      is_configured: true,
+      is_valid: true,
+      is_enabled: true,
+    };
+    const api = await loadApp({
+      seq2seqConfigGet: () => Promise.resolve(currentConfig),
+      seq2seqConfigUpdate: (_dir?: string, isEnabled?: boolean) => {
+        if (isEnabled !== undefined) {
+          currentConfig = { ...currentConfig, is_enabled: isEnabled };
+        }
+        return Promise.resolve(currentConfig);
+      },
+    });
+    document.querySelector<HTMLButtonElement>("#settings")!.click();
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')?.disabled).toBe(false));
+    document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')!.click();
+    await vi.waitFor(() => expect(document.querySelector("#seq2seq-toggle-enabled")).not.toBeNull());
+
+    const toggle = document.querySelector<HTMLInputElement>("#seq2seq-toggle-enabled")!;
+    expect(toggle.disabled).toBe(false);
+    expect(toggle.checked).toBe(true);
+    expect(document.querySelector("#seq2seq-status-title")?.textContent).toBe("✓ Đang bật — Tự động chạy rà soát chính tả trước LLM");
+    expect(document.querySelector(".toggle-label")?.textContent).toBe("Bật");
+
+    // Toggle off
+    toggle.checked = false;
+    toggle.dispatchEvent(new Event("change"));
+
+    await vi.waitFor(() => expect(api.seq2seqConfigUpdate).toHaveBeenCalledWith(undefined, false));
+    await vi.waitFor(() => expect(document.querySelector("#seq2seq-status-title")?.textContent).toBe("○ Đã tắt — Bỏ qua bước sửa chính tả Seq2Seq"));
+    expect(document.querySelector(".toggle-label")?.textContent).toBe("Tắt");
+    expect(document.body.textContent).toContain("Đã tắt mô hình chính tả Seq2Seq.");
+
+    // Toggle back on
+    const toggleAgain = document.querySelector<HTMLInputElement>("#seq2seq-toggle-enabled")!;
+    expect(toggleAgain.checked).toBe(false);
+    toggleAgain.checked = true;
+    toggleAgain.dispatchEvent(new Event("change"));
+
+    await vi.waitFor(() => expect(api.seq2seqConfigUpdate).toHaveBeenCalledWith(undefined, true));
+    await vi.waitFor(() => expect(document.querySelector("#seq2seq-status-title")?.textContent).toBe("✓ Đang bật — Tự động chạy rà soát chính tả trước LLM"));
+    expect(document.querySelector(".toggle-label")?.textContent).toBe("Bật");
+    expect(document.body.textContent).toContain("Đã bật mô hình chính tả Seq2Seq.");
+  });
+
+  it("disables seq2seq toggle when model directory is invalid", async () => {
+    await loadApp({
+      seq2seqConfigGet: () => Promise.resolve({
+        model_dir: "C:\\invalid\\path",
+        is_configured: true,
+        is_valid: false,
+        is_enabled: true,
+      }),
+    });
+    document.querySelector<HTMLButtonElement>("#settings")!.click();
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')?.disabled).toBe(false));
+    document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')!.click();
+    await vi.waitFor(() => expect(document.querySelector("#seq2seq-toggle-enabled")).not.toBeNull());
+
+    const toggle = document.querySelector<HTMLInputElement>("#seq2seq-toggle-enabled")!;
+    expect(toggle.disabled).toBe(true);
+    expect(document.querySelector("#seq2seq-status-title")?.textContent).toBe("✕ Thư mục không hợp lệ (không tìm thấy config.json)");
   });
 });
 
