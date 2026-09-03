@@ -22,6 +22,10 @@ dev = [
     "types-psutil>=7,<8",
 ]
 model = ["llama-cpp-python>=0.3.8,<1"]
+seq2seq = [
+    "torch>=2.0,<3",
+    "transformers>=4.40,<5",
+]
 
 [project.scripts]
 soatvan-engine = "soatvan.entrypoints.sidecar:main"

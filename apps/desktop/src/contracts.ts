@@ -105,6 +105,8 @@ export interface Seq2SeqConfig {
   is_configured: boolean;
   is_valid: boolean;
   is_enabled: boolean;
+  runtime_available?: boolean;
+  is_ready?: boolean;
 }
 
 

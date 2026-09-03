@@ -641,21 +641,28 @@ function settingsContent(section: SettingsSection): { body: string; footer: stri
     const isConfigured = Boolean(seq2seqCfg?.is_configured);
     const isValid = Boolean(seq2seqCfg?.is_valid);
     const isEnabled = Boolean(seq2seqCfg?.is_enabled);
+    const runtimeAvailable = seq2seqCfg?.runtime_available ?? true;
     const controlsLocked = state.seq2seqSaving || state.settingsLoading;
 
     const statusTitle = !isConfigured
       ? "Chưa cấu hình thư mục model"
-      : isValid
-        ? (isEnabled ? "✓ Đang bật — Tự động chạy rà soát chính tả trước LLM" : "○ Đã tắt — Bỏ qua bước sửa chính tả Seq2Seq")
-        : "✕ Thư mục không hợp lệ (không tìm thấy config.json)";
+      : !isValid
+        ? "✕ Thư mục không hợp lệ (không tìm thấy config.json)"
+        : !runtimeAvailable
+          ? "⚠️ Chưa cài đặt PyTorch & Transformers trong môi trường Python"
+          : (isEnabled ? "✓ Đang bật — Tự động chạy rà soát chính tả trước LLM" : "○ Đã tắt — Bỏ qua bước sửa chính tả Seq2Seq");
 
     const desc = isConfigured
       ? escape(seq2seqCfg?.model_dir ?? "")
       : "Chưa chọn thư mục chứa model vn-spell-correction-small.";
 
-    const toggleDisabled = controlsLocked || state.seq2seqSaving || !isValid;
-    const toggleChecked = isValid && isEnabled ? "checked" : "";
-    const toggleTooltip = !isValid ? "title=\"Cần chọn thư mục model hợp lệ để kích hoạt\"" : "";
+    const toggleDisabled = controlsLocked || state.seq2seqSaving || !isValid || !runtimeAvailable;
+    const toggleChecked = isValid && runtimeAvailable && isEnabled ? "checked" : "";
+    const toggleTooltip = !isValid
+      ? "title=\"Cần chọn thư mục model hợp lệ để kích hoạt\""
+      : !runtimeAvailable
+        ? "title=\"Cần cài đặt PyTorch và Transformers để kích hoạt\""
+        : "";
 
     return {
       body: `
@@ -676,7 +683,7 @@ function settingsContent(section: SettingsSection): { body: string; footer: stri
           <label class="toggle-control" ${toggleTooltip}>
             <input type="checkbox" class="toggle-input sr-only" id="seq2seq-toggle-enabled" ${toggleChecked} ${toggleDisabled ? "disabled" : ""} aria-labelledby="seq2seq-heading">
             <span class="toggle-switch" aria-hidden="true"></span>
-            <span class="toggle-label">${isEnabled && isValid ? "Bật" : "Tắt"}</span>
+            <span class="toggle-label">${isEnabled && isValid && runtimeAvailable ? "Bật" : "Tắt"}</span>
           </label>
         </div>
       </div>
@@ -695,6 +702,15 @@ function settingsContent(section: SettingsSection): { body: string; footer: stri
           </div>
         </div>
       </div>
+
+      ${isConfigured && isValid && !runtimeAvailable ? `
+      <div class="privacy-banner" role="alert" style="margin-top:1rem; border-color:#f59e0b; background-color:rgba(245, 158, 11, 0.08);">
+        <div class="privacy-banner__icon" aria-hidden="true">⚠️</div>
+        <div>
+          <strong style="color:#d97706;">Môi trường Python chưa cài đặt PyTorch và Transformers:</strong>
+          <p style="margin-top:0.25rem;">Mô hình Seq2Seq yêu cầu thư viện <code>torch</code> và <code>transformers</code> để chạy. Hãy mở terminal tại thư mục project và chạy lệnh:<br><code style="background:rgba(0,0,0,0.06); padding:2px 6px; border-radius:4px; display:inline-block; margin-top:4px;">uv pip install torch transformers</code><br>sau đó khởi động lại ứng dụng.</p>
+        </div>
+      </div>` : ""}
 
       <div class="privacy-banner" role="note" style="margin-top:1.5rem;">
         <div class="privacy-banner__icon" aria-hidden="true">💡</div>
@@ -1108,6 +1124,13 @@ async function start(): Promise<void> {
     activeProvider: state.aiConfig.active_provider,
     effectiveUseModel,
     effectiveFullReview,
+    seq2seq: {
+      isConfigured: state.seq2seqConfig?.is_configured ?? false,
+      isValid: state.seq2seqConfig?.is_valid ?? false,
+      isEnabled: state.seq2seqConfig?.is_enabled ?? false,
+      runtimeAvailable: state.seq2seqConfig?.runtime_available ?? false,
+      isReady: state.seq2seqConfig?.is_ready ?? false,
+    },
     selectedRuleIds: state.selectedRuleIds,
     customRulesCount: state.customRules.length,
     compiledPromptLength: compiledCustomPrompt().length,

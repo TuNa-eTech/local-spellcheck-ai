@@ -141,7 +141,7 @@ export const api = {
     });
   },
   async seq2seqConfigGet(): Promise<Seq2SeqConfig> {
-    if (!isTauri()) return { model_dir: "", is_configured: false, is_valid: false, is_enabled: true };
+    if (!isTauri()) return { model_dir: "", is_configured: false, is_valid: false, is_enabled: true, runtime_available: true, is_ready: false };
     return invoke("seq2seq_config_get");
   },
   async seq2seqConfigUpdate(modelDir?: string, isEnabled?: boolean): Promise<Seq2SeqConfig> {
@@ -151,6 +151,8 @@ export const api = {
         is_configured: Boolean(modelDir),
         is_valid: Boolean(modelDir),
         is_enabled: isEnabled ?? true,
+        runtime_available: true,
+        is_ready: Boolean(modelDir) && (isEnabled ?? true),
       };
     }
     return invoke("seq2seq_config_update", {

@@ -161,6 +161,10 @@ struct Seq2SeqConfig {
     is_configured: bool,
     is_valid: bool,
     is_enabled: bool,
+    #[serde(default)]
+    runtime_available: bool,
+    #[serde(default)]
+    is_ready: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1822,11 +1826,13 @@ mod tests {
 
     #[test]
     fn seq2seq_config_serialization_includes_is_enabled() {
-        let json_str = r#"{"model_dir":"/path/to/model","is_configured":true,"is_valid":true,"is_enabled":false}"#;
+        let json_str = r#"{"model_dir":"/path/to/model","is_configured":true,"is_valid":true,"is_enabled":false,"runtime_available":true,"is_ready":true}"#;
         let config: Seq2SeqConfig = serde_json::from_str(json_str).expect("deserialize config");
         assert_eq!(config.model_dir, "/path/to/model");
         assert!(config.is_configured);
         assert!(config.is_valid);
         assert!(!config.is_enabled);
+        assert!(config.runtime_available);
+        assert!(config.is_ready);
     }
 }

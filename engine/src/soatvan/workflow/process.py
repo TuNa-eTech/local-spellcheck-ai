@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import sys
 import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -103,8 +104,16 @@ class ProcessDocument:
         # Produces additional findings from vn-spell-correction-small without
         # requiring cloud AI or a GGUF model to be installed.
         if request.use_seq2seq and self._seq2seq is not None and self._seq2seq.is_ready():
+            sys.stderr.write(
+                f"[SoatVan-Process] Running Seq2Seq spell-check pass on {len(blocks)} block(s)...\n"
+            )
+            sys.stderr.flush()
             progress("seq2seq", 55, "job.seq2seq_correction")
             seq2seq_findings = self._seq2seq.check_blocks(blocks, ignored_words, cancel)
+            sys.stderr.write(
+                f"[SoatVan-Process] Seq2Seq spell-check finished with {len(seq2seq_findings)} finding(s).\n"
+            )
+            sys.stderr.flush()
             findings = _merge_seq2seq_findings(findings, seq2seq_findings)
             cancel.raise_if_cancelled()
 

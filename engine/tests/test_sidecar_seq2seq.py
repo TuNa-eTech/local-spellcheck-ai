@@ -13,6 +13,8 @@ def test_sidecar_seq2seq_config_get_and_update(tmp_path: Path) -> None:
     assert res["is_configured"] is False
     assert res["is_valid"] is False
     assert res["is_enabled"] is True
+    assert "runtime_available" in res
+    assert "is_ready" in res
 
     # 2. Update model_dir
     model_dir = tmp_path / "model"
@@ -24,15 +26,21 @@ def test_sidecar_seq2seq_config_get_and_update(tmp_path: Path) -> None:
     assert res["is_configured"] is True
     assert res["is_valid"] is True
     assert res["is_enabled"] is True
+    assert "runtime_available" in res
+    assert "is_ready" in res
 
     # 3. Update is_enabled only
     res = sidecar.seq2seq_config_update({"is_enabled": False})
     assert res["model_dir"] == str(model_dir)
     assert res["is_enabled"] is False
+    assert "runtime_available" in res
+    assert "is_ready" in res
 
     # 4. Verify get returns updated state
     res = sidecar.seq2seq_config_get({})
     assert res["is_enabled"] is False
+    assert "runtime_available" in res
+    assert "is_ready" in res
 
 
 def test_sidecar_run_job_disables_seq2seq_when_is_enabled_false(tmp_path: Path) -> None:

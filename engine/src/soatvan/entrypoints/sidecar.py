@@ -25,6 +25,7 @@ from soatvan.models import (
     runtime_available,
     test_ai_connection,
 )
+from soatvan.models.seq2seq_speller import is_transformers_available
 from soatvan.workflow import ProcessDocument, ProcessRequest
 from soatvan.workflow.ports import ContextClassifier
 
@@ -182,24 +183,36 @@ class Sidecar:
 
     def _run_job(self, job_id: str, params: dict[str, Any], token: Token) -> None:
         temporary_output = Path(params["temporary_output_path"])
+        _seq2seq_cfg = self.seq2seq_config_repo.get_config()
+        seq2seq_ready = self.seq2seq is not None and self.seq2seq.is_ready()
+        use_seq2seq = seq2seq_ready and _seq2seq_cfg.is_enabled
         sys.stderr.write(
             f"[SoatVan-Sidecar] _run_job starting: use_model={params.get('use_model')}, "
-            f"full_review={params.get('full_review')}, custom_prompt={params.get('custom_prompt')!r}\n"
+            f"full_review={params.get('full_review')}, use_seq2seq={use_seq2seq} "
+            f"(enabled={_seq2seq_cfg.is_enabled}, ready={seq2seq_ready}, "
+            f"transformers={is_transformers_available()}), "
+            f"custom_prompt={params.get('custom_prompt')!r}\n"
         )
+        if _seq2seq_cfg.is_enabled and not seq2seq_ready:
+            if not is_transformers_available():
+                sys.stderr.write(
+                    "[SoatVan-Sidecar] WARNING: Seq2Seq is enabled in settings but skipped because "
+                    "'torch' or 'transformers' is not installed in the Python engine environment.\n"
+                )
+            elif not _seq2seq_cfg.is_valid():
+                sys.stderr.write(
+                    f"[SoatVan-Sidecar] WARNING: Seq2Seq is enabled in settings but skipped because "
+                    f"config.json is missing in model_dir {_seq2seq_cfg.model_dir!r}.\n"
+                )
         sys.stderr.flush()
         try:
-            _seq2seq_cfg = self.seq2seq_config_repo.get_config()
             request = ProcessRequest(
                 source=Path(params["source_path"]),
                 temporary_output=temporary_output,
                 preset=Preset(params.get("preset", "standard")),
                 rule_config=_rule_config(params.get("rule_config")),
                 use_model=_boolean_param(params, "use_model"),
-                use_seq2seq=(
-                    self.seq2seq is not None
-                    and self.seq2seq.is_ready()
-                    and _seq2seq_cfg.is_enabled
-                ),
+                use_seq2seq=use_seq2seq,
                 custom_prompt=_custom_prompt(params.get("custom_prompt", "")),
                 ignored_words=_ignored_words(params.get("ignored_words", [])),
                 full_review=_boolean_param(params, "full_review"),
@@ -480,6 +493,8 @@ class Sidecar:
             "is_configured": cfg.is_configured,
             "is_valid": cfg.is_valid(),
             "is_enabled": cfg.is_enabled,
+            "runtime_available": is_transformers_available(),
+            "is_ready": (self.seq2seq.is_ready() if self.seq2seq else False),
         }
 
     def seq2seq_config_update(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -504,6 +519,8 @@ class Sidecar:
             "is_configured": cfg.is_configured,
             "is_valid": cfg.is_valid(),
             "is_enabled": cfg.is_enabled,
+            "runtime_available": is_transformers_available(),
+            "is_ready": (self.seq2seq.is_ready() if self.seq2seq else False),
         }
 
 

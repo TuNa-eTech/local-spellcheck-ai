@@ -1426,5 +1426,27 @@ describe("four-step desktop workflow", () => {
     expect(toggle.disabled).toBe(true);
     expect(document.querySelector("#seq2seq-status-title")?.textContent).toBe("✕ Thư mục không hợp lệ (không tìm thấy config.json)");
   });
+
+  it("disables seq2seq toggle and shows warning when runtime is missing", async () => {
+    await loadApp({
+      seq2seqConfigGet: () => Promise.resolve({
+        model_dir: "C:\\valid\\path",
+        is_configured: true,
+        is_valid: true,
+        is_enabled: true,
+        runtime_available: false,
+        is_ready: false,
+      }),
+    });
+    document.querySelector<HTMLButtonElement>("#settings")!.click();
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-settings-section="seq2seq"]')?.disabled).toBe(false));
+    document.querySelector<HTMLButtonElement>('[data-settings-section="seq2seq"]')!.click();
+    await vi.waitFor(() => expect(document.querySelector("#seq2seq-toggle-enabled")).not.toBeNull());
+
+    const toggle = document.querySelector<HTMLInputElement>("#seq2seq-toggle-enabled")!;
+    expect(toggle.disabled).toBe(true);
+    expect(document.querySelector("#seq2seq-status-title")?.textContent).toBe("⚠️ Chưa cài đặt PyTorch & Transformers trong môi trường Python");
+    expect(document.body.textContent).toContain("Môi trường Python chưa cài đặt PyTorch và Transformers");
+  });
 });
 
