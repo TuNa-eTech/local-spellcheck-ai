@@ -19,9 +19,12 @@ from soatvan.workflow.ports import (
 )
 
 from .review import (
+    LIGHTWEIGHT_REVIEW_SCHEMA,
     LLM_ONLY_REVIEW_SCHEMA,
     REVIEW_SCHEMA,
     ReviewChunk,
+    lightweight_review_messages,
+    parse_lightweight_content,
     parse_review_content,
     plan_review_chunks,
     review_messages,
@@ -259,6 +262,7 @@ class LlamaCppClassifier:
         manifest: dict[str, Any],
         runtime_factory: RuntimeFactory = _default_runtime_factory,
     ) -> None:
+        self._lightweight_mode = manifest.get("review_mode") == "lightweight"
         self._version = f"model-{manifest['model_id']}@{manifest['version']}"
         self._minimum_confidence = float(manifest.get("minimum_confidence", 0.5))
         self._batch_size = int(manifest.get("batch_size", 8))
@@ -279,15 +283,31 @@ class LlamaCppClassifier:
                 self._context_size - REVIEW_SAFETY_TOKENS - MIN_REVIEW_DOCUMENT_TOKENS,
             ),
         )
+        # Lightweight mode: error list output is much smaller than full JSON,
+        # so cap output tokens to free more space for document text input.
+        if self._lightweight_mode:
+            self._review_output_tokens = min(
+                self._review_output_tokens,
+                max(256, self._context_size // 4),
+            )
         response_tokens = max(
             self._filter_output_tokens,
             self._review_output_tokens,
         )
+        configured_doc_tokens = int(manifest.get("review_chunk_tokens", 1200))
+        # Lightweight mode: the prompt is much shorter, so we can fit more
+        # document text per chunk.  Use input_tokens as the effective ceiling
+        # instead of the manifest cap that was tuned for the heavy JSON format.
+        if self._lightweight_mode:
+            lightweight_input = (
+                self._context_size - response_tokens - REVIEW_SAFETY_TOKENS
+            )
+            configured_doc_tokens = max(configured_doc_tokens, lightweight_input)
         self._review_budget = ReviewBudget(
             context_tokens=self._context_size,
             response_tokens=response_tokens,
             safety_tokens=REVIEW_SAFETY_TOKENS,
-            document_tokens=int(manifest.get("review_chunk_tokens", 1200)),
+            document_tokens=configured_doc_tokens,
         )
         self._runtime = runtime_factory(model_path, self._context_size, self._seed)
         self._lock = threading.Lock()
@@ -499,16 +519,23 @@ class LlamaCppClassifier:
         if callable(set_abort):
             set_abort(should_abort)
         llm_only = not chunk.candidates
+        use_lightweight = self._lightweight_mode and llm_only
+        if use_lightweight:
+            messages = lightweight_review_messages(chunk)
+            schema = LIGHTWEIGHT_REVIEW_SCHEMA
+        else:
+            messages = review_messages(chunk)
+            schema = LLM_ONLY_REVIEW_SCHEMA if llm_only else REVIEW_SCHEMA
         try:
             completion = self._runtime.create_chat_completion(
-                messages=review_messages(chunk),
+                messages=messages,
                 temperature=0,
                 seed=self._seed,
                 max_tokens=self._review_output_tokens,
                 stream=True,
                 response_format={
                     "type": "json_object",
-                    "schema": LLM_ONLY_REVIEW_SCHEMA if llm_only else REVIEW_SCHEMA,
+                    "schema": schema,
                 },
             )
             raw = _collect_stream(completion, cancellation, deadline)
@@ -533,7 +560,10 @@ class LlamaCppClassifier:
             if not isinstance(abort_reason[0], ModelInferenceTimeout):
                 raise abort_reason[0]
             return None, "timeout"
-        parsed = parse_review_content(_response_content(raw), chunk)
+        if use_lightweight:
+            parsed = parse_lightweight_content(_response_content(raw), chunk)
+        else:
+            parsed = parse_review_content(_response_content(raw), chunk)
         return (parsed, None) if parsed is not None else (None, "invalid_output")
 
     def _count_tokens(self, value: str) -> int:
@@ -562,6 +592,8 @@ class LlamaCppClassifier:
         )
 
     def _count_review_request_tokens(self, chunk: ReviewChunk) -> int:
+        if self._lightweight_mode and not chunk.candidates:
+            return self._count_chat_tokens(lightweight_review_messages(chunk))
         return self._count_chat_tokens(review_messages(chunk))
 
     def _ensure_classification_request_fits(

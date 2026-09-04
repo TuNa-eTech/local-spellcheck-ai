@@ -1591,3 +1591,219 @@ def test_review_limit_reserves_quota_for_ai_discoveries() -> None:
 
     limited = _limit_review_findings([rule_left, rule_right, ai], [block], 2)
     assert {item.id for item in limited} == {"ai", "rule-left"}
+
+
+# ---------------------------------------------------------------------------
+# Lightweight review mode tests
+# ---------------------------------------------------------------------------
+
+
+def test_parse_lightweight_basic() -> None:
+    """A simple error list is parsed into correct DiscoveryProposals."""
+    from soatvan.models.review import parse_lightweight_content
+
+    seg = ReviewSegment("b@0:50", "b", 0, 0, "Thực hiện theo quyết địnhh số 123", "paragraph")
+    chunk = ReviewChunk("c1", (seg,), (), (), "")
+    content = '[{"s":"quyết địnhh","r":"quyết định"}]'
+    result = parse_lightweight_content(content, chunk)
+    assert result is not None
+    verdicts, discoveries = result
+    assert len(verdicts) == 0
+    assert len(discoveries) == 1
+    d = discoveries[0]
+    assert d.block_id == "b"
+    assert d.source_text == "quyết địnhh"
+    assert d.suggestion == "quyết định"
+    assert d.start == 15
+    assert d.end == 26
+
+
+def test_parse_lightweight_multiple_occurrences() -> None:
+    """Same error appearing twice in text produces two discoveries."""
+    from soatvan.models.review import parse_lightweight_content
+
+    text = "quyết địnhh số 1 và quyết địnhh số 2"
+    seg = ReviewSegment("b@0:50", "b", 0, 0, text, "paragraph")
+    chunk = ReviewChunk("c1", (seg,), (), (), "")
+    content = '[{"s":"quyết địnhh","r":"quyết định"}]'
+    result = parse_lightweight_content(content, chunk)
+    assert result is not None
+    _, discoveries = result
+    assert len(discoveries) == 2
+    starts = sorted(d.start for d in discoveries)
+    assert starts[0] == 0
+    assert starts[1] == 20
+
+
+def test_parse_lightweight_src_not_found_is_skipped() -> None:
+    """An error whose src text is not found in the segment is silently dropped."""
+    from soatvan.models.review import parse_lightweight_content
+
+    seg = ReviewSegment("b@0:20", "b", 0, 0, "Văn bản đúng hoàn toàn", "paragraph")
+    chunk = ReviewChunk("c1", (seg,), (), (), "")
+    content = '[{"s":"không tồn tại","r":"gì đó"}]'
+    result = parse_lightweight_content(content, chunk)
+    assert result is not None
+    _, discoveries = result
+    assert len(discoveries) == 0
+
+
+def test_parse_lightweight_src_equals_fix_is_skipped() -> None:
+    """An identity edit (src == fix) is rejected."""
+    from soatvan.models.review import parse_lightweight_content
+
+    seg = ReviewSegment("b@0:20", "b", 0, 0, "quyết định số 123", "paragraph")
+    chunk = ReviewChunk("c1", (seg,), (), (), "")
+    content = '[{"s":"quyết định","r":"quyết định"}]'
+    result = parse_lightweight_content(content, chunk)
+    assert result is not None
+    _, discoveries = result
+    assert len(discoveries) == 0
+
+
+def test_parse_lightweight_invalid_json_returns_none() -> None:
+    """Malformed JSON output triggers a retry (returns None)."""
+    from soatvan.models.review import parse_lightweight_content
+
+    seg = ReviewSegment("b@0:20", "b", 0, 0, "bất kỳ", "paragraph")
+    chunk = ReviewChunk("c1", (seg,), (), (), "")
+    assert parse_lightweight_content("not json", chunk) is None
+    assert parse_lightweight_content("{}", chunk) is None
+
+
+def test_parse_lightweight_auto_categorize() -> None:
+    """Category is auto-detected from the edit shape."""
+    from soatvan.models.review import parse_lightweight_content
+
+    seg = ReviewSegment("b@0:30", "b", 0, 0, "Nội  dung văn bản thọai", "paragraph")
+    chunk = ReviewChunk("c1", (seg,), (), (), "")
+    content = '[{"s":"Nội  dung","r":"Nội dung"},{"s":"thọai","r":"thoại"}]'
+    result = parse_lightweight_content(content, chunk)
+    assert result is not None
+    _, discoveries = result
+    cats = {d.source_text: (d.category, d.reason_code) for d in discoveries}
+    assert cats["Nội  dung"] == ("technical", "spacing")
+    assert cats["thọai"] == ("spelling", "diacritic")
+
+
+def test_parse_lightweight_dedup() -> None:
+    """Duplicate items in the LLM output are deduplicated."""
+    from soatvan.models.review import parse_lightweight_content
+
+    seg = ReviewSegment("b@0:30", "b", 0, 0, "quyết địnhh số 123", "paragraph")
+    chunk = ReviewChunk("c1", (seg,), (), (), "")
+    content = '[{"s":"quyết địnhh","r":"quyết định"},{"s":"quyết địnhh","r":"quyết định"}]'
+    result = parse_lightweight_content(content, chunk)
+    assert result is not None
+    _, discoveries = result
+    assert len(discoveries) == 1
+
+
+def test_lightweight_payload_returns_plain_text() -> None:
+    """lightweight_payload() returns only target text, no JSON overhead."""
+    seg1 = ReviewSegment("b@0:10", "b", 0, 0, "Đoạn một", "paragraph")
+    seg2 = ReviewSegment("b@10:20", "b", 0, 10, "Đoạn hai", "paragraph")
+    ctx = ReviewSegment("c@0:10", "c", 1, 0, "Ngữ cảnh", "paragraph")
+    chunk = ReviewChunk("c1", (seg1, seg2), (ctx,), (), "custom")
+    payload = chunk.lightweight_payload()
+    assert "Đoạn một" in payload
+    assert "Đoạn hai" in payload
+    assert "Ngữ cảnh" not in payload  # Context excluded
+
+
+def test_lightweight_messages_include_custom_prompt() -> None:
+    """lightweight_review_messages appends custom prompt to system message."""
+    from soatvan.models.review import LIGHTWEIGHT_REVIEW_SYSTEM_PROMPT, lightweight_review_messages
+
+    seg = ReviewSegment("b@0:10", "b", 0, 0, "Nội dung", "paragraph")
+    chunk = ReviewChunk("c1", (seg,), (), (), "Quy tắc riêng của tôi")
+    messages = lightweight_review_messages(chunk)
+    assert len(messages) == 2
+    assert messages[0]["role"] == "system"
+    assert LIGHTWEIGHT_REVIEW_SYSTEM_PROMPT in messages[0]["content"]
+    assert "Quy tắc riêng của tôi" in messages[0]["content"]
+    assert messages[1]["role"] == "user"
+    assert messages[1]["content"] == "Nội dung"
+
+
+def test_classifier_lightweight_mode_reduces_output_tokens() -> None:
+    """When review_mode=lightweight, output tokens are capped to free input space."""
+    manifest = {
+        "model_id": "test",
+        "version": "1",
+        "context_size": 4096,
+        "review_mode": "lightweight",
+    }
+    runtime = Runtime('[{"s":"x","r":"y"}]')
+    classifier = LlamaCppClassifier(
+        Path("/fake"), manifest, lambda *_: runtime
+    )
+    # With 4096 context, lightweight caps output at max(256, 4096//4) = 1024
+    assert classifier._review_output_tokens == 1024
+    assert classifier._lightweight_mode is True
+    # document_tokens auto-expanded: max(500, 4096 - 1024 - 256) = 2816
+    assert classifier._review_budget.document_tokens == 2816
+
+
+def test_classifier_fallback_without_lightweight_flag() -> None:
+    """Without review_mode=lightweight, the old format is used."""
+    manifest = {
+        "model_id": "test",
+        "version": "1",
+        "context_size": 4096,
+    }
+    runtime = Runtime('{"discoveries":[]}')
+    classifier = LlamaCppClassifier(
+        Path("/fake"), manifest, lambda *_: runtime
+    )
+    assert classifier._lightweight_mode is False
+    # Default output tokens: min(2048, 4096 - 256 - 64) = 2048
+    assert classifier._review_output_tokens == 2048
+    # document_tokens: manifest default 1200 (not auto-expanded)
+    assert classifier._review_budget.document_tokens == 1200
+
+
+def test_classifier_lightweight_review_uses_compact_schema() -> None:
+    """In lightweight mode, the classifier sends compact messages and parses compact output."""
+    from soatvan.models.review import LIGHTWEIGHT_REVIEW_SCHEMA
+
+    manifest = {
+        "model_id": "test",
+        "version": "1",
+        "context_size": 4096,
+        "review_mode": "lightweight",
+    }
+    response = '[{"s":"địnhh","r":"định"}]'
+    runtime = Runtime(response)
+    classifier = LlamaCppClassifier(
+        Path("/fake"), manifest, lambda *_: runtime
+    )
+
+    blocks = (Block("p0", "quyết địnhh số 123"),)
+    result = classifier.review(blocks, (), "", Token())
+    assert len(runtime.calls) == 1
+    call = runtime.calls[0]
+    # Verify compact schema was used
+    assert call["response_format"]["schema"] is LIGHTWEIGHT_REVIEW_SCHEMA
+    # Verify system message uses lightweight prompt
+    system_msg = call["messages"][0]["content"]
+    assert "Trả JSON array" in system_msg
+    # Verify discoveries were parsed
+    assert len(result.discoveries) == 1
+    assert result.discoveries[0].source_text == "địnhh"
+    assert result.discoveries[0].suggestion == "định"
+
+
+def test_parse_lightweight_with_segment_offset() -> None:
+    """Segment source_start offset is correctly applied to discovery positions."""
+    from soatvan.models.review import parse_lightweight_content
+
+    seg = ReviewSegment("b@100:150", "b", 0, 100, "quyết địnhh số", "paragraph")
+    chunk = ReviewChunk("c1", (seg,), (), (), "")
+    content = '[{"s":"địnhh","r":"định"}]'
+    result = parse_lightweight_content(content, chunk)
+    assert result is not None
+    _, discoveries = result
+    assert len(discoveries) == 1
+    assert discoveries[0].start == 106  # 100 + 6
+    assert discoveries[0].end == 111  # 100 + 6 + 5

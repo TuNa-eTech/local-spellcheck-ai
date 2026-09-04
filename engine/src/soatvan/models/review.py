@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from soatvan.checking.domain import Block
-from soatvan.checking.localization import localize_llm_edits
+from soatvan.checking.localization import canonicalize_llm_edit, localize_llm_edits
 from soatvan.models.review_budget import (
     MIN_REVIEW_DOCUMENT_TOKENS,
     ReviewBudget,
@@ -56,6 +56,20 @@ LLM_ONLY_REVIEW_SYSTEM_PROMPT = (
     "segment_id và không dùng offset. Chỉ trả JSON theo schema: {\"discoveries\": [{\"segment_id\": \"...\", \"source_text\": \"...\", \"suggestion\": \"...\", \"category\": \"spelling\", \"occurrence_index\": 0}]}. "
     'Nếu không có lỗi, trả {"discoveries":[]}. Dùng category=technical cho lỗi khoảng '
     "trắng, dấu câu hoặc lặp từ."
+)
+
+LIGHTWEIGHT_REVIEW_SYSTEM_PROMPT = (
+    "Kiểm tra chính tả tiếng Việt. Tìm TẤT CẢ lỗi trong text: "
+    "chính tả, dấu hỏi ngã, phụ âm đầu (ch/tr, s/x, d/gi/r, l/n), "
+    "vần và âm cuối (n/ng, c/t), gõ phím/telex/dính chữ, viết hoa "
+    "cơ quan/chức vụ/điều khoản theo NĐ 30/2020, dấu câu, khoảng trắng, "
+    "lặp từ, ngữ pháp và dùng từ.\n"
+    "KHÔNG sửa ALL CAPS ở Quốc hiệu, Tiêu ngữ, Tên cơ quan, Tiêu đề.\n"
+    'Trả JSON array: [{"s":"cụm sai ngắn nhất","r":"cách sửa"}]\n'
+    "- s: copy nguyên văn từ text, gồm từ liền kề nếu lỗi là dấu câu/khoảng trắng\n"
+    "- s phải khác r, không trả s giống r\n"
+    "- Không có lỗi trả []\n"
+    "Chỉ trả JSON, không giải thích."
 )
 
 MAX_REVIEW_CANDIDATES = 64
@@ -155,6 +169,20 @@ LLM_ONLY_REVIEW_SCHEMA = {
     "properties": {"discoveries": DISCOVERY_ITEMS_SCHEMA},
 }
 
+LIGHTWEIGHT_REVIEW_SCHEMA = {
+    "type": "array",
+    "maxItems": 64,
+    "items": {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["s", "r"],
+        "properties": {
+            "s": {"type": "string", "minLength": 1, "maxLength": 96},
+            "r": {"type": "string", "maxLength": 96},
+        },
+    },
+}
+
 
 @dataclass(frozen=True, slots=True)
 class ReviewSegment:
@@ -207,6 +235,14 @@ class ReviewChunk:
             ]
         return payload
 
+    def lightweight_payload(self) -> str:
+        """Return plain text for lightweight review — no JSON wrapping."""
+        ordered = sorted(
+            self.targets,
+            key=lambda item: (item.order, item.source_start, item.segment_id),
+        )
+        return "\n".join(item.text for item in ordered)
+
 
 def review_messages(chunk: ReviewChunk) -> list[dict[str, str]]:
     llm_only = not chunk.candidates
@@ -219,6 +255,19 @@ def review_messages(chunk: ReviewChunk) -> list[dict[str, str]]:
             "role": "user",
             "content": json.dumps(chunk.payload(), ensure_ascii=False, separators=(",", ":")),
         },
+    ]
+
+
+def lightweight_review_messages(
+    chunk: ReviewChunk,
+) -> list[dict[str, str]]:
+    """Build compact messages for lightweight review: short prompt + plain text."""
+    system = LIGHTWEIGHT_REVIEW_SYSTEM_PROMPT
+    if chunk.custom_prompt:
+        system += f"\nQuy tắc riêng: {chunk.custom_prompt}"
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": chunk.lightweight_payload()},
     ]
 
 
@@ -466,6 +515,77 @@ def parse_review_content(
                 )
             )
     return tuple(verdicts), tuple(discoveries)
+
+
+def parse_lightweight_content(
+    content: str, chunk: ReviewChunk
+) -> tuple[tuple[ClassifierVerdict, ...], tuple[DiscoveryProposal, ...]] | None:
+    """Parse lightweight error-list format: ``[{"s": "...", "r": "..."}]``."""
+    try:
+        items = json.loads(content)
+    except (TypeError, json.JSONDecodeError):
+        return None
+
+    # Accept both bare array and object wrappers that small models sometimes emit.
+    if isinstance(items, dict):
+        items = items.get("errors", items.get("discoveries", None))
+    if not isinstance(items, list) or len(items) > 64:
+        return None
+
+    discoveries: list[DiscoveryProposal] = []
+    seen: set[tuple[str, int, int, str]] = set()
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        src = item.get("s", "")
+        fix = item.get("r", "")
+        if (
+            not isinstance(src, str)
+            or not isinstance(fix, str)
+            or not src
+            or src == fix
+            or len(src) > 96
+            or len(fix) > 96
+            or _has_unsafe_xml_character(src)
+            or _has_unsafe_xml_character(fix)
+        ):
+            continue
+
+        category, reason_code = _auto_categorize(src, fix)
+
+        # Search through target segments for all occurrences of ``src``.
+        for seg in chunk.targets:
+            search_start = 0
+            while True:
+                local_pos = seg.text.find(src, search_start)
+                if local_pos < 0:
+                    break
+                start = seg.source_start + local_pos
+                end = start + len(src)
+                key = (seg.block_id, start, end, fix)
+                if key not in seen:
+                    seen.add(key)
+                    discoveries.append(
+                        DiscoveryProposal(
+                            seg.block_id,
+                            start,
+                            end,
+                            src,
+                            fix,
+                            category,
+                            reason_code,
+                            0.9,
+                        )
+                    )
+                search_start = local_pos + len(src)
+
+    return ((), tuple(discoveries))
+
+
+def _auto_categorize(src: str, fix: str) -> tuple[str, str]:
+    """Derive category/reason_code from the actual edit shape."""
+    return canonicalize_llm_edit(src, fix, "spelling", "spelling")
 
 
 def split_llm_only_chunk(
