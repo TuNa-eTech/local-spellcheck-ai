@@ -186,11 +186,18 @@ try {
         $temporarySigningPfx = Join-Path ([System.IO.Path]::GetTempPath()) `
             "soatvan-signing-$PID-$([Guid]::NewGuid().ToString('N')).pfx"
         try {
-            $pfxBytes = [Convert]::FromBase64String($env:SOATVAN_WINDOWS_CERT_PFX_BASE64)
+            $base64Text = $env:SOATVAN_WINDOWS_CERT_PFX_BASE64.Trim("`" `' `r`n`t ")
+            $base64Text = $base64Text -replace '(?m)^-----.*?-----$', ''
+            $base64Text = ($base64Text -replace '\s+', '')
+            $base64Text = $base64Text.Replace('-', '+').Replace('_', '/')
+            while ($base64Text.Length % 4 -ne 0) {
+                $base64Text += '='
+            }
+            $pfxBytes = [Convert]::FromBase64String($base64Text)
             [System.IO.File]::WriteAllBytes($temporarySigningPfx, $pfxBytes)
         }
         catch {
-            throw "SOATVAN_WINDOWS_CERT_PFX_BASE64 khong hop le."
+            throw "SOATVAN_WINDOWS_CERT_PFX_BASE64 khong hop le: $($_.Exception.Message)"
         }
         $signingPfxPath = $temporarySigningPfx
     }
