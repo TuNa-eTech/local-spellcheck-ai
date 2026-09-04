@@ -239,22 +239,79 @@ try {
     if (-not $certificate) {
         Write-Host "Dang tao self-signed certificate cho build ca nhan: $personalCertificateSubject"
         $certPassword = [System.Guid]::NewGuid().ToString("N")
-        $securePassword = ConvertTo-SecureString -String $certPassword -AsPlainText -Force
-        $tempCert = New-SelfSignedCertificate `
-            -Type CodeSigningCert `
-            -Subject $personalCertificateSubject `
-            -FriendlyName "SoatVan Personal Code Signing" `
-            -CertStoreLocation "Cert:\CurrentUser\My" `
-            -KeyAlgorithm RSA `
-            -KeyLength 3072 `
-            -HashAlgorithm SHA256 `
-            -NotAfter (Get-Date).AddYears(5)
-        $generatedTempCertThumbprint = $tempCert.Thumbprint
         $temporarySigningPfx = Join-Path ([System.IO.Path]::GetTempPath()) `
             "soatvan-generated-$PID-$([Guid]::NewGuid().ToString('N')).pfx"
-        Export-PfxCertificate -Cert $tempCert -FilePath $temporarySigningPfx -Password $securePassword | Out-Null
+
+        $created = $false
+        try {
+            Add-Type -AssemblyName System.Core, System.Security -ErrorAction SilentlyContinue
+            $distinguishedName = [System.Security.Cryptography.X509Certificates.X500DistinguishedName]::new($personalCertificateSubject)
+            $rsa = [System.Security.Cryptography.RSA]::Create(3072)
+            $req = [System.Security.Cryptography.X509Certificates.CertificateRequest]::new(
+                $distinguishedName,
+                $rsa,
+                [System.Security.Cryptography.HashAlgorithmName]::SHA256,
+                [System.Security.Cryptography.RSASignaturePadding]::Pkcs1
+            )
+
+            $ekuOids = [System.Security.Cryptography.OidCollection]::new()
+            $ekuOids.Add([System.Security.Cryptography.Oid]::new("1.3.6.1.5.5.7.3.3"))
+            $req.CertificateExtensions.Add(
+                [System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]::new($ekuOids, $false)
+            )
+
+            $req.CertificateExtensions.Add(
+                [System.Security.Cryptography.X509Certificates.X509KeyUsageExtension]::new(
+                    [System.Security.Cryptography.X509Certificates.X509KeyUsageFlags]::DigitalSignature,
+                    $true
+                )
+            )
+
+            $now = [System.DateTimeOffset]::UtcNow
+            $certWithKey = $req.CreateSelfSigned($now, $now.AddYears(5))
+            $pfxBytes = $certWithKey.Export(
+                [System.Security.Cryptography.X509Certificates.X509ContentType]::Pfx,
+                $certPassword
+            )
+            [System.IO.File]::WriteAllBytes($temporarySigningPfx, $pfxBytes)
+            $certWithKey.Dispose()
+            $rsa.Dispose()
+            $created = $true
+        }
+        catch {
+            Write-Warning "CertificateRequest that bai ($($_.Exception.Message)), thu bang openssl..."
+        }
+
+        if (-not $created) {
+            $openssl = (Get-Command "openssl.exe" -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source)
+            if (-not $openssl -and (Test-Path "C:\Program Files\Git\usr\bin\openssl.exe")) {
+                $openssl = "C:\Program Files\Git\usr\bin\openssl.exe"
+            }
+            if ($openssl) {
+                $tempKey = Join-Path ([System.IO.Path]::GetTempPath()) "soatvan-temp-$PID.key"
+                $tempCrt = Join-Path ([System.IO.Path]::GetTempPath()) "soatvan-temp-$PID.crt"
+                try {
+                    & $openssl req -x509 -newkey rsa:3072 -keyout $tempKey -out $tempCrt -days 1825 -nodes `
+                        -subj "/CN=SoatVan Personal Use" `
+                        -addext "extendedKeyUsage = codeSigning"
+                    & $openssl pkcs12 -export -out $temporarySigningPfx -inkey $tempKey -in $tempCrt `
+                        -passout "pass:$certPassword"
+                    $created = $true
+                }
+                finally {
+                    Remove-Item -LiteralPath $tempKey -Force -ErrorAction SilentlyContinue
+                    Remove-Item -LiteralPath $tempCrt -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+
+        if (-not $created -or -not (Test-Path -LiteralPath $temporarySigningPfx -PathType Leaf)) {
+            throw "Khong the tao self-signed certificate bang ca CertificateRequest va OpenSSL."
+        }
+
         $keyFlags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::UserKeySet -bor `
-            [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistKeySet
+            [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistKeySet -bor `
+            [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable
         $certificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(
             $temporarySigningPfx,
             $certPassword,
