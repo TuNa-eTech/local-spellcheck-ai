@@ -193,7 +193,10 @@ try {
     }
     $connections = @(
         Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue |
-            Where-Object { $ownedIds.Contains([int]$_.OwningProcess) }
+            Where-Object {
+                $ownedIds.Contains([int]$_.OwningProcess) -and
+                $_.RemoteAddress -notmatch '^(127\.|::1)'
+            }
     )
     if ($connections.Count -ne 0) {
         throw "Unexpected application egress: $($connections | Out-String)"
