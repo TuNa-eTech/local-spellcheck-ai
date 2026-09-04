@@ -332,12 +332,16 @@ try {
         $temporaryRootCertificate,
         $certificate.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert)
     )
-    Write-Host "Dang trust public certificate bang certutil CurrentUser\Root"
-    Invoke-Checked "certutil.exe" @(
-        "-user", "-f", "-addstore", "Root", $temporaryRootCertificate
-    )
-    $rootCertificateAdded = $true
-    Write-Host "Da trust public certificate bang certutil CurrentUser\Root"
+    Write-Host "Dang trust public certificate vao Root (LocalMachine)"
+    try {
+        Import-Certificate -FilePath $temporaryRootCertificate -CertStoreLocation "Cert:\LocalMachine\Root" -ErrorAction Stop | Out-Null
+        $rootCertificateAdded = $true
+    }
+    catch {
+        & "certutil.exe" -f -addstore Root $temporaryRootCertificate | Out-Null
+        $rootCertificateAdded = $true
+    }
+    Write-Host "Da trust public certificate vao Root"
     $signToolPath = Get-SignToolPath
 
     $engineFilesToSign = Get-ChildItem -LiteralPath $engineDistDir -Recurse -File |
@@ -421,7 +425,10 @@ try {
 }
 finally {
     if ($rootCertificateAdded -and $certificateThumbprint) {
-        & "certutil.exe" -user -delstore Root $certificateThumbprint | Out-Null
+        Get-ChildItem -Path "Cert:\LocalMachine\Root" -ErrorAction SilentlyContinue |
+            Where-Object { $_.Thumbprint -eq $certificateThumbprint } |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+        & "certutil.exe" -f -delstore Root $certificateThumbprint | Out-Null
     }
     if ($certificateThumbprint) {
         foreach ($storeName in $addedCertificateStores) {
