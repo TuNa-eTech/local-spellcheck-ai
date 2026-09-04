@@ -119,3 +119,29 @@ def test_seq2seq_speller_check_block_multi_sentence_and_multi_error() -> None:
     assert f2.suggestion == "hỗ"
     assert f2.start == 31
     assert f2.end == 33
+
+
+def test_seq2seq_speller_unload_frees_resources() -> None:
+    from soatvan.workflow.seq2seq_provider import LocalSeq2SeqProvider
+
+    speller = Seq2SeqSpeller()
+    speller._tokenizer = MagicMock()
+    speller._model = MagicMock()
+    assert speller.is_loaded is True
+
+    speller.unload()
+    assert speller.is_loaded is False
+    assert speller._tokenizer is None
+    assert speller._model is None
+
+    # Idempotent call
+    speller.unload()
+    assert speller.is_loaded is False
+
+    # Provider unload delegates to speller
+    provider = LocalSeq2SeqProvider()
+    provider._speller._tokenizer = MagicMock()
+    provider._speller._model = MagicMock()
+    assert provider._speller.is_loaded is True
+    provider.unload()
+    assert provider._speller.is_loaded is False

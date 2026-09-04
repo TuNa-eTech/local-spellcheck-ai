@@ -97,6 +97,28 @@ class Seq2SeqSpeller:
         except Exception as exc:
             raise ModelLoadFailed(f"Failed to load model {self.model_id!r}: {exc}") from exc
 
+    def unload(self) -> None:
+        """Release tokenizer and model weights from memory and clear GPU/system cache."""
+        if not self.is_loaded:
+            return
+
+        self._model = None
+        self._tokenizer = None
+
+        import gc
+        gc.collect()
+
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                ipc_collect = getattr(torch.cuda, "ipc_collect", None)
+                if callable(ipc_collect):
+                    ipc_collect()
+        except Exception:
+            pass
+
     def predict(self, text: str) -> str:
         """Correct typos and restore diacritics in a single Vietnamese sentence."""
         if not text or not text.strip():

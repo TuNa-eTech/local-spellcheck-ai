@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sys
@@ -99,6 +100,9 @@ class DynamicClassifierProvider:
             return bool(active.api_key)
         return self._models.supports_full_review()
 
+    def deactivate(self) -> None:
+        self._models.deactivate()
+
 
 class Sidecar:
     def __init__(self, local_data: Path | None = None) -> None:
@@ -118,11 +122,17 @@ class Sidecar:
         self.classifiers = DynamicClassifierProvider(self.models, self.ai_config)
         self.seq2seq_config_repo = SqliteSeq2SeqConfigRepository(local_data / "preferences.db")
         _seq2seq_cfg = self.seq2seq_config_repo.get_config()
-        from soatvan.workflow.seq2seq_provider import LocalSeq2SeqProvider
+        from soatvan.workflow.seq2seq_provider import LocalSeq2SeqProvider, find_default_model_dir
+
+        effective_model_dir = _seq2seq_cfg.model_dir
+        if not effective_model_dir:
+            default_dir = find_default_model_dir()
+            if (default_dir / "config.json").exists():
+                effective_model_dir = str(default_dir)
 
         self.seq2seq = (
-            LocalSeq2SeqProvider(model_dir=_seq2seq_cfg.model_dir)
-            if _seq2seq_cfg.is_configured
+            LocalSeq2SeqProvider(model_dir=effective_model_dir)
+            if effective_model_dir
             else None
         )
         self.processor = ProcessDocument(
@@ -513,6 +523,9 @@ class Sidecar:
             is_enabled=is_enabled,
         )
         if model_dir is not None:
+            if self.seq2seq is not None:
+                with contextlib.suppress(Exception):
+                    self.seq2seq.unload()
             from soatvan.workflow.seq2seq_provider import LocalSeq2SeqProvider
 
             self.seq2seq = (

@@ -1897,10 +1897,9 @@ try {
 
   void Promise.allSettled([
     api.aiConfigGet(),
-    api.modelStatus(initialModelPreference),
     api.customRuleList(),
     api.seq2seqConfigGet().catch(() => null),
-  ]).then(([aiConfigRes, modelRes, rulesRes, seq2seqRes]) => {
+  ]).then(([aiConfigRes, rulesRes, seq2seqRes]) => {
     if (seq2seqRes.status === "fulfilled" && seq2seqRes.value) {
       state.seq2seqConfig = seq2seqRes.value;
     }
@@ -1913,13 +1912,6 @@ try {
         state.fullReview = true;
       }
     }
-    if (modelRes.status === "fulfilled" && modelSequence === modelOperationSequence && statusRequest === modelStatusRequestSequence) {
-      state.model = modelRes.value;
-      if (!isCloudActive()) {
-        state.useModel = initialModelPreference && modelCanFilter(modelRes.value);
-        state.fullReview = state.useModel && modelRes.value.capabilities?.full_review === true;
-      }
-    }
     if (rulesRes.status === "fulfilled" && customRuleSequence === customRuleOperationSequence && request === customRuleRequestSequence) {
       state.customRules = rulesRes.value;
       syncDefaultRuleSelection();
@@ -1927,6 +1919,19 @@ try {
     state.includeRuleFindings = false;
     clearUnavailableFullReview();
     render();
+
+    return api.modelStatus(initialModelPreference);
+  }).then((modelRes) => {
+    if (modelRes && modelSequence === modelOperationSequence && statusRequest === modelStatusRequestSequence) {
+      state.model = modelRes;
+      if (!isCloudActive()) {
+        state.useModel = initialModelPreference && modelCanFilter(modelRes);
+        state.fullReview = state.useModel && modelRes.capabilities?.full_review === true;
+      }
+      state.includeRuleFindings = false;
+      clearUnavailableFullReview();
+      render();
+    }
   }).catch(() => {});
 } catch { /* noop */ }
 

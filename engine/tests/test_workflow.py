@@ -224,3 +224,60 @@ def test_legacy_persistent_dictionary_no_longer_suppresses_findings(tmp_path: Pa
 
     assert any(item.source_text == "s\u00e1t nh\u1eadp" for item in documents.written)
     assert result.finding_count == 2
+
+
+def test_workflow_sequential_offload_seq2seq_and_llm(tmp_path: Path) -> None:
+    order_of_events: list[str] = []
+
+    class MockClassifiers:
+        def deactivate(self) -> None:
+            order_of_events.append("llm_deactivate")
+
+        def classifier(self) -> Classifier:
+            order_of_events.append("llm_start")
+            return Classifier()
+
+    class MockSeq2Seq:
+        def is_ready(self) -> bool:
+            return True
+
+        def check_blocks(self, blocks, ignored_words, cancellation):
+            del blocks, ignored_words, cancellation
+            order_of_events.append("seq2seq_check")
+            return []
+
+        def unload(self) -> None:
+            order_of_events.append("seq2seq_unload")
+
+    processor = ProcessDocument(
+        Documents(),
+        Dictionary(),
+        RuleEngine(),
+        classifiers=MockClassifiers(),
+        seq2seq=MockSeq2Seq(),
+    )
+
+    processor.execute(
+        ProcessRequest(
+            tmp_path / "source.docx",
+            tmp_path / "output.docx",
+            Preset.STANDARD,
+            use_model=True,
+            use_seq2seq=True,
+        ),
+        lambda *_: None,
+        Token(),
+    )
+
+    # Verifies sequential offload ordering:
+    # 1. Any existing LLM is deactivated before Seq2Seq runs
+    # 2. Seq2Seq runs check
+    # 3. Seq2Seq is unloaded to free memory
+    # 4. LLM is started fresh for the model pass
+    assert order_of_events == [
+        "llm_deactivate",
+        "seq2seq_check",
+        "seq2seq_unload",
+        "llm_start",
+    ]
+

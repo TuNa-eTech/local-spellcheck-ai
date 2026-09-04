@@ -104,6 +104,17 @@ class ProcessDocument:
         # Produces additional findings from vn-spell-correction-small without
         # requiring cloud AI or a GGUF model to be installed.
         if request.use_seq2seq and self._seq2seq is not None and self._seq2seq.is_ready():
+            # Sequential offload: deactivate local LLM if resident to allocate max memory for Seq2Seq
+            if self._classifiers is not None and hasattr(self._classifiers, "deactivate"):
+                try:
+                    self._classifiers.deactivate()
+                    sys.stderr.write(
+                        "[SoatVan-Process] Local LLM deactivated before Seq2Seq pass.\n"
+                    )
+                    sys.stderr.flush()
+                except Exception:
+                    pass
+
             sys.stderr.write(
                 f"[SoatVan-Process] Running Seq2Seq spell-check pass on {len(blocks)} block(s)...\n"
             )
@@ -123,6 +134,21 @@ class ProcessDocument:
                     f"[SoatVan-Process] WARNING: Seq2Seq pass failed ({exc}). Skipping Seq2Seq and continuing.\n"
                 )
                 sys.stderr.flush()
+            finally:
+                # Sequential offload: always unload Seq2Seq to free RAM/VRAM before LLM pass
+                unload_fn = getattr(self._seq2seq, "unload", None)
+                if callable(unload_fn):
+                    try:
+                        unload_fn()
+                        sys.stderr.write(
+                            "[SoatVan-Process] Seq2Seq model unloaded from memory to free RAM/VRAM.\n"
+                        )
+                        sys.stderr.flush()
+                    except Exception as unload_exc:
+                        sys.stderr.write(
+                            f"[SoatVan-Process] WARNING: Seq2Seq unload failed: {unload_exc}\n"
+                        )
+                        sys.stderr.flush()
             cancel.raise_if_cancelled()
 
         review_summary: dict[str, int | str] | None = None

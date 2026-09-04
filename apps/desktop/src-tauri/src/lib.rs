@@ -542,7 +542,7 @@ fn open_output(
 async fn custom_rule_list(state: State<'_, AppState>) -> AppResult<Vec<CustomRule>> {
     let value = state
         .engine
-        .call("custom_rule.list", json!({}), Duration::from_secs(5))?;
+        .call("custom_rule.list", json!({}), Duration::from_secs(30))?;
     Ok(serde_json::from_value(value["entries"].clone())?)
 }
 
@@ -557,7 +557,7 @@ async fn custom_rule_upsert(
     Ok(serde_json::from_value(state.engine.call(
         "custom_rule.upsert",
         json!({"id": id, "title": title, "prompt": prompt, "is_default": is_default}),
-        Duration::from_secs(5),
+        Duration::from_secs(30),
     )?)?)
 }
 
@@ -566,7 +566,7 @@ async fn custom_rule_delete(id: String, state: State<'_, AppState>) -> AppResult
     Ok(state.engine.call(
         "custom_rule.delete",
         json!({"id": id}),
-        Duration::from_secs(5),
+        Duration::from_secs(30),
     )?["deleted"]
         .as_bool()
         .unwrap_or(false))
@@ -576,7 +576,7 @@ async fn custom_rule_delete(id: String, state: State<'_, AppState>) -> AppResult
 async fn ai_config_get(state: State<'_, AppState>) -> AppResult<AiConfigState> {
     let value = state
         .engine
-        .call("ai_config.get", json!({}), Duration::from_secs(5))?;
+        .call("ai_config.get", json!({}), Duration::from_secs(30))?;
     Ok(serde_json::from_value(value)?)
 }
 
@@ -608,7 +608,7 @@ async fn ai_config_update(
     }
     state
         .engine
-        .call("ai_config.update", params, Duration::from_secs(5))
+        .call("ai_config.update", params, Duration::from_secs(30))
 }
 
 #[tauri::command]
@@ -616,7 +616,7 @@ async fn ai_config_set_active(provider: String, state: State<'_, AppState>) -> A
     state.engine.call(
         "ai_config.set_active",
         json!({"provider": provider}),
-        Duration::from_secs(5),
+        Duration::from_secs(30),
     )
 }
 
@@ -642,7 +642,7 @@ async fn ai_config_test_connection(
     }
     let value = state
         .engine
-        .call("ai_config.test_connection", params, Duration::from_secs(20))?;
+        .call("ai_config.test_connection", params, Duration::from_secs(30))?;
     Ok(serde_json::from_value(value)?)
 }
 
@@ -650,7 +650,7 @@ async fn ai_config_test_connection(
 async fn seq2seq_config_get(state: State<'_, AppState>) -> AppResult<Seq2SeqConfig> {
     let result = state
         .engine
-        .call("seq2seq_config.get", json!({}), Duration::from_secs(5))?;
+        .call("seq2seq_config.get", json!({}), Duration::from_secs(30))?;
     Ok(serde_json::from_value(result)?)
 }
 
@@ -669,7 +669,7 @@ async fn seq2seq_config_update(
     }
     let result = state
         .engine
-        .call("seq2seq_config.update", params, Duration::from_secs(5))?;
+        .call("seq2seq_config.update", params, Duration::from_secs(30))?;
     Ok(serde_json::from_value(result)?)
 }
 

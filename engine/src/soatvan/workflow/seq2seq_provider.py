@@ -9,6 +9,7 @@ Usage:
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from soatvan.checking.domain import Block, Finding
@@ -16,6 +17,25 @@ from soatvan.models.seq2seq_speller import Seq2SeqSpeller, is_transformers_avail
 from soatvan.workflow.ports import CancellationToken
 
 DEFAULT_MODEL_DIR = Path.home() / ".config" / "soatvan" / "models" / "vn-spell-correction-small"
+
+
+def find_default_model_dir() -> Path:
+    """Find the best default path for the vn-spell-correction-small model."""
+    candidates = [
+        # Relative to project repo root
+        Path(__file__).resolve().parents[4] / "models" / "vn-spell-correction-small",
+        Path.cwd() / "models" / "vn-spell-correction-small",
+        (
+            Path(os.environ["LOCALAPPDATA"]) / "SoatVan" / "models" / "vn-spell-correction-small"
+            if "LOCALAPPDATA" in os.environ
+            else None
+        ),
+        DEFAULT_MODEL_DIR,
+    ]
+    for c in candidates:
+        if c is not None and (c / "config.json").exists():
+            return c
+    return DEFAULT_MODEL_DIR
 
 
 class LocalSeq2SeqProvider:
@@ -31,7 +51,9 @@ class LocalSeq2SeqProvider:
         device: str = "auto",
         num_beams: int = 1,
     ) -> None:
-        path = Path(model_dir) if model_dir else DEFAULT_MODEL_DIR
+        path = Path(model_dir) if model_dir else find_default_model_dir()
+        if not (path / "config.json").exists() and (find_default_model_dir() / "config.json").exists():
+            path = find_default_model_dir()
         self._speller = Seq2SeqSpeller(
             model_id=str(path),
             device=device,
@@ -62,6 +84,10 @@ class LocalSeq2SeqProvider:
                     continue
                 findings.append(f)
         return findings
+
+    def unload(self) -> None:
+        """Unload the underlying model from memory and free GPU/system RAM."""
+        self._speller.unload()
 
 
 def _is_ignored(text: str, ignored_words: frozenset[str]) -> bool:
