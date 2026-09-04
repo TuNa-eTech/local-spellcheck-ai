@@ -142,7 +142,7 @@ const state: {
   modelRemovalPending: false,
   modelRemovalRunning: false,
   outputActionPending: null,
-  appVersion: "0.1.5",
+  appVersion: "0.1.6",
 };
 
 const defaultPreset: Preset = "standard";

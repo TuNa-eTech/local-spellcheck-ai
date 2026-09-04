@@ -14,7 +14,7 @@ from typing import Any
 
 from soatvan.custom_rules.ai_config_repository import AiConfigEntry
 
-_USER_AGENT = "SoatVan/0.1.5 (Desktop; vi-VN)"
+_USER_AGENT = "SoatVan/0.1.6 (Desktop; vi-VN)"
 
 
 # ---------------------------------------------------------------------------

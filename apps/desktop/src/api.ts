@@ -48,7 +48,7 @@ export const api = {
         if (path) handler(path);
       }).catch(() => () => undefined);
   },
-  appVersion(): Promise<string> { return isTauri() ? getVersion() : Promise.resolve("0.1.5"); },
+  appVersion(): Promise<string> { return isTauri() ? getVersion() : Promise.resolve("0.1.6"); },
   openOutput(path: string, reveal = false) { return invoke("open_output", { path, reveal }); },
   customRuleList(): Promise<CustomRule[]> { return invoke("custom_rule_list"); },
   customRuleUpsert(id: string | null, title: string, prompt: string, isDefault: boolean): Promise<CustomRule> { return invoke("custom_rule_upsert", { id, title, prompt, isDefault }); },

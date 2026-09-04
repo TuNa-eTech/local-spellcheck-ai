@@ -89,7 +89,7 @@ async function loadApp(options?: {
       fileDropHandler = handler;
       return () => undefined;
     }),
-    appVersion: vi.fn(() => Promise.resolve("0.1.5")),
+    appVersion: vi.fn(() => Promise.resolve("0.1.6")),
     openOutput: vi.fn(options?.openOutput ?? (() => Promise.resolve())),
     customRuleList: vi.fn(options?.customRuleList ?? (() => Promise.resolve([]))),
     customRuleUpsert: vi.fn(
