@@ -167,11 +167,19 @@ class ProcessDocument:
                 review = getattr(classifier, "review", None)
                 if not callable(review):
                     raise ValueError("MODEL_FULL_REVIEW_UNSUPPORTED")
+                sys.stderr.write(
+                    f"[SoatVan-Process] Starting LLM Full Review on {len(blocks)} block(s)...\n"
+                )
+                sys.stderr.flush()
                 progress("model", 40, "job.reviewing_document")
 
                 def review_progress(processed: int, total: int) -> None:
                     percent = 40 + (30 * processed // max(1, total))
                     progress("model", percent, "job.reviewing_document")
+                    sys.stderr.write(
+                        f"[SoatVan-Process] LLM review chunk {processed}/{total} completed ({percent}%).\n"
+                    )
+                    sys.stderr.flush()
 
                 findings, review_summary, review_failed_block_ids = _apply_full_review(
                     findings,
