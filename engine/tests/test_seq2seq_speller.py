@@ -4,12 +4,12 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
+
 from soatvan.checking.domain import Block
-from soatvan.models.classifier import ModelLoadFailed, ModelRuntimeUnavailable
+from soatvan.models.classifier import ModelRuntimeUnavailable
 from soatvan.models.seq2seq_speller import (
     DEFAULT_SPELL_MODEL,
     Seq2SeqSpeller,
-    is_transformers_available,
 )
 
 
@@ -23,11 +23,13 @@ def test_seq2seq_speller_initialization_defaults() -> None:
 
 def test_seq2seq_speller_raises_when_transformers_missing() -> None:
     speller = Seq2SeqSpeller()
-    with patch("soatvan.models.seq2seq_speller.is_transformers_available", return_value=False):
-        with pytest.raises(
+    with (
+        patch("soatvan.models.seq2seq_speller.is_transformers_available", return_value=False),
+        pytest.raises(
             ModelRuntimeUnavailable, match="transformers, torch, and sentencepiece are required"
-        ):
-            speller.load()
+        ),
+    ):
+        speller.load()
 
 
 def test_seq2seq_speller_predict_and_check_block_mocked() -> None:

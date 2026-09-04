@@ -1,7 +1,7 @@
 """Tests for Vietnamese text noise generator."""
 from __future__ import annotations
 
-from soatvan.testing.noise import NoiseConfig, NoiseGenerator, heavy_noise, light_noise
+from soatvan.testing.noise import NoiseGenerator, heavy_noise, light_noise
 
 
 def test_noise_generator_is_deterministic() -> None:

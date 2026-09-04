@@ -10,6 +10,7 @@ Supports HuggingFace seq2seq checkpoints:
 from __future__ import annotations
 
 import contextlib
+import importlib.util
 import re
 import unicodedata
 from collections.abc import Iterator
@@ -36,14 +37,10 @@ def _no_grad_ctx() -> Iterator[None]:
 
 def is_transformers_available() -> bool:
     """Check if torch, transformers, and sentencepiece are importable."""
-    try:
-        import sentencepiece  # noqa: F401
-        import torch  # noqa: F401
-        import transformers  # noqa: F401
-
-        return True
-    except ImportError:
-        return False
+    return all(
+        importlib.util.find_spec(pkg) is not None
+        for pkg in ("sentencepiece", "torch", "transformers")
+    )
 
 
 class Seq2SeqSpeller:

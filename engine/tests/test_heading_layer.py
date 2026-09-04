@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pytest
+
 from soatvan.checking.heading import is_heading, merge_tone_only
 from soatvan.checking.localization import localize_llm_edit
 

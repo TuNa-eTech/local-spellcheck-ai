@@ -377,9 +377,11 @@ def test_review_chunk_failure_handling() -> None:
 
     # When ALL chunks fail with a non-retryable error, the reviewer raises
     # MODEL_FULL_REVIEW_FAILED rather than silently returning zero findings.
-    with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("Connection refused")):
-        with pytest.raises(ValueError, match="MODEL_FULL_REVIEW_FAILED"):
-            reviewer.review(blocks, (), "", DummyCancelToken())
+    with (
+        patch("urllib.request.urlopen", side_effect=urllib.error.URLError("Connection refused")),
+        pytest.raises(ValueError, match="MODEL_FULL_REVIEW_FAILED"),
+    ):
+        reviewer.review(blocks, (), "", DummyCancelToken())
 
 
 def test_gemini_markdown_fences_parsing() -> None:

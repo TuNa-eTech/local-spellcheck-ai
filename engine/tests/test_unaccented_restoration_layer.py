@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pytest
+
 from soatvan.checking.domain import Block, Preset
 from soatvan.checking.rules import RuleEngine
 from soatvan.checking.vocabulary import VietnameseVocabulary

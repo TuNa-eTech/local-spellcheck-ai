@@ -12,7 +12,6 @@ Usage:
 from __future__ import annotations
 
 import json
-import sys
 import unicodedata
 import urllib.request
 from pathlib import Path

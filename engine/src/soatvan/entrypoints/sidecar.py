@@ -119,7 +119,12 @@ class Sidecar:
         self.seq2seq_config_repo = SqliteSeq2SeqConfigRepository(local_data / "preferences.db")
         _seq2seq_cfg = self.seq2seq_config_repo.get_config()
         from soatvan.workflow.seq2seq_provider import LocalSeq2SeqProvider
-        self.seq2seq = LocalSeq2SeqProvider(model_dir=_seq2seq_cfg.model_dir if _seq2seq_cfg.is_configured else None)
+
+        self.seq2seq = (
+            LocalSeq2SeqProvider(model_dir=_seq2seq_cfg.model_dir)
+            if _seq2seq_cfg.is_configured
+            else None
+        )
         self.processor = ProcessDocument(
             self.documents, self.dictionary, RuleEngine(), self.classifiers, self.seq2seq
         )
@@ -510,8 +515,10 @@ class Sidecar:
         if model_dir is not None:
             from soatvan.workflow.seq2seq_provider import LocalSeq2SeqProvider
 
-            self.seq2seq = LocalSeq2SeqProvider(
-                model_dir=cfg.model_dir if cfg.is_configured else None
+            self.seq2seq = (
+                LocalSeq2SeqProvider(model_dir=cfg.model_dir)
+                if cfg.is_configured
+                else None
             )
             self.processor._seq2seq = self.seq2seq
         return {
