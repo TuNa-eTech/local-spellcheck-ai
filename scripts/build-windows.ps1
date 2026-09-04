@@ -145,6 +145,13 @@ $temporarySigningPfx = $null
 $temporaryRootCertificate = $null
 $rootCertificateAdded = $false
 $addedCertificateStores = @()
+$generatedTempCertThumbprint = $null
+$personalCertificateSubject = if ([string]::IsNullOrWhiteSpace($env:SOATVAN_WINDOWS_CERT_SUBJECT)) {
+    "CN=SoatVan Personal Use"
+}
+else {
+    $env:SOATVAN_WINDOWS_CERT_SUBJECT
+}
 
 Push-Location $repoRoot
 try {
@@ -174,59 +181,86 @@ try {
         throw "PyInstaller khong tao executable $engineExecutable."
     }
 
-    Write-Host "[3/6] Tai certificate ky code tu secret"
-    if ([string]::IsNullOrWhiteSpace($env:SOATVAN_WINDOWS_CERT_PASSWORD)) {
-        throw "Thieu SOATVAN_WINDOWS_CERT_PASSWORD."
-    }
+    Write-Host "[3/6] Tai certificate ky code tu secret hoac tao self-signed fallback"
     $signingPfxPath = $env:SOATVAN_WINDOWS_CERT_PFX
-    if ([string]::IsNullOrWhiteSpace($signingPfxPath)) {
-        if ([string]::IsNullOrWhiteSpace($env:SOATVAN_WINDOWS_CERT_PFX_BASE64)) {
-            throw "Thieu SOATVAN_WINDOWS_CERT_PFX hoac SOATVAN_WINDOWS_CERT_PFX_BASE64."
-        }
-        $temporarySigningPfx = Join-Path ([System.IO.Path]::GetTempPath()) `
-            "soatvan-signing-$PID-$([Guid]::NewGuid().ToString('N')).pfx"
+    if ([string]::IsNullOrWhiteSpace($signingPfxPath) -and -not [string]::IsNullOrWhiteSpace($env:SOATVAN_WINDOWS_CERT_PFX_BASE64)) {
         try {
             $base64Text = $env:SOATVAN_WINDOWS_CERT_PFX_BASE64.Trim("`" `' `r`n`t ")
             $base64Text = $base64Text -replace '(?m)^-----.*?-----$', ''
             $base64Text = ($base64Text -replace '\s+', '')
             $base64Text = $base64Text.Replace('-', '+').Replace('_', '/')
-            while ($base64Text.Length % 4 -ne 0) {
-                $base64Text += '='
+            if ($base64Text.Length % 4 -eq 2) {
+                $base64Text += "=="
+            }
+            elseif ($base64Text.Length % 4 -eq 3) {
+                $base64Text += "="
             }
             $pfxBytes = [Convert]::FromBase64String($base64Text)
+            $temporarySigningPfx = Join-Path ([System.IO.Path]::GetTempPath()) `
+                "soatvan-signing-$PID-$([Guid]::NewGuid().ToString('N')).pfx"
             [System.IO.File]::WriteAllBytes($temporarySigningPfx, $pfxBytes)
+            $signingPfxPath = $temporarySigningPfx
         }
         catch {
-            throw "SOATVAN_WINDOWS_CERT_PFX_BASE64 khong hop le: $($_.Exception.Message)"
+            Write-Warning "Khong the giai ma SOATVAN_WINDOWS_CERT_PFX_BASE64: $($_.Exception.Message)"
         }
-        $signingPfxPath = $temporarySigningPfx
-    }
-    if (-not (Test-Path -LiteralPath $signingPfxPath -PathType Leaf)) {
-        throw "Khong tim thay PFX ky code."
     }
 
-    $keyFlags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::UserKeySet -bor `
-        [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistKeySet
-    try {
+    if (-not [string]::IsNullOrWhiteSpace($signingPfxPath) -and (Test-Path -LiteralPath $signingPfxPath -PathType Leaf) -and -not [string]::IsNullOrWhiteSpace($env:SOATVAN_WINDOWS_CERT_PASSWORD)) {
+        $keyFlags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::UserKeySet -bor `
+            [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistKeySet
+        try {
+            $candidateCert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(
+                $signingPfxPath,
+                $env:SOATVAN_WINDOWS_CERT_PASSWORD,
+                $keyFlags
+            )
+            $codeSigningOid = "1.3.6.1.5.5.7.3.3"
+            $enhancedKeyUsage = $candidateCert.Extensions |
+                Where-Object { $_.Oid.Value -eq "2.5.29.37" } |
+                Select-Object -First 1
+            $ekuOids = @($enhancedKeyUsage.EnhancedKeyUsages | ForEach-Object { $_.Value })
+            if ($candidateCert.HasPrivateKey -and
+                $candidateCert.NotBefore -le (Get-Date) -and
+                $candidateCert.NotAfter -gt (Get-Date).AddDays(30) -and
+                $ekuOids -contains $codeSigningOid) {
+                $certificate = $candidateCert
+                Write-Host "Da load certificate tu secret thanh cong (Thumbprint: $($certificate.Thumbprint))"
+            }
+            else {
+                Write-Warning "Certificate tu secret khong hop le hoac khong phai code-signing."
+            }
+        }
+        catch {
+            Write-Warning "Khong the mo PFX bang password: $($_.Exception.Message)"
+        }
+    }
+
+    if (-not $certificate) {
+        Write-Host "Dang tao self-signed certificate cho build ca nhan: $personalCertificateSubject"
+        $certPassword = [System.Guid]::NewGuid().ToString("N")
+        $securePassword = ConvertTo-SecureString -String $certPassword -AsPlainText -Force
+        $tempCert = New-SelfSignedCertificate `
+            -Type CodeSigningCert `
+            -Subject $personalCertificateSubject `
+            -FriendlyName "SoatVan Personal Code Signing" `
+            -CertStoreLocation "Cert:\CurrentUser\My" `
+            -KeyAlgorithm RSA `
+            -KeyLength 3072 `
+            -HashAlgorithm SHA256 `
+            -NotAfter (Get-Date).AddYears(5)
+        $generatedTempCertThumbprint = $tempCert.Thumbprint
+        $temporarySigningPfx = Join-Path ([System.IO.Path]::GetTempPath()) `
+            "soatvan-generated-$PID-$([Guid]::NewGuid().ToString('N')).pfx"
+        Export-PfxCertificate -Cert $tempCert -FilePath $temporarySigningPfx -Password $securePassword | Out-Null
+        $keyFlags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::UserKeySet -bor `
+            [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistKeySet
         $certificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(
-            $signingPfxPath,
-            $env:SOATVAN_WINDOWS_CERT_PASSWORD,
+            $temporarySigningPfx,
+            $certPassword,
             $keyFlags
         )
-    }
-    catch {
-        throw "Khong the mo PFX ky code bang password da cau hinh."
-    }
-    $codeSigningOid = "1.3.6.1.5.5.7.3.3"
-    $enhancedKeyUsage = $certificate.Extensions |
-        Where-Object { $_.Oid.Value -eq "2.5.29.37" } |
-        Select-Object -First 1
-    $ekuOids = @($enhancedKeyUsage.EnhancedKeyUsages | ForEach-Object { $_.Value })
-    if (-not $certificate.HasPrivateKey -or
-        $certificate.NotBefore -gt (Get-Date) -or
-        $certificate.NotAfter -le (Get-Date).AddDays(30) -or
-        $ekuOids -notcontains $codeSigningOid) {
-        throw "PFX khong phai certificate code-signing con hieu luc va co private key."
+        Write-Host "Da tao certificate self-signed thanh cong (Thumbprint: $($certificate.Thumbprint))"
     }
     $certificateThumbprint = $certificate.Thumbprint
     Write-Host "Dang dang ky certificate vao CurrentUser\My"
@@ -336,6 +370,9 @@ finally {
         foreach ($storeName in $addedCertificateStores) {
             Remove-CertificateFromStore -Thumbprint $certificateThumbprint -StoreName $storeName
         }
+    }
+    if ($generatedTempCertThumbprint) {
+        Remove-CertificateFromStore -Thumbprint $generatedTempCertThumbprint -StoreName "My"
     }
     if ($temporarySigningPfx) {
         Remove-Item -LiteralPath $temporarySigningPfx -Force -ErrorAction SilentlyContinue
