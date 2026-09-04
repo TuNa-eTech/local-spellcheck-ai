@@ -12,9 +12,10 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+from soatvan import __version__
 from soatvan.custom_rules.ai_config_repository import AiConfigEntry
 
-_USER_AGENT = "SoatVan/0.1.6 (Desktop; vi-VN)"
+_USER_AGENT = f"SoatVan/{__version__} (Desktop; vi-VN)"
 
 
 # ---------------------------------------------------------------------------

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { APP_VERSION } from "../src/version";
 import type { AiConfigState, AiTestConnectionResult, CustomRule, DocumentInfo, JobResult, ModelStatus, ProgressEvent, Seq2SeqConfig } from "../src/contracts";
 
 const documentInfo: DocumentInfo = {
@@ -89,7 +90,7 @@ async function loadApp(options?: {
       fileDropHandler = handler;
       return () => undefined;
     }),
-    appVersion: vi.fn(() => Promise.resolve("0.1.6")),
+    appVersion: vi.fn(() => Promise.resolve(APP_VERSION)),
     openOutput: vi.fn(options?.openOutput ?? (() => Promise.resolve())),
     customRuleList: vi.fn(options?.customRuleList ?? (() => Promise.resolve([]))),
     customRuleUpsert: vi.fn(

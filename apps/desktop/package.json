@@ -8,7 +8,8 @@
     "build": "tsc && vite build",
     "test": "vitest run",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "bump": "python3 ../../scripts/bump-version.py"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0"

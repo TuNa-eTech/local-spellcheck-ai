@@ -1,5 +1,6 @@
 import "./styles.css";
 import { api } from "./api";
+import { APP_VERSION } from "./version";
 import type {
   AiConfigEntry,
   AiConfigState,
@@ -142,7 +143,7 @@ const state: {
   modelRemovalPending: false,
   modelRemovalRunning: false,
   outputActionPending: null,
-  appVersion: "0.1.6",
+  appVersion: APP_VERSION,
 };
 
 const defaultPreset: Preset = "standard";
