@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import threading
 import time
 from collections.abc import Callable, Iterable
@@ -404,9 +405,12 @@ class LlamaCppClassifier:
         retried_chunks = 0
         recovered_chunks = 0
         with self._lock:
+            # Lightweight mode: candidates are irrelevant (no verdicts),
+            # so skip them to avoid the candidate-limit fragmenting chunks.
+            plan_candidates = () if self._lightweight_mode else candidates
             chunks = plan_review_chunks(
                 blocks,
-                candidates,
+                plan_candidates,
                 custom_prompt,
                 self._review_budget,
                 self._count_tokens,
@@ -417,6 +421,28 @@ class LlamaCppClassifier:
             if not chunks:
                 return FullReviewResult((), (), 0, 0)
             total_chunks = len(chunks)
+            if self._lightweight_mode:
+                _b = self._review_budget
+                from .review import ReviewSegment as _RS
+                _empty = _RS("diag@0:0", "diag", 0, 0, "", "paragraph")
+                _probe = ReviewChunk("diag", (_empty,), (), (), custom_prompt)
+                _fixed = self._count_review_request_tokens(_probe)
+                _doc_limit = _b.document_limit(_fixed)
+                _total_doc = sum(
+                    self._count_tokens(seg.text)
+                    for c in chunks for seg in c.targets
+                )
+                sys.stderr.write(
+                    f"[SoatVan-Diag] lightweight_mode=True "
+                    f"output_tokens={self._review_output_tokens} "
+                    f"input_tokens={_b.input_tokens} "
+                    f"doc_limit_per_chunk={_doc_limit} "
+                    f"total_doc_tokens={_total_doc} "
+                    f"avg_doc_per_chunk={_total_doc // max(1, total_chunks)} "
+                    f"total_chunks={total_chunks} "
+                    f"prompt_overhead={_fixed}\n"
+                )
+                sys.stderr.flush()
             for processed_chunks, chunk in enumerate(chunks, start=1):
                 cancellation.raise_if_cancelled()
                 (
@@ -519,7 +545,7 @@ class LlamaCppClassifier:
         if callable(set_abort):
             set_abort(should_abort)
         llm_only = not chunk.candidates
-        use_lightweight = self._lightweight_mode and llm_only
+        use_lightweight = self._lightweight_mode
         if use_lightweight:
             messages = lightweight_review_messages(chunk)
             schema = LIGHTWEIGHT_REVIEW_SCHEMA
@@ -592,7 +618,7 @@ class LlamaCppClassifier:
         )
 
     def _count_review_request_tokens(self, chunk: ReviewChunk) -> int:
-        if self._lightweight_mode and not chunk.candidates:
+        if self._lightweight_mode:
             return self._count_chat_tokens(lightweight_review_messages(chunk))
         return self._count_chat_tokens(review_messages(chunk))
 
