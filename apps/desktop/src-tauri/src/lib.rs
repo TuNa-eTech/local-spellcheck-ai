@@ -232,8 +232,6 @@ struct AiConfigUpdateRequest {
     is_active: Option<bool>,
 }
 
-
-
 #[tauri::command]
 async fn choose_document(
     app: AppHandle,
@@ -314,7 +312,10 @@ async fn start_job(request: StartJobRequest, state: State<'_, AppState>) -> AppR
             model_status.capabilities.full_review
         );
         if model_status.state != "ready" || !model_status.capabilities.candidate_filter {
-            eprintln!("[SoatVan-Host] ERROR: MODEL_CLASSIFIER_NOT_READY (state: {})", model_status.state);
+            eprintln!(
+                "[SoatVan-Host] ERROR: MODEL_CLASSIFIER_NOT_READY (state: {})",
+                model_status.state
+            );
             return Err(AppError::Engine("MODEL_CLASSIFIER_NOT_READY".into()));
         }
         if full_review && !model_status.capabilities.full_review {
@@ -605,14 +606,13 @@ async fn ai_config_update(
     if let Some(active) = request.is_active {
         params["is_active"] = json!(active);
     }
-    state.engine.call("ai_config.update", params, Duration::from_secs(5))
+    state
+        .engine
+        .call("ai_config.update", params, Duration::from_secs(5))
 }
 
 #[tauri::command]
-async fn ai_config_set_active(
-    provider: String,
-    state: State<'_, AppState>,
-) -> AppResult<Value> {
+async fn ai_config_set_active(provider: String, state: State<'_, AppState>) -> AppResult<Value> {
     state.engine.call(
         "ai_config.set_active",
         json!({"provider": provider}),
@@ -646,10 +646,11 @@ async fn ai_config_test_connection(
     Ok(serde_json::from_value(value)?)
 }
 
-
 #[tauri::command]
 async fn seq2seq_config_get(state: State<'_, AppState>) -> AppResult<Seq2SeqConfig> {
-    let result = state.engine.call("seq2seq_config.get", json!({}), Duration::from_secs(5))?;
+    let result = state
+        .engine
+        .call("seq2seq_config.get", json!({}), Duration::from_secs(5))?;
     Ok(serde_json::from_value(result)?)
 }
 
@@ -666,11 +667,9 @@ async fn seq2seq_config_update(
     if let Some(enabled) = is_enabled {
         params["is_enabled"] = json!(enabled);
     }
-    let result = state.engine.call(
-        "seq2seq_config.update",
-        params,
-        Duration::from_secs(5),
-    )?;
+    let result = state
+        .engine
+        .call("seq2seq_config.update", params, Duration::from_secs(5))?;
     Ok(serde_json::from_value(result)?)
 }
 
