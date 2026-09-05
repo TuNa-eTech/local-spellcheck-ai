@@ -29,6 +29,9 @@ from .ports import (
 # up to 99 blank-line separators when those records are compiled for the model.
 MAX_CUSTOM_PROMPT_LENGTH = 4_200
 LLM_DISCOVERY_VERSION = "v2"
+# Upper bound for the isolated seq2seq worker. The worker has no deadline of
+# its own, so the parent enforces one while polling for cancellation.
+SEQ2SEQ_SUBPROCESS_TIMEOUT_SECONDS = 600
 
 
 @dataclass(frozen=True, slots=True)
@@ -285,9 +288,11 @@ def _run_seq2seq_subprocess(
     The subprocess is cancellable: if the user presses Stop, the parent
     kills the child process immediately.
     """
+    import contextlib
     import json
     import subprocess
     import threading
+    import time
 
     model_dir = getattr(seq2seq, "_model_dir", None) or getattr(seq2seq, "_speller", None) and getattr(seq2seq._speller, "model_id", None)  # type: ignore[union-attr]
     if model_dir is None:
@@ -319,37 +324,57 @@ def _run_seq2seq_subprocess(
 
     # Write stdin and read stdout in a background thread.
     stdout_data: list[bytes] = [b""]
+    io_error: list[BaseException | None] = [None]
 
     def _io() -> None:
         assert proc.stdin is not None and proc.stdout is not None
-        proc.stdin.write(input_data.encode("utf-8"))
-        proc.stdin.close()
-        stdout_data[0] = proc.stdout.read()
+        try:
+            proc.stdin.write(input_data.encode("utf-8"))
+            proc.stdin.close()
+            stdout_data[0] = proc.stdout.read()
+        except BaseException as exc:  # reported on the main thread below
+            io_error[0] = exc
 
     io_thread = threading.Thread(target=_io, daemon=True)
     io_thread.start()
 
-    # Main thread polls for cancellation every 0.5 s.
+    # Main thread polls for cancellation every 0.5 s and enforces the overall
+    # deadline, since the worker itself does not carry one.
+    deadline = time.monotonic() + SEQ2SEQ_SUBPROCESS_TIMEOUT_SECONDS
     try:
         while io_thread.is_alive():
             if cancel is not None:
                 cancel.raise_if_cancelled()
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    "Seq2Seq subprocess exceeded "
+                    f"{SEQ2SEQ_SUBPROCESS_TIMEOUT_SECONDS} seconds"
+                )
             io_thread.join(timeout=0.5)
-    except Exception:
+    except BaseException:
         proc.kill()
+        with contextlib.suppress(Exception):
+            proc.wait(timeout=5)
         io_thread.join(timeout=5)
         stderr_thread.join(timeout=2)
         raise
 
     stderr_thread.join(timeout=5)
-    stdout = stdout_data[0]
+    # `Popen.returncode` stays None until the child is reaped, so the exit
+    # status is only known after wait(). Reading it earlier makes every run
+    # look like a failure.
+    try:
+        returncode = proc.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        returncode = proc.wait(timeout=5)
 
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"Seq2Seq subprocess exited with code {proc.returncode}"
-        )
+    if io_error[0] is not None:
+        raise RuntimeError("Seq2Seq subprocess I/O failed") from io_error[0]
+    if returncode != 0:
+        raise RuntimeError(f"Seq2Seq subprocess exited with code {returncode}")
 
-    result = json.loads(stdout.decode("utf-8"))
+    result = json.loads(stdout_data[0].decode("utf-8"))
     return [
         Finding(
             id=f["id"],
