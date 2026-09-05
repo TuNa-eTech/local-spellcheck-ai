@@ -496,6 +496,44 @@ describe("four-step desktop workflow", () => {
     expect(document.querySelector<HTMLElement>(".review-warning")?.textContent).toContain("4/5");
   });
 
+  it("blames the anchoring step, not the model, when every chunk was reviewed", async () => {
+    await loadApp({
+      start: () => Promise.resolve({
+        job_id: "job",
+        status: "partial" as const,
+        output_path: "C:\\Tài liệu\\nguồn-soat.docx",
+        finding_count: 312,
+        counts: { category: { spelling: 312 }, origin: { llm: 312 } },
+        review: {
+          status: "partial" as const,
+          total_chunks: 8,
+          reviewed_chunks: 8,
+          failed_chunks: 0,
+          total_blocks: 181,
+          reviewed_blocks: 180,
+          failed_blocks: 1,
+          timeout_chunks: 0,
+          invalid_output_chunks: 0,
+          inference_error_chunks: 0,
+          retried_chunks: 0,
+          recovered_chunks: 0,
+        },
+      }),
+    });
+    await chooseDocument();
+    document.querySelector<HTMLButtonElement>("#start")!.click();
+    await vi.waitFor(() => expect(document.querySelector("#open")).not.toBeNull());
+    const warning = document.querySelector<HTMLElement>(".review-warning")?.textContent ?? "";
+    // The old copy read "8/8 phần; 0 phần không hoàn tất" under a heading that
+    // said the review was incomplete, which contradicted itself.
+    expect(warning).not.toContain("0 phần không hoàn tất");
+    expect(warning).toContain("đã rà đủ 8/8");
+    expect(warning).toContain("1/181 đoạn không gắn được cảnh báo");
+    expect(warning).toContain("Không thể kết luận toàn bộ tài liệu không có lỗi");
+    expect(document.body.textContent).not.toContain("Đã tạo tệp kết quả khi AI rà chưa hết");
+    expect(document.body.textContent).toContain("AI đã rà hết tài liệu");
+  });
+
   it("keeps invalid files on step one with a safe error", async () => {
     await loadApp({ choose: () => Promise.reject(new Error("invalid")) });
     document.querySelector<HTMLButtonElement>("#choose")!.click();

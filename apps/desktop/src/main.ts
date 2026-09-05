@@ -446,7 +446,34 @@ function reviewCoverageWarningHtml(): string {
   const retry = review.retried_chunks
     ? ` Đã tự chia nhỏ và thử lại ${review.retried_chunks.toLocaleString("vi-VN")} phần${review.recovered_chunks ? `, khôi phục hoàn tất ${review.recovered_chunks.toLocaleString("vi-VN")} phần` : ""}.`
     : "";
-  return `<aside class="review-warning" role="alert"><strong>Rà soát sâu chưa hoàn tất</strong><p>AI đã rà ${reviewed}/${total} phần nội dung; ${failed} phần không hoàn tất${reasons ? ` (${reasons})` : ""}.${retry} Không thể kết luận toàn bộ tài liệu không có lỗi.</p></aside>`;
+  // Coverage can fall short for two unrelated reasons: chunks the model never
+  // finished, and blocks whose warnings could not be anchored into the output
+  // document. The engine reports both through failed_blocks, so only the case
+  // where every chunk came back can be attributed to a single cause.
+  const failedBlocks = review.failed_blocks;
+  const totalBlocks = review.total_blocks.toLocaleString("vi-VN");
+  if (review.failed_chunks === 0 && failedBlocks > 0) {
+    return `<aside class="review-warning" role="alert"><strong>Rà soát sâu chưa hoàn tất</strong><p>AI đã rà đủ ${reviewed}/${total} phần nội dung, nhưng ${failedBlocks.toLocaleString("vi-VN")}/${totalBlocks} đoạn không gắn được cảnh báo vào tệp kết quả — thường do vị trí cần đánh dấu nằm trong hyperlink, tracked change hoặc content control. Tệp gốc không bị thay đổi. Không thể kết luận toàn bộ tài liệu không có lỗi.</p></aside>`;
+  }
+  const blocks = failedBlocks
+    ? ` Tổng cộng ${failedBlocks.toLocaleString("vi-VN")}/${totalBlocks} đoạn chưa được phản ánh đầy đủ trong tệp kết quả.`
+    : "";
+  return `<aside class="review-warning" role="alert"><strong>Rà soát sâu chưa hoàn tất</strong><p>AI đã rà ${reviewed}/${total} phần nội dung; ${failed} phần không hoàn tất${reasons ? ` (${reasons})` : ""}.${retry}${blocks} Không thể kết luận toàn bộ tài liệu không có lỗi.</p></aside>`;
+}
+function annotationOnlyShortfall(): boolean {
+  const review = state.result?.review;
+  return !!review && review.failed_chunks === 0 && review.failed_blocks > 0;
+}
+function partialResultHeading(): { title: string; body: string } {
+  return annotationOnlyShortfall()
+    ? {
+        title: "Đã tạo tệp kết quả, nhưng thiếu vài cảnh báo",
+        body: "AI đã rà hết tài liệu. Một số cảnh báo không gắn được vào tệp kết quả nên không xuất hiện trong đó.",
+      }
+    : {
+        title: "Đã tạo tệp kết quả khi AI rà chưa hết",
+        body: "Tệp gồm các cảnh báo AI đã ghi nhận ở phần xử lý thành công; một số nội dung chưa được rà hoàn tất.",
+      };
 }
 function resultHtml(): string {
   const partial = isPartialReview();
@@ -454,7 +481,7 @@ function resultHtml(): string {
   if (partial && !path) return `<section class="workflow-card result-panel"><div class="result-heading"><div class="partial-symbol" aria-hidden="true">!</div><div class="section-copy"><h1>Rà soát chỉ hoàn tất một phần</h1><p>Không tạo bản sao vì chưa ghi nhận cảnh báo. Tệp gốc vẫn giữ nguyên.</p></div></div>${reviewCoverageWarningHtml()}<div class="workflow-actions"><button class="button button--primary" id="restart">Kiểm tra tệp khác</button></div>${errorHtml()}</section>`;
   if (state.step === "no-findings") return `<section class="workflow-card result-panel"><div class="result-heading"><div class="success" aria-hidden="true">✓</div><div class="section-copy"><h1>Không phát hiện cảnh báo</h1><p>Không tạo bản sao; tệp gốc vẫn giữ nguyên.</p></div></div><div class="workflow-actions"><button class="button button--primary" id="restart">Kiểm tra tệp khác</button></div>${errorHtml()}</section>`;
   const outputPending = state.outputActionPending !== null;
-  return `<section class="workflow-card result-panel"><div class="result-heading"><div class="${partial ? "partial-symbol" : "success"}" aria-hidden="true">${partial ? "!" : "✓"}</div><div class="section-copy"><h1>${partial ? "Đã tạo tệp kết quả khi AI rà chưa hết" : "Đã tạo tệp kết quả"}</h1><p>${partial ? "Tệp gồm các cảnh báo AI đã ghi nhận ở phần xử lý thành công; một số nội dung chưa được rà hoàn tất." : "Ứng dụng không xem trước tài liệu. Hãy mở bằng Microsoft Word để xem các vị trí được đánh dấu."}</p></div></div>${reviewCoverageWarningHtml()}<div class="result-file"><strong>${escape(path.split(/[\\/]/).pop() ?? path)}</strong><span>${escape(path)}</span></div><dl class="summary"><div><dt>Cảnh báo</dt><dd>${state.result?.finding_count ?? 0}</dd></div><div><dt>Tệp gốc</dt><dd>Không thay đổi</dd></div></dl><div class="result-actions"><div class="button-row"><button class="button button--primary" id="open" ${outputPending ? "disabled" : ""} ${state.outputActionPending === "open" ? 'aria-busy="true"' : ""}>${state.outputActionPending === "open" ? "Đang mở tệp…" : "Mở tệp kết quả"}</button><button class="button button--secondary" id="reveal" ${outputPending ? "disabled" : ""} ${state.outputActionPending === "reveal" ? 'aria-busy="true"' : ""}>${state.outputActionPending === "reveal" ? "Đang mở thư mục…" : "Mở thư mục"}</button></div><button class="back-button" id="restart">Xử lý tệp khác</button></div>${errorHtml()}</section>`;
+  return `<section class="workflow-card result-panel"><div class="result-heading"><div class="${partial ? "partial-symbol" : "success"}" aria-hidden="true">${partial ? "!" : "✓"}</div><div class="section-copy"><h1>${partial ? partialResultHeading().title : "Đã tạo tệp kết quả"}</h1><p>${partial ? partialResultHeading().body : "Ứng dụng không xem trước tài liệu. Hãy mở bằng Microsoft Word để xem các vị trí được đánh dấu."}</p></div></div>${reviewCoverageWarningHtml()}<div class="result-file"><strong>${escape(path.split(/[\\/]/).pop() ?? path)}</strong><span>${escape(path)}</span></div><dl class="summary"><div><dt>Cảnh báo</dt><dd>${state.result?.finding_count ?? 0}</dd></div><div><dt>Tệp gốc</dt><dd>Không thay đổi</dd></div></dl><div class="result-actions"><div class="button-row"><button class="button button--primary" id="open" ${outputPending ? "disabled" : ""} ${state.outputActionPending === "open" ? 'aria-busy="true"' : ""}>${state.outputActionPending === "open" ? "Đang mở tệp…" : "Mở tệp kết quả"}</button><button class="button button--secondary" id="reveal" ${outputPending ? "disabled" : ""} ${state.outputActionPending === "reveal" ? 'aria-busy="true"' : ""}>${state.outputActionPending === "reveal" ? "Đang mở thư mục…" : "Mở thư mục"}</button></div><button class="back-button" id="restart">Xử lý tệp khác</button></div>${errorHtml()}</section>`;
 }
 
 function settingsHtml(): string {
