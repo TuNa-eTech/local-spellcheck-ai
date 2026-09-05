@@ -73,8 +73,11 @@ class LocalSeq2SeqProvider:
         cancellation: CancellationToken,
     ) -> list[Finding]:
         """Run seq2seq correction over every block; skip blocks whose text is ignored."""
+        import sys
+
+        total = len(blocks)
         findings: list[Finding] = []
-        for block in blocks:
+        for i, block in enumerate(blocks):
             cancellation.raise_if_cancelled()
             if not block.text.strip():
                 continue
@@ -83,6 +86,12 @@ class LocalSeq2SeqProvider:
                 if _is_ignored(f.source_text, ignored_words):
                     continue
                 findings.append(f)
+            if (i + 1) % 10 == 0 or i + 1 == total:
+                sys.stderr.write(
+                    f"[SoatVan-Seq2Seq] Block {i + 1}/{total} processed, "
+                    f"{len(findings)} finding(s) so far.\n"
+                )
+                sys.stderr.flush()
         return findings
 
     def unload(self) -> None:

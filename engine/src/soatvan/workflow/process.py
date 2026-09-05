@@ -138,7 +138,7 @@ class ProcessDocument:
                     )
                     sys.stderr.flush()
                     seq2seq_findings = _run_seq2seq_subprocess(
-                        self._seq2seq, blocks, request.ignored_words
+                        self._seq2seq, blocks, request.ignored_words, cancel
                     )
                 else:
                     seq2seq_findings = self._seq2seq.check_blocks(blocks, request.ignored_words, cancel)
@@ -273,6 +273,7 @@ def _run_seq2seq_subprocess(
     seq2seq: object,
     blocks: list[Block],
     ignored_words: frozenset[str],
+    cancel: CancellationToken | None = None,
 ) -> list[Finding]:
     """Run seq2seq in an isolated subprocess to avoid OOM on macOS.
 
@@ -280,9 +281,13 @@ def _run_seq2seq_subprocess(
     fully reclaimed.  Running torch in the same process risks Jetsam
     killing the entire sidecar.  A subprocess crash is recoverable —
     the parent logs a warning and continues without seq2seq findings.
+
+    The subprocess is cancellable: if the user presses Stop, the parent
+    kills the child process immediately.
     """
     import json
     import subprocess
+    import threading
 
     model_dir = getattr(seq2seq, "_model_dir", None) or getattr(seq2seq, "_speller", None) and getattr(seq2seq._speller, "model_id", None)  # type: ignore[union-attr]
     if model_dir is None:
@@ -294,24 +299,57 @@ def _run_seq2seq_subprocess(
         "ignored_words": sorted(ignored_words),
     })
 
-    proc = subprocess.run(
+    proc = subprocess.Popen(
         [sys.executable, "-m", "soatvan.entrypoints.seq2seq_worker"],
-        input=input_data.encode("utf-8"),
-        capture_output=True,
-        timeout=600,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
 
-    # Forward worker stderr to parent stderr for diagnostics
-    if proc.stderr:
-        sys.stderr.buffer.write(proc.stderr)
-        sys.stderr.buffer.flush()
+    # Stream subprocess stderr to parent stderr in real-time so the user
+    # sees per-block progress as it happens.
+    def _stream_stderr() -> None:
+        assert proc.stderr is not None
+        for line in proc.stderr:
+            sys.stderr.buffer.write(line)
+            sys.stderr.buffer.flush()
+
+    stderr_thread = threading.Thread(target=_stream_stderr, daemon=True)
+    stderr_thread.start()
+
+    # Write stdin and read stdout in a background thread.
+    stdout_data: list[bytes] = [b""]
+
+    def _io() -> None:
+        assert proc.stdin is not None and proc.stdout is not None
+        proc.stdin.write(input_data.encode("utf-8"))
+        proc.stdin.close()
+        stdout_data[0] = proc.stdout.read()
+
+    io_thread = threading.Thread(target=_io, daemon=True)
+    io_thread.start()
+
+    # Main thread polls for cancellation every 0.5 s.
+    try:
+        while io_thread.is_alive():
+            if cancel is not None:
+                cancel.raise_if_cancelled()
+            io_thread.join(timeout=0.5)
+    except Exception:
+        proc.kill()
+        io_thread.join(timeout=5)
+        stderr_thread.join(timeout=2)
+        raise
+
+    stderr_thread.join(timeout=5)
+    stdout = stdout_data[0]
 
     if proc.returncode != 0:
         raise RuntimeError(
             f"Seq2Seq subprocess exited with code {proc.returncode}"
         )
 
-    result = json.loads(proc.stdout.decode("utf-8"))
+    result = json.loads(stdout.decode("utf-8"))
     return [
         Finding(
             id=f["id"],
