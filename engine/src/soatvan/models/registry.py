@@ -158,7 +158,23 @@ class ModelRegistry:
         )
 
     def deactivate(self) -> None:
+        """Forget the model entirely: close the runtime and drop the integrity proof.
+
+        Used when the user turns AI off, when a package is imported or rolled
+        back, and whenever the manifest stops being trustworthy. The next
+        activation re-verifies the package from scratch.
+        """
         self._clear_cache()
+
+    def release_runtime(self) -> None:
+        """Free the runtime's memory while keeping the package verified.
+
+        With `n_gpu_layers=-1` the weights sit in wired GPU/unified memory the
+        OS cannot evict, so holding them across an idle period is expensive.
+        Unlike `deactivate`, this keeps `_verified_key`, so the next
+        `status()` reloads the model without re-hashing several GB.
+        """
+        self._close_runtime()
 
     def _clear_cache(self) -> None:
         self._close_runtime()

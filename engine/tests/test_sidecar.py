@@ -371,3 +371,98 @@ def test_sidecar_ai_config_update_preserves_active_state_when_omitted(tmp_path: 
     cfg = next(c for c in get_res_after["configs"] if c["provider"] == "openai")
     assert cfg["is_active"] is True
     assert cfg["base_url"] == "https://custom.endpoint.com/v1"
+
+
+class _QuietProcessor:
+    def execute(self, request, progress, token):  # type: ignore[no-untyped-def]
+        del request, progress, token
+        return ProcessResult(0, None, {})
+
+
+def _await_job(engine: Sidecar, job_id: str) -> None:
+    deadline = time.monotonic() + 2
+    while job_id in engine.jobs and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert job_id not in engine.jobs
+
+
+def _job_params(tmp_path: Path, job_id: str) -> dict[str, object]:
+    return {
+        "job_id": job_id,
+        "source_path": str(tmp_path / "source.docx"),
+        "temporary_output_path": str(tmp_path / "temporary.docx"),
+        "preset": "standard",
+    }
+
+
+def test_idle_model_runtime_is_released_after_the_last_job(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr(sidecar_module, "MODEL_IDLE_RELEASE_SECONDS", 0.05)
+    released = threading.Event()
+    engine = Sidecar()
+    engine.processor = _QuietProcessor()  # type: ignore[assignment]
+    monkeypatch.setattr(sidecar_module, "emit", lambda _frame: None)
+    monkeypatch.setattr(engine.classifiers, "release_runtime", released.set)
+
+    assert engine.start_job(_job_params(tmp_path, "idle"))["accepted"]
+    _await_job(engine, "idle")
+
+    assert released.wait(timeout=2)
+
+
+def test_a_new_job_cancels_the_pending_idle_release(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr(sidecar_module, "MODEL_IDLE_RELEASE_SECONDS", 3600)
+    releases = 0
+
+    def release() -> None:
+        nonlocal releases
+        releases += 1
+
+    engine = Sidecar()
+    engine.processor = _QuietProcessor()  # type: ignore[assignment]
+    monkeypatch.setattr(sidecar_module, "emit", lambda _frame: None)
+    monkeypatch.setattr(engine.classifiers, "release_runtime", release)
+
+    assert engine.start_job(_job_params(tmp_path, "first"))["accepted"]
+    _await_job(engine, "first")
+    first_timer = engine._idle_timer
+    assert first_timer is not None
+
+    assert engine.start_job(_job_params(tmp_path, "second"))["accepted"]
+    # Starting the second job must retire the timer armed by the first.
+    # `cancel()` only signals the thread, so assert on the timer's own
+    # finished flag rather than on the thread still being alive.
+    assert first_timer.finished.is_set()
+    _await_job(engine, "second")
+
+    second_timer = engine._idle_timer
+    assert second_timer is not None and second_timer is not first_timer
+    assert releases == 0
+    second_timer.cancel()
+
+
+def test_idle_release_is_skipped_while_another_job_is_running(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr(sidecar_module, "MODEL_IDLE_RELEASE_SECONDS", 3600)
+    releases = 0
+
+    def release() -> None:
+        nonlocal releases
+        releases += 1
+
+    engine = Sidecar()
+    engine.processor = _QuietProcessor()  # type: ignore[assignment]
+    monkeypatch.setattr(sidecar_module, "emit", lambda _frame: None)
+    monkeypatch.setattr(engine.classifiers, "release_runtime", release)
+    engine.jobs["running"] = sidecar_module.Token()
+
+    engine._release_model_if_idle()
+
+    assert releases == 0

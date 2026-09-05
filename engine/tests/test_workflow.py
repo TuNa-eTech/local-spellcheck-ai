@@ -6,6 +6,7 @@ import pytest
 
 from soatvan.checking import Block, Preset, RuleConfig, RuleEngine
 from soatvan.workflow import ProcessDocument, ProcessRequest
+from soatvan.workflow import process as process_module
 from soatvan.workflow.ports import AnnotationResult, ClassifierVerdict
 
 
@@ -226,12 +227,24 @@ def test_legacy_persistent_dictionary_no_longer_suppresses_findings(tmp_path: Pa
     assert result.finding_count == 2
 
 
-def test_workflow_sequential_offload_seq2seq_and_llm(tmp_path: Path) -> None:
+def test_workflow_sequential_offload_seq2seq_and_llm(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # On macOS the pass runs in an isolated worker process, which a stub
+    # provider cannot satisfy. Route it back through the provider so the
+    # ordering below is asserted identically on every platform.
+    monkeypatch.setattr(
+        process_module,
+        "_run_seq2seq_subprocess",
+        lambda seq2seq, blocks, ignored_words, cancel=None: seq2seq.check_blocks(
+            blocks, ignored_words, cancel
+        ),
+    )
     order_of_events: list[str] = []
 
     class MockClassifiers:
-        def deactivate(self) -> None:
-            order_of_events.append("llm_deactivate")
+        def release_runtime(self) -> None:
+            order_of_events.append("llm_release")
 
         def classifier(self) -> Classifier:
             order_of_events.append("llm_start")
@@ -270,12 +283,12 @@ def test_workflow_sequential_offload_seq2seq_and_llm(tmp_path: Path) -> None:
     )
 
     # Verifies sequential offload ordering:
-    # 1. Any existing LLM is deactivated before Seq2Seq runs
+    # 1. Any resident LLM runtime is released before Seq2Seq runs
     # 2. Seq2Seq runs check
     # 3. Seq2Seq is unloaded to free memory
     # 4. LLM is started fresh for the model pass
     assert order_of_events == [
-        "llm_deactivate",
+        "llm_release",
         "seq2seq_check",
         "seq2seq_unload",
         "llm_start",

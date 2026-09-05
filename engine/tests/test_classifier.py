@@ -11,6 +11,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from soatvan.models import LlamaCppClassifier, ModelInferenceTimeout, ModelRegistry
+from soatvan.models import registry as registry_module
 from soatvan.models.classifier import _NativeLlamaRuntime, _preferred_gpu_layers
 from soatvan.workflow.ports import ClassificationCandidate
 
@@ -422,3 +423,88 @@ def test_registry_rejects_legacy_auto_local_signature_but_allows_full_review(
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     assert registry.status()["state"] == "ready"
     assert registry.supports_full_review() is True
+
+
+def _local_registry(
+    tmp_path: Path, runtime_factory: Any
+) -> ModelRegistry:
+    active = tmp_path / "active"
+    active.mkdir()
+    model = active / "model.gguf"
+    model.write_bytes(b"test-model")
+    notice = active / "LOCAL-IMPORT-NOTICE.txt"
+    notice.write_text("No license or release approval supplied.", encoding="utf-8")
+    manifest = {
+        "schema_version": 2,
+        "model_id": "local-model",
+        "version": "local",
+        "engine_protocol": 1,
+        "file": model.name,
+        "size": model.stat().st_size,
+        "sha256": hashlib.sha256(model.read_bytes()).hexdigest(),
+        "license_file": notice.name,
+        "trust": "local_unverified",
+        "capabilities": {"candidate_filter": True, "full_review": True},
+    }
+    (active / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    return ModelRegistry(tmp_path, runtime_factory)
+
+
+def test_releasing_the_runtime_frees_memory_but_keeps_the_package_verified(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    runtimes = [Runtime('{"verdicts":[]}'), Runtime('{"verdicts":[]}')]
+    created: list[Runtime] = []
+
+    def factory(*_: Any) -> Runtime:
+        runtime = runtimes[len(created)]
+        created.append(runtime)
+        return runtime
+
+    registry = _local_registry(tmp_path, factory)
+    digests = 0
+    real_digest = registry_module._sha256_file
+
+    def counting_digest(path: Path) -> str:
+        nonlocal digests
+        digests += 1
+        return real_digest(path)
+
+    monkeypatch.setattr(registry_module, "_sha256_file", counting_digest)
+
+    assert registry.status()["state"] == "ready"
+    assert digests == 1
+    assert registry.classifier() is not None
+
+    registry.release_runtime()
+    assert runtimes[0].closed is True
+
+    # The package never changed on disk, so the reload must not re-hash it.
+    assert registry.status()["state"] == "ready"
+    assert registry.classifier() is not None
+    assert digests == 1
+    assert len(created) == 2
+
+
+def test_deactivating_forgets_the_integrity_proof(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    registry = _local_registry(tmp_path, lambda *_: Runtime('{"verdicts":[]}'))
+    digests = 0
+    real_digest = registry_module._sha256_file
+
+    def counting_digest(path: Path) -> str:
+        nonlocal digests
+        digests += 1
+        return real_digest(path)
+
+    monkeypatch.setattr(registry_module, "_sha256_file", counting_digest)
+
+    assert registry.status()["state"] == "ready"
+    assert digests == 1
+
+    registry.deactivate()
+
+    # Unlike release_runtime, deactivate drops the verification result.
+    assert registry.status()["state"] == "ready"
+    assert digests == 2

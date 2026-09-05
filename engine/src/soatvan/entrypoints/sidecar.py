@@ -32,6 +32,10 @@ from soatvan.workflow.ports import ContextClassifier
 
 MAX_FRAME = 1024 * 1024
 EMIT_LOCK = threading.Lock()
+# How long the sidecar keeps an idle local model resident. With GPU offload
+# the weights sit in memory the OS cannot evict, so they are released once
+# the user stops submitting documents; the next job reloads them lazily.
+MODEL_IDLE_RELEASE_SECONDS = 180.0
 PUBLIC_METHODS = frozenset(
     {
         "engine.hello",
@@ -103,6 +107,9 @@ class DynamicClassifierProvider:
     def deactivate(self) -> None:
         self._models.deactivate()
 
+    def release_runtime(self) -> None:
+        self._models.release_runtime()
+
 
 class Sidecar:
     def __init__(self, local_data: Path | None = None) -> None:
@@ -139,6 +146,8 @@ class Sidecar:
             self.documents, self.dictionary, RuleEngine(), self.classifiers, self.seq2seq
         )
         self.jobs: dict[str, Token] = {}
+        self._idle_lock = threading.Lock()
+        self._idle_timer: threading.Timer | None = None
 
     def dispatch(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         handlers = {
@@ -184,10 +193,15 @@ class Sidecar:
 
     def start_job(self, params: dict[str, Any]) -> dict[str, Any]:
         job_id = str(params["job_id"])
-        if job_id in self.jobs:
-            raise ValueError("JOB_ALREADY_EXISTS")
         token = Token()
-        self.jobs[job_id] = token
+        with self._idle_lock:
+            if job_id in self.jobs:
+                raise ValueError("JOB_ALREADY_EXISTS")
+            # Registering the job and cancelling the release share one lock, so
+            # a timer that already fired cannot unload the model underneath a
+            # job that is about to claim the classifier.
+            self._cancel_idle_release()
+            self.jobs[job_id] = token
         threading.Thread(
             target=self._run_job,
             args=(job_id, dict(params), token),
@@ -293,7 +307,40 @@ class Sidecar:
                 }
             )
         finally:
-            self.jobs.pop(job_id, None)
+            with self._idle_lock:
+                self.jobs.pop(job_id, None)
+                self._schedule_idle_release()
+
+    def _cancel_idle_release(self) -> None:
+        """Drop a pending release. Caller holds `_idle_lock`."""
+        timer, self._idle_timer = self._idle_timer, None
+        if timer is not None:
+            timer.cancel()
+
+    def _schedule_idle_release(self) -> None:
+        """Arm the idle release. Caller holds `_idle_lock`."""
+        self._cancel_idle_release()
+        timer = threading.Timer(MODEL_IDLE_RELEASE_SECONDS, self._release_model_if_idle)
+        # A non-daemon Timer would keep the interpreter alive at shutdown.
+        timer.daemon = True
+        self._idle_timer = timer
+        timer.start()
+
+    def _release_model_if_idle(self) -> None:
+        with self._idle_lock:
+            self._idle_timer = None
+            if self.jobs:
+                return
+            try:
+                self.classifiers.release_runtime()
+            except Exception as error:  # releasing memory must never kill the sidecar
+                _log_dev_exception("idle model release", error, error_code(error))
+                return
+        sys.stderr.write(
+            "[SoatVan-Sidecar] Local model runtime released after "
+            f"{MODEL_IDLE_RELEASE_SECONDS:.0f}s idle; it reloads on the next job.\n"
+        )
+        sys.stderr.flush()
 
     def cancel_job(self, params: dict[str, Any]) -> dict[str, Any]:
         token = self.jobs.get(str(params["job_id"]))

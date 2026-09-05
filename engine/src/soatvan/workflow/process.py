@@ -107,11 +107,14 @@ class ProcessDocument:
         # Produces additional findings from vn-spell-correction-small without
         # requiring cloud AI or a GGUF model to be installed.
         if request.use_seq2seq and self._seq2seq is not None and self._seq2seq.is_ready():
-            # Sequential offload: deactivate local LLM if resident to allocate max memory for Seq2Seq
+            # Sequential offload: free the local LLM's memory so Seq2Seq gets the whole budget
             llm_was_resident = False
-            if self._classifiers is not None and hasattr(self._classifiers, "deactivate"):
+            if self._classifiers is not None:
                 try:
-                    self._classifiers.deactivate()
+                    # Release only the runtime's memory. The package stays
+                    # verified, so the LLM pass below reloads without hashing
+                    # several GB of GGUF again.
+                    self._classifiers.release_runtime()
                     # Force aggressive memory reclamation — on macOS Metal the
                     # native allocator may hold pages until a full GC cycle runs.
                     import gc
@@ -119,7 +122,7 @@ class ProcessDocument:
                     gc.collect()
                     llm_was_resident = True
                     sys.stderr.write(
-                        "[SoatVan-Process] Local LLM deactivated before Seq2Seq pass.\n"
+                        "[SoatVan-Process] Local LLM runtime released before Seq2Seq pass.\n"
                     )
                     sys.stderr.flush()
                 except Exception:

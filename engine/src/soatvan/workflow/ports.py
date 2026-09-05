@@ -136,6 +136,13 @@ class ClassifierProvider(Protocol):
 
     def supports_full_review(self) -> bool: ...
 
+    def release_runtime(self) -> None:
+        """Free the model's memory without invalidating it.
+
+        The provider stays usable: the next `classifier()` reloads on demand.
+        """
+        ...
+
 
 class Seq2SeqProvider(Protocol):
     """Provider for a lightweight seq2seq spelling correction model (e.g. nrl-ai/vn-spell-correction-small).
