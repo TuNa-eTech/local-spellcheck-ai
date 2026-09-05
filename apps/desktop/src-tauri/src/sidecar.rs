@@ -236,6 +236,8 @@ fn engine_command(app: &AppHandle, data_dir: &std::path::Path) -> AppResult<Comm
         let engine = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../engine");
         let mut command = Command::new("uv");
         command.args(["run", "--project"]).arg(engine).args([
+            "--extra",
+            "model",
             "python",
             "-u",
             "-m",

@@ -857,7 +857,9 @@ fn install_model_package(
     expected_model_id: Option<&str>,
     generation: u64,
 ) -> AppResult<ModelStatus> {
+    eprintln!("[soatvan-host] install_model_package: path={package:?}, generation={generation}");
     deactivate_model(&state.engine)?;
+    eprintln!("[soatvan-host] install_model_package: deactivated previous model");
     let installed = state
         .model
         .lock()
@@ -865,8 +867,30 @@ fn install_model_package(
         .import_with_cancel(package, expected_model_id, || {
             model_operation_cancelled(&state.model_cancelled_generation, generation)
         });
+    match &installed {
+        Ok(status) => eprintln!(
+            "[soatvan-host] install_model_package: import OK, state={:?}, model_id={:?}",
+            status.state, status.model_id
+        ),
+        Err(error) => eprintln!(
+            "[soatvan-host] install_model_package: import FAILED: {error:?}"
+        ),
+    }
     match installed {
-        Ok(status) => activate_model(state, status, generation),
+        Ok(status) => {
+            // Switch the active AI provider to "local" so that
+            // engine_model_status() delegates to ModelRegistry instead of
+            // short-circuiting to a cloud-AI response.  The user explicitly
+            // chose to import a local model, so activating it is the
+            // expected behaviour.  Cloud config is preserved — only the
+            // active_provider flag changes.
+            let _ = state.engine.call(
+                "ai_config.set_active",
+                json!({"provider": "local"}),
+                Duration::from_secs(5),
+            );
+            activate_model(state, status, generation)
+        }
         Err(error) => {
             let _ = engine_model_status(&state.engine, true);
             Err(error)
@@ -879,10 +903,16 @@ fn activate_model(
     installed: ModelStatus,
     generation: u64,
 ) -> AppResult<ModelStatus> {
+    eprintln!(
+        "[soatvan-host] activate_model: installed.state={:?}, model_id={:?}",
+        installed.state, installed.model_id
+    );
     if installed.state != "installed" {
+        eprintln!("[soatvan-host] activate_model: state != installed, returning as-is");
         return Ok(installed);
     }
     if model_operation_cancelled(&state.model_cancelled_generation, generation) {
+        eprintln!("[soatvan-host] activate_model: cancelled before engine call");
         state
             .model
             .lock()
@@ -891,9 +921,17 @@ fn activate_model(
         let _ = engine_model_status(&state.engine, true);
         return Err(AppError::ModelCancelled);
     }
+    eprintln!("[soatvan-host] activate_model: calling engine model.status(activate=true)...");
     let status = match engine_model_status(&state.engine, true) {
-        Ok(status) => status,
+        Ok(status) => {
+            eprintln!(
+                "[soatvan-host] activate_model: engine returned state={:?}, code={:?}, model_id={:?}",
+                status.state, status.code, status.model_id
+            );
+            status
+        }
         Err(error) => {
+            eprintln!("[soatvan-host] activate_model: engine call FAILED: {error:?}");
             state
                 .model
                 .lock()
@@ -906,6 +944,7 @@ fn activate_model(
     let provisioner = state.model.lock().expect("model poisoned");
     if status.state == "ready" {
         if model_operation_cancelled(&state.model_cancelled_generation, generation) {
+            eprintln!("[soatvan-host] activate_model: cancelled after engine ready");
             drop(provisioner);
             deactivate_model(&state.engine)?;
             state
@@ -917,8 +956,13 @@ fn activate_model(
             return Err(AppError::ModelCancelled);
         }
         provisioner.commit_activation()?;
+        eprintln!("[soatvan-host] activate_model: SUCCESS — committed activation");
         return Ok(status);
     }
+    eprintln!(
+        "[soatvan-host] activate_model: engine state != ready ({:?}), rolling back. code={:?}",
+        status.state, status.code
+    );
     provisioner.rollback_activation()?;
     drop(provisioner);
     let _ = engine_model_status(&state.engine, true);

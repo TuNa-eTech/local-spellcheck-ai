@@ -105,9 +105,16 @@ class ProcessDocument:
         # requiring cloud AI or a GGUF model to be installed.
         if request.use_seq2seq and self._seq2seq is not None and self._seq2seq.is_ready():
             # Sequential offload: deactivate local LLM if resident to allocate max memory for Seq2Seq
+            llm_was_resident = False
             if self._classifiers is not None and hasattr(self._classifiers, "deactivate"):
                 try:
                     self._classifiers.deactivate()
+                    # Force aggressive memory reclamation — on macOS Metal the
+                    # native allocator may hold pages until a full GC cycle runs.
+                    import gc
+                    gc.collect()
+                    gc.collect()
+                    llm_was_resident = True
                     sys.stderr.write(
                         "[SoatVan-Process] Local LLM deactivated before Seq2Seq pass.\n"
                     )
@@ -121,7 +128,20 @@ class ProcessDocument:
             sys.stderr.flush()
             progress("seq2seq", 55, "job.seq2seq_correction")
             try:
-                seq2seq_findings = self._seq2seq.check_blocks(blocks, ignored_words, cancel)
+                if llm_was_resident and sys.platform == "darwin":
+                    # On macOS with unified memory, running seq2seq in the same
+                    # process after unloading a GGUF model risks OOM-kill because
+                    # Metal memory may not be fully reclaimed.  Run in a
+                    # subprocess so that a crash does not take down the sidecar.
+                    sys.stderr.write(
+                        "[SoatVan-Process] Using subprocess isolation for Seq2Seq (macOS memory safety).\n"
+                    )
+                    sys.stderr.flush()
+                    seq2seq_findings = _run_seq2seq_subprocess(
+                        self._seq2seq, blocks, request.ignored_words
+                    )
+                else:
+                    seq2seq_findings = self._seq2seq.check_blocks(blocks, request.ignored_words, cancel)
                 sys.stderr.write(
                     f"[SoatVan-Process] Seq2Seq spell-check finished with {len(seq2seq_findings)} finding(s).\n"
                 )
@@ -247,6 +267,68 @@ def _merge_seq2seq_findings(
         if not overlaps:
             result.append(s2s)
     return result
+
+
+def _run_seq2seq_subprocess(
+    seq2seq: object,
+    blocks: list[Block],
+    ignored_words: frozenset[str],
+) -> list[Finding]:
+    """Run seq2seq in an isolated subprocess to avoid OOM on macOS.
+
+    When a GGUF model was just unloaded, macOS Metal memory may not be
+    fully reclaimed.  Running torch in the same process risks Jetsam
+    killing the entire sidecar.  A subprocess crash is recoverable —
+    the parent logs a warning and continues without seq2seq findings.
+    """
+    import json
+    import subprocess
+
+    model_dir = getattr(seq2seq, "_model_dir", None) or getattr(seq2seq, "_speller", None) and getattr(seq2seq._speller, "model_id", None)  # type: ignore[union-attr]
+    if model_dir is None:
+        raise RuntimeError("Cannot determine seq2seq model_dir for subprocess")
+
+    input_data = json.dumps({
+        "model_dir": str(model_dir),
+        "blocks": [{"id": b.id, "text": b.text, "kind": b.kind} for b in blocks],
+        "ignored_words": sorted(ignored_words),
+    })
+
+    proc = subprocess.run(
+        [sys.executable, "-m", "soatvan.entrypoints.seq2seq_worker"],
+        input=input_data.encode("utf-8"),
+        capture_output=True,
+        timeout=600,
+    )
+
+    # Forward worker stderr to parent stderr for diagnostics
+    if proc.stderr:
+        sys.stderr.buffer.write(proc.stderr)
+        sys.stderr.buffer.flush()
+
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"Seq2Seq subprocess exited with code {proc.returncode}"
+        )
+
+    result = json.loads(proc.stdout.decode("utf-8"))
+    return [
+        Finding(
+            id=f["id"],
+            category=f["category"],
+            origin=f["origin"],
+            detector_id=f["detector_id"],
+            block_id=f["block_id"],
+            start=f["start"],
+            end=f["end"],
+            source_text=f["source_text"],
+            suggestion=f["suggestion"],
+            reason=f["reason"],
+            rule_version=f["rule_version"],
+            confidence=f.get("confidence", 1.0),
+        )
+        for f in result["findings"]
+    ]
 
 
 def _apply_classifier(

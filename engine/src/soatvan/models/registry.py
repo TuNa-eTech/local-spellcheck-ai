@@ -34,8 +34,12 @@ class ModelRegistry:
         self._public_key = public_key or os.environ.get("SOATVAN_MODEL_PUBLIC_KEY")
 
     def status(self, activate: bool = True) -> dict[str, Any]:
+        import sys
+
         active = self._root / "active" / "manifest.json"
+        print(f"[soatvan-engine] ModelRegistry.status: activate={activate}, manifest_path={active}", file=sys.stderr)
         if not active.is_file():
+            print("[soatvan-engine] ModelRegistry.status: manifest not found → not_installed", file=sys.stderr)
             self._clear_cache()
             return {"state": "not_installed"}
         try:
@@ -44,9 +48,12 @@ class ModelRegistry:
                 raise ValueError
             trust = manifest.get("trust")
             capabilities = manifest.get("capabilities")
+            model_id = manifest.get("model_id", "<unknown>")
+            print(f"[soatvan-engine] ModelRegistry.status: model_id={model_id}, trust={trust}, protocol={manifest.get('engine_protocol')}", file=sys.stderr)
             if manifest.get("schema_version") != 2 or not _capabilities_valid(
                 capabilities, trust
             ):
+                print(f"[soatvan-engine] ModelRegistry.status: schema/capabilities invalid → MODEL_MANIFEST_INVALID", file=sys.stderr)
                 self._clear_cache()
                 return {"state": "invalid", "code": "MODEL_MANIFEST_INVALID"}
             if trust == "release_signed":
@@ -58,15 +65,19 @@ class ModelRegistry:
                     return {"state": "installed", "code": "MODEL_QUALITY_GATE_REQUIRED"}
             elif trust == "local_unverified":
                 if "signature" in manifest or "quality_gate" in manifest:
+                    print("[soatvan-engine] ModelRegistry.status: local_unverified has signature/quality_gate → invalid", file=sys.stderr)
                     self._clear_cache()
                     return {"state": "invalid", "code": "MODEL_MANIFEST_INVALID"}
             else:
+                print(f"[soatvan-engine] ModelRegistry.status: unknown trust={trust!r} → invalid", file=sys.stderr)
                 self._clear_cache()
                 return {"state": "invalid", "code": "MODEL_MANIFEST_INVALID"}
             if not _runtime_config_approved(manifest):
+                print("[soatvan-engine] ModelRegistry.status: runtime config not approved → invalid", file=sys.stderr)
                 self._clear_cache()
                 return {"state": "invalid", "code": "MODEL_MANIFEST_INVALID"}
             if manifest.get("engine_protocol") != PROTOCOL_VERSION:
+                print(f"[soatvan-engine] ModelRegistry.status: protocol mismatch: manifest={manifest.get('engine_protocol')}, engine={PROTOCOL_VERSION} → incompatible", file=sys.stderr)
                 return {"state": "invalid", "code": "MODEL_PROTOCOL_INCOMPATIBLE"}
             if not _safe_name(manifest["file"]) or not _safe_name(manifest["license_file"]):
                 raise ValueError
@@ -75,7 +86,8 @@ class ModelRegistry:
             try:
                 model_stat = model.stat()
                 license_stat = license_path.stat()
-            except OSError:
+            except OSError as exc:
+                print(f"[soatvan-engine] ModelRegistry.status: stat failed: {exc} → MODEL_INTEGRITY_FAILED", file=sys.stderr)
                 self._clear_cache()
                 return {"state": "invalid", "code": "MODEL_INTEGRITY_FAILED"}
             key = (
@@ -86,8 +98,10 @@ class ModelRegistry:
                 active.stat().st_mtime_ns,
             )
             if activate and self._cache_key == key and self._classifier is not None:
+                print("[soatvan-engine] ModelRegistry.status: cache hit → ready", file=sys.stderr)
                 return _status("ready", manifest)
             if self._verified_key != key:
+                print(f"[soatvan-engine] ModelRegistry.status: verifying SHA256 for {model} ({model_stat.st_size} bytes)...", file=sys.stderr)
                 digest = _sha256_file(model)
                 if (
                     not license_path.is_file()
@@ -95,13 +109,17 @@ class ModelRegistry:
                     or model_stat.st_size != manifest["size"]
                     or digest != manifest["sha256"]
                 ):
+                    print(f"[soatvan-engine] ModelRegistry.status: integrity check FAILED (file_size={model_stat.st_size} vs manifest={manifest['size']}, sha_match={digest == manifest['sha256']})", file=sys.stderr)
                     self._clear_cache()
                     return {"state": "invalid", "code": "MODEL_INTEGRITY_FAILED"}
+                print("[soatvan-engine] ModelRegistry.status: SHA256 verified OK", file=sys.stderr)
                 self._verified_key = key
             if not activate:
                 self._close_runtime()
+                print("[soatvan-engine] ModelRegistry.status: activate=False → installed", file=sys.stderr)
                 return _status("installed", manifest)
             if self._cache_key != key or self._classifier is None:
+                print(f"[soatvan-engine] ModelRegistry.status: loading LlamaCppClassifier for {model}...", file=sys.stderr)
                 factory = self._runtime_factory
                 self._classifier = (
                     LlamaCppClassifier(model, manifest, factory)
@@ -109,18 +127,23 @@ class ModelRegistry:
                     else LlamaCppClassifier(model, manifest)
                 )
                 self._cache_key = key
+                print("[soatvan-engine] ModelRegistry.status: LlamaCppClassifier loaded OK", file=sys.stderr)
             return _status("ready", manifest)
-        except ModelRuntimeUnavailable:
+        except ModelRuntimeUnavailable as exc:
+            print(f"[soatvan-engine] ModelRegistry.status: ModelRuntimeUnavailable: {exc}", file=sys.stderr)
             self._clear_cache()
             status = _status("installed", manifest)
             status["code"] = "MODEL_RUNTIME_UNAVAILABLE"
             return status
-        except ModelLoadFailed:
+        except ModelLoadFailed as exc:
+            print(f"[soatvan-engine] ModelRegistry.status: ModelLoadFailed: {exc}", file=sys.stderr)
             self._clear_cache()
             return {**_status("invalid", manifest), "code": "MODEL_LOAD_FAILED"}
-        except (OSError, KeyError, ValueError, json.JSONDecodeError):
+        except (OSError, KeyError, ValueError, json.JSONDecodeError) as exc:
+            print(f"[soatvan-engine] ModelRegistry.status: caught {type(exc).__name__}: {exc}", file=sys.stderr)
             self._clear_cache()
             return {"state": "invalid", "code": "MODEL_MANIFEST_INVALID"}
+
 
     def classifier(self) -> ContextClassifier | None:
         return self._classifier if self.status().get("state") == "ready" else None
@@ -142,11 +165,20 @@ class ModelRegistry:
         self._verified_key = None
 
     def _close_runtime(self) -> None:
-        close = getattr(self._classifier, "close", None)
-        if callable(close):
-            close()
+        classifier = self._classifier
         self._cache_key = None
         self._classifier = None
+        if classifier is not None:
+            close = getattr(classifier, "close", None)
+            if callable(close):
+                close()
+            del classifier
+            # Force immediate garbage collection to release native memory
+            # (especially Metal GPU allocations on macOS).  Without this the
+            # OS can kill the process when the seq2seq model tries to allocate
+            # while stale llama.cpp buffers still occupy the address space.
+            import gc
+            gc.collect()
 
     def _verify_signature(self, manifest: dict[str, Any]) -> bool:
         if not self._public_key or not isinstance(manifest.get("signature"), str):

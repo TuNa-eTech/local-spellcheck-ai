@@ -1557,6 +1557,10 @@ async function modelImport(): Promise<void> {
     state.useModel = modelCanFilter(status);
     state.fullReview = state.useModel && status.capabilities?.full_review === true;
     state.includeRuleFindings = false;
+    // The backend switches the active AI provider to "local" during import,
+    // so keep the frontend in sync.
+    state.aiConfig.active_provider = "local";
+    state.selectedProviderTab = "local";
     saveModelPreference(state.useModel);
   } catch {
     if (operation === modelOperationSequence) {

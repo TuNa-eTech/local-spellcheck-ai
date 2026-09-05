@@ -378,7 +378,9 @@ impl ModelProvisioner {
         let model_id = expected_model_id
             .map(str::to_owned)
             .unwrap_or_else(|| local_model_id(file_stem));
+        eprintln!("[soatvan-host] extract_raw_gguf: path={gguf_path:?}, file_stem={file_stem:?}, model_id={model_id:?}");
         if !valid_model_id(&model_id) {
+            eprintln!("[soatvan-host] extract_raw_gguf: invalid model_id → ModelPackageInvalid");
             return Err(AppError::ModelPackageInvalid);
         }
         let file_name = "model.gguf";
@@ -386,8 +388,11 @@ impl ModelProvisioner {
 
         let metadata = fs::metadata(gguf_path)?;
         let size = metadata.len();
+        let available = fs2::available_space(staging)?;
         const DISK_MARGIN: u64 = 64 * 1024 * 1024;
-        if size == 0 || fs2::available_space(staging)? < size.saturating_add(DISK_MARGIN) {
+        eprintln!("[soatvan-host] extract_raw_gguf: size={size} bytes, available_space={available} bytes");
+        if size == 0 || available < size.saturating_add(DISK_MARGIN) {
+            eprintln!("[soatvan-host] extract_raw_gguf: insufficient disk space → ModelDiskSpace");
             return Err(AppError::ModelDiskSpace);
         }
 
@@ -455,6 +460,11 @@ impl ModelProvisioner {
 
         let manifest_bytes = serde_json::to_vec_pretty(&manifest)?;
         fs::write(staging.join("manifest.json"), manifest_bytes)?;
+        eprintln!(
+            "[soatvan-host] extract_raw_gguf: DONE — model_id={:?}, sha256={}, size={size}",
+            manifest.model_id,
+            manifest.sha256,
+        );
         Ok(manifest)
     }
     pub fn commit_activation(&self) -> AppResult<()> {

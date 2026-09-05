@@ -210,20 +210,32 @@ def _metadata_chat_formatter(runtime: Any, module: Any) -> Any | None:
 
 
 def _default_runtime_factory(model_path: Path, context_size: int, seed: int) -> CompletionRuntime:
+    import sys
+
+    print(f"[soatvan-engine] _default_runtime_factory: model_path={model_path}, context_size={context_size}, seed={seed}", file=sys.stderr)
     try:
         llama = import_module("llama_cpp")
+        print(f"[soatvan-engine] _default_runtime_factory: llama_cpp imported OK", file=sys.stderr)
     except ImportError as error:
+        print(f"[soatvan-engine] _default_runtime_factory: llama_cpp NOT installed: {error}", file=sys.stderr)
         raise ModelRuntimeUnavailable("llama-cpp-python is not installed") from error
     gpu_layers = _preferred_gpu_layers(llama)
+    print(f"[soatvan-engine] _default_runtime_factory: gpu_layers={gpu_layers}", file=sys.stderr)
     try:
+        print(f"[soatvan-engine] _default_runtime_factory: loading model (gpu_layers={gpu_layers})...", file=sys.stderr)
         runtime = _create_llama_runtime(llama, model_path, context_size, seed, gpu_layers)
+        print(f"[soatvan-engine] _default_runtime_factory: model loaded OK", file=sys.stderr)
         return cast(CompletionRuntime, _NativeLlamaRuntime(runtime, llama))
     except Exception as error:
+        print(f"[soatvan-engine] _default_runtime_factory: FAILED with gpu_layers={gpu_layers}: {type(error).__name__}: {error}", file=sys.stderr)
         if gpu_layers != 0:
             try:
+                print(f"[soatvan-engine] _default_runtime_factory: retrying with gpu_layers=0...", file=sys.stderr)
                 runtime = _create_llama_runtime(llama, model_path, context_size, seed, 0)
+                print(f"[soatvan-engine] _default_runtime_factory: model loaded OK (cpu fallback)", file=sys.stderr)
                 return cast(CompletionRuntime, _NativeLlamaRuntime(runtime, llama))
-            except Exception:
+            except Exception as fallback_error:
+                print(f"[soatvan-engine] _default_runtime_factory: CPU fallback also FAILED: {type(fallback_error).__name__}: {fallback_error}", file=sys.stderr)
                 pass
         raise ModelLoadFailed("MODEL_LOAD_FAILED") from error
 
