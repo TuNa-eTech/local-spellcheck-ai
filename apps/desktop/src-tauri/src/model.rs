@@ -59,6 +59,8 @@ struct Manifest {
     batch_size: Option<u64>,
     max_tokens: Option<u64>,
     review_chunk_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    review_mode: Option<String>,
     timeout_seconds: Option<u64>,
     seed: Option<i64>,
     minimum_confidence: Option<f64>,
@@ -141,6 +143,10 @@ impl ModelProvisioner {
                 .map_or(true, |tokens| tokens > 500)
         {
             manifest.review_chunk_tokens = Some(500);
+            changed = true;
+        }
+        if eligible && manifest.review_mode.as_deref() != Some("lightweight") {
+            manifest.review_mode = Some("lightweight".to_string());
             changed = true;
         }
         if eligible
@@ -446,6 +452,7 @@ impl ModelProvisioner {
             batch_size: Some(8),
             max_tokens: Some(512),
             review_chunk_tokens: Some(500),
+            review_mode: Some("lightweight".to_string()),
             timeout_seconds: Some(LOCAL_REVIEW_TIMEOUT_SECONDS),
             seed: Some(42),
             minimum_confidence: Some(0.8),
@@ -583,6 +590,10 @@ fn canonical_unsigned(value: &Manifest) -> AppResult<Vec<u8>> {
         (
             "review_chunk_tokens",
             value.review_chunk_tokens.map(serde_json::Value::from),
+        ),
+        (
+            "review_mode",
+            value.review_mode.as_ref().map(|s| serde_json::Value::from(s.clone())),
         ),
         (
             "timeout_seconds",
@@ -788,6 +799,7 @@ mod tests {
             batch_size: Some(8),
             max_tokens: Some(512),
             review_chunk_tokens: Some(1200),
+            review_mode: None,
             timeout_seconds: Some(120),
             seed: Some(42),
             minimum_confidence: Some(0.8),
@@ -1045,6 +1057,7 @@ mod tests {
         assert!(migrated.capabilities.full_review);
         assert_eq!(migrated.context_size, Some(4096));
         assert_eq!(migrated.review_chunk_tokens, Some(500));
+        assert_eq!(migrated.review_mode.as_deref(), Some("lightweight"));
         assert_eq!(migrated.timeout_seconds, Some(600));
         assert!(migrated.quality_gate.is_none());
         assert!(migrated.signature.is_none());
