@@ -34,7 +34,7 @@ foreach ($cmd in @("uv", "npm", "cargo")) {
 
 # 2. Dong bo Python & Build PyInstaller sidecar
 Write-Host "`n[1/4] Dong bo dependency va build Python engine..." -ForegroundColor Yellow
-Invoke-Checked "uv" @("sync", "--project", "engine", "--extra", "dev", "--extra", "model", "--locked")
+Invoke-Checked "uv" @("sync", "--project", "engine", "--extra", "dev", "--extra", "model", "--extra", "seq2seq", "--locked")
 
 Push-Location $engineDir
 try {

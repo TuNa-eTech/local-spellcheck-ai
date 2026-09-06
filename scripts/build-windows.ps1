@@ -156,7 +156,7 @@ else {
 Push-Location $repoRoot
 try {
     Write-Host "[1/6] Dong bo dependency Python"
-    Invoke-Checked "uv" @("sync", "--project", "engine", "--extra", "dev", "--extra", "model", "--locked")
+    Invoke-Checked "uv" @("sync", "--project", "engine", "--extra", "dev", "--extra", "model", "--extra", "seq2seq", "--locked")
 
     if ($env:SOATVAN_PYINSTALLER_CACHE_HIT -eq "true") {
         $engineBuildDir = Join-Path $engineDir "build\soatvan-engine"
