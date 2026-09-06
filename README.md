@@ -1,4 +1,4 @@
-# SoátVăn Desktop
+# SoatVan-itowf Desktop
 
 Ứng dụng Windows kiểm tra DOCX hoàn toàn cục bộ theo workflow:
 
@@ -45,7 +45,7 @@ npm install --prefix apps/desktop
 npm run tauri -- dev
 ```
 
-Trong browser-only mode (`npm run dev` hoặc mở trực tiếp `http://localhost:1420`), UI dùng dữ liệu demo. Khi chạy `npm run tauri -- dev`, hãy thao tác trong cửa sổ desktop **SoátVăn** do Tauri tự mở, không mở URL Vite trong trình duyệt. Cửa sổ Tauri dùng Rust host để khởi động Python sidecar thường trú bằng `uv` và handshake protocol v1.
+Trong browser-only mode (`npm run dev` hoặc mở trực tiếp `http://localhost:1420`), UI dùng dữ liệu demo. Khi chạy `npm run tauri -- dev`, hãy thao tác trong cửa sổ desktop **SoatVan-itowf** do Tauri tự mở, không mở URL Vite trong trình duyệt. Cửa sổ Tauri dùng Rust host để khởi động Python sidecar thường trú bằng `uv` và handshake protocol v1.
 
 Ở dev build, terminal hiển thị lỗi Rust host với prefix `[soatvan-host]` và chuyển tiếp `stderr` của Python/model với prefix `[soatvan-sidecar]`. Sidecar ghi mã lỗi, loại exception và traceback khi job thất bại. Release build không bật các log chẩn đoán này; `stdout` của sidecar vẫn chỉ dành cho NDJSON protocol.
 

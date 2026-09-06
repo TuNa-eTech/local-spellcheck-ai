@@ -287,7 +287,7 @@ class DocxPackage:
         end_marker.addnext(reference_run)
         comment = etree.SubElement(comments, f"{{{W}}}comment")
         comment.set(f"{{{W}}}id", str(comment_id))
-        comment.set(f"{{{W}}}author", "SoátVăn")
+        comment.set(f"{{{W}}}author", "SoatVan-itowf")
         p = etree.SubElement(comment, f"{{{W}}}p")
         r = etree.SubElement(p, f"{{{W}}}r")
         text = etree.SubElement(r, f"{{{W}}}t")

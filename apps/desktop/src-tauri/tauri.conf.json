@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "SoátVăn",
+  "productName": "SoatVan-itowf",
   "version": "0.1.8",
   "identifier": "vn.soatvan.desktop",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "SoátVăn",
+        "title": "SoatVan-itowf",
         "width": 1040,
         "height": 640,
         "minWidth": 720,

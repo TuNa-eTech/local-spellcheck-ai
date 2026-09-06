@@ -19,7 +19,7 @@ repo_root="$(cd -- "${script_dir}/.." && pwd)"
 engine_resource_dir="${repo_root}/apps/desktop/src-tauri/resources/engine"
 engine_dist_dir="${repo_root}/engine/dist/soatvan-engine"
 dmg_dir="${repo_root}/apps/desktop/src-tauri/target/release/bundle/dmg"
-app_bundle="${repo_root}/apps/desktop/src-tauri/target/release/bundle/macos/SoátVăn.app"
+app_bundle="${repo_root}/apps/desktop/src-tauri/target/release/bundle/macos/SoatVan-itowf.app"
 
 cd "${repo_root}"
 

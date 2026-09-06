@@ -1,8 +1,8 @@
-# Build SoátVăn Desktop
+# Build SoatVan-itowf Desktop
 
 ## Nguyên tắc
 
-SoátVăn gồm Tauri host và Python sidecar được đóng gói bằng PyInstaller `onedir`. Cả hai chứa mã native, vì vậy phải build trên đúng hệ điều hành và kiến trúc đích:
+SoatVan-itowf gồm Tauri host và Python sidecar được đóng gói bằng PyInstaller `onedir`. Cả hai chứa mã native, vì vậy phải build trên đúng hệ điều hành và kiến trúc đích:
 
 - Windows x64 build installer Windows x64.
 - macOS Apple Silicon build DMG arm64.

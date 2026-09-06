@@ -332,7 +332,7 @@ function render(preferredFocus?: string): void {
   const reviewNavDisabled = state.view.kind === "settings" && settingsOperationLocked();
   app.innerHTML = `
     <header class="app-header">
-      <div class="brand"><span class="brand__mark" aria-hidden="true">SV</span><div><strong>SoátVăn</strong><span>Kiểm tra văn bản trên máy</span></div></div>
+      <div class="brand"><span class="brand__mark" aria-hidden="true">SV</span><div><strong>SoatVan-itowf</strong><span>Kiểm tra văn bản trên máy</span></div></div>
       <nav class="app-header__nav" aria-label="Điều hướng chính">
         <button class="button button--quiet" id="review-nav" type="button" ${workflowView ? 'aria-current="page"' : ""} ${reviewNavDisabled ? 'aria-disabled="true" aria-describedby="settings-message"' : ""}>Rà soát</button>
         <button class="button button--quiet" id="settings" type="button" ${state.view.kind === "settings" ? 'aria-current="page"' : ""} ${workflowView && state.step === "processing" ? "disabled" : ""}>Cài đặt</button>
@@ -1898,7 +1898,7 @@ window.addEventListener("drop", event => {
     if (selection === documentSelectionSequence && state.view === requestedView && state.step === requestedFromStep) useDocument(info);
   }).catch(() => {
     if (selection !== documentSelectionSequence || state.view !== requestedView || state.step !== requestedFromStep) return;
-    state.error = "SoátVăn chỉ nhận tệp .docx hợp lệ. Hãy chọn một tài liệu Word khác.";
+    state.error = "SoatVan-itowf chỉ nhận tệp .docx hợp lệ. Hãy chọn một tài liệu Word khác.";
     render("#choose");
   });
 });
@@ -1913,7 +1913,7 @@ try {
       if (selection === documentSelectionSequence && state.view === requestedView && state.step === requestedFromStep) useDocument(info);
     }).catch(() => {
       if (selection !== documentSelectionSequence || state.view !== requestedView || state.step !== requestedFromStep) return;
-      state.error = "SoátVăn chỉ nhận tệp .docx hợp lệ.";
+      state.error = "SoatVan-itowf chỉ nhận tệp .docx hợp lệ.";
       render();
     });
   }).catch(() => {});

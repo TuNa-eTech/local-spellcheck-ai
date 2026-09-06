@@ -747,7 +747,7 @@ async fn model_import(
     let selected = app
         .dialog()
         .file()
-        .add_filter("Gói model SoátVăn", &["svmodel", "zip", "gguf"])
+        .add_filter("Gói model SoatVan-itowf", &["svmodel", "zip", "gguf"])
         .blocking_pick_file();
     let Some(path) = selected.and_then(|value| value.into_path().ok()) else {
         return Ok(None);
