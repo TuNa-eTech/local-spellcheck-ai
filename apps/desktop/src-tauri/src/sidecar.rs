@@ -214,6 +214,7 @@ fn spawn_engine(
     let mut command = engine_command(app, data_dir)?;
     #[cfg(windows)]
     command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+
     // The engine writes diagnostics and Python tracebacks to stderr. Capture
     // them in release too so a user's bug report has something to read; the
     // draining thread below keeps the pipe from filling and stalling a job.

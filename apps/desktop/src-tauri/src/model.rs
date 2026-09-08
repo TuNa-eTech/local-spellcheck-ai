@@ -429,7 +429,9 @@ impl ModelProvisioner {
         let size = metadata.len();
         let available = fs2::available_space(staging)?;
         const DISK_MARGIN: u64 = 64 * 1024 * 1024;
-        eprintln!("[soatvan-host] extract_raw_gguf: size={size} bytes, available_space={available} bytes");
+        eprintln!(
+            "[soatvan-host] extract_raw_gguf: size={size} bytes, available_space={available} bytes"
+        );
         if size == 0 || available < size.saturating_add(DISK_MARGIN) {
             eprintln!("[soatvan-host] extract_raw_gguf: insufficient disk space → ModelDiskSpace");
             return Err(AppError::ModelDiskSpace);
@@ -502,8 +504,7 @@ impl ModelProvisioner {
         fs::write(staging.join("manifest.json"), manifest_bytes)?;
         eprintln!(
             "[soatvan-host] extract_raw_gguf: DONE — model_id={:?}, sha256={}, size={size}",
-            manifest.model_id,
-            manifest.sha256,
+            manifest.model_id, manifest.sha256,
         );
         Ok(manifest)
     }
@@ -626,7 +627,10 @@ fn canonical_unsigned(value: &Manifest) -> AppResult<Vec<u8>> {
         ),
         (
             "review_mode",
-            value.review_mode.as_ref().map(|s| serde_json::Value::from(s.clone())),
+            value
+                .review_mode
+                .as_ref()
+                .map(|s| serde_json::Value::from(s.clone())),
         ),
         (
             "timeout_seconds",

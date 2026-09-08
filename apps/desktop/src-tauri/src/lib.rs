@@ -553,7 +553,10 @@ fn open_output(
 
 #[tauri::command]
 fn open_logs(app: AppHandle) -> AppResult<()> {
-    let dir = app.path().app_log_dir().map_err(|_| AppError::InvalidPath)?;
+    let dir = app
+        .path()
+        .app_log_dir()
+        .map_err(|_| AppError::InvalidPath)?;
     fs::create_dir_all(&dir)?;
     app.opener()
         .open_path(dir.to_string_lossy(), None::<&str>)
@@ -917,9 +920,7 @@ fn install_model_package(
             "[soatvan-host] install_model_package: import OK, state={:?}, model_id={:?}",
             status.state, status.model_id
         ),
-        Err(error) => eprintln!(
-            "[soatvan-host] install_model_package: import FAILED: {error:?}"
-        ),
+        Err(error) => eprintln!("[soatvan-host] install_model_package: import FAILED: {error:?}"),
     }
     match installed {
         Ok(status) => {
