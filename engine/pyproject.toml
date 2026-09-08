@@ -57,5 +57,6 @@ module = [
     "lxml.*",
     "torch.*",
     "transformers.*",
+    "sentencepiece.*",
 ]
 ignore_missing_imports = true
