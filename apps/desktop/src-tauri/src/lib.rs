@@ -539,6 +539,28 @@ fn open_output(
 }
 
 #[tauri::command]
+fn open_logs(app: AppHandle) -> AppResult<()> {
+    let dir = app.path().app_log_dir().map_err(|_| AppError::InvalidPath)?;
+    fs::create_dir_all(&dir)?;
+    app.opener()
+        .open_path(dir.to_string_lossy(), None::<&str>)
+        .map_err(|_| AppError::InvalidPath)?;
+    Ok(())
+}
+
+/// Bridge WebView `console.warn`/`console.error` output into the shared log file
+/// so problems the user hits in the UI leave a trace we can read afterwards.
+#[tauri::command]
+fn ui_log(level: String, message: String) {
+    let message = message.chars().take(2000).collect::<String>();
+    match level.as_str() {
+        "error" => log::error!(target: "webview", "{message}"),
+        "warn" => log::warn!(target: "webview", "{message}"),
+        _ => log::info!(target: "webview", "{message}"),
+    }
+}
+
+#[tauri::command]
 async fn custom_rule_list(state: State<'_, AppState>) -> AppResult<Vec<CustomRule>> {
     let value = state
         .engine
@@ -1243,17 +1265,68 @@ fn finalize_output_or_cleanup(source: &Path, temporary: &Path) -> AppResult<Path
     }
 }
 
+fn install_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}", l.file(), l.line()))
+            .unwrap_or_else(|| "<unknown>".into());
+        let payload = info
+            .payload()
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| info.payload().downcast_ref::<String>().map(String::as_str))
+            .unwrap_or("<non-string panic payload>");
+        log::error!(target: "panic", "panic at {location}: {payload}");
+        previous(info);
+    }));
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    install_panic_hook();
     let app = tauri::Builder::default()
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                // `targets` replaces the plugin defaults; `target` would append and
+                // leave a second LogDir writing `<productName>.log` alongside ours.
+                .targets([
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
+                        file_name: Some("soatvan".into()),
+                    }),
+                ])
+                .max_file_size(5_000_000)
+                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(3))
+                .timezone_strategy(tauri_plugin_log::TimezoneStrategy::UseLocal)
+                .level(log::LevelFilter::Info)
+                .build(),
+        )
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let data_root = app.path().app_local_data_dir()?;
+            let log_dir = app.path().app_log_dir()?;
+            let _ = fs::create_dir_all(&log_dir);
+            log::info!(
+                "SoatVan {} starting; logs at {}",
+                env!("CARGO_PKG_VERSION"),
+                log_dir.display()
+            );
             let model_root = data_root.join("models");
             let model = ModelProvisioner::new(model_root);
-            model.recover_interrupted_activation()?;
-            let engine = EngineBroker::start(app.handle(), &data_root)?;
+            if let Err(error) = model.recover_interrupted_activation() {
+                log::error!("model activation recovery failed: {error:?}");
+                return Err(error.into());
+            }
+            let engine = match EngineBroker::start(app.handle(), &data_root) {
+                Ok(engine) => engine,
+                Err(error) => {
+                    log::error!("engine failed to start: {error:?}");
+                    return Err(error.into());
+                }
+            };
             app.manage(AppState {
                 engine,
                 model: Mutex::new(model),
@@ -1270,6 +1343,8 @@ pub fn run() {
             start_job,
             cancel_job,
             open_output,
+            open_logs,
+            ui_log,
             custom_rule_list,
             custom_rule_upsert,
             custom_rule_delete,

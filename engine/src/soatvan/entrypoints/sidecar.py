@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import sys
 import threading
-import traceback
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -32,6 +32,52 @@ from soatvan.workflow.ports import ContextClassifier
 
 MAX_FRAME = 1024 * 1024
 EMIT_LOCK = threading.Lock()
+LOGGER = logging.getLogger("soatvan.sidecar")
+
+
+def configure_logging() -> None:
+    """Route engine diagnostics to stderr with real levels and tracebacks.
+
+    stdout is the JSON-RPC channel, so everything human-readable goes to stderr;
+    the desktop host drains that stream into its rotating ``soatvan.log`` file.
+    Set ``SOATVAN_DEV_LOG=1`` to include DEBUG-level noise.
+    """
+    root = logging.getLogger()
+    if any(getattr(handler, "_soatvan", False) for handler in root.handlers):
+        return
+    verbose = os.environ.get("SOATVAN_DEV_LOG") == "1"
+    handler = logging.StreamHandler(sys.stderr)
+    # No timestamp: the desktop host timestamps every captured stderr line, and a
+    # bare level/logger prefix keeps the merged log readable.
+    handler.setFormatter(logging.Formatter("%(levelname)s [%(name)s] %(message)s"))
+    handler._soatvan = True  # type: ignore[attr-defined]
+    root.addHandler(handler)
+    root.setLevel(logging.DEBUG if verbose else logging.INFO)
+
+    def _log_uncaught(
+        exc_type: type[BaseException],
+        exc: BaseException,
+        tb: Any,
+    ) -> None:
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc, tb)
+            return
+        LOGGER.critical("uncaught exception", exc_info=(exc_type, exc, tb))
+
+    def _log_uncaught_thread(args: threading.ExceptHookArgs) -> None:
+        if args.exc_value is None or issubclass(args.exc_type, SystemExit):
+            return
+        thread_name = args.thread.name if args.thread else "<unknown>"
+        LOGGER.critical(
+            "uncaught exception in thread %s",
+            thread_name,
+            exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+        )
+
+    sys.excepthook = _log_uncaught
+    threading.excepthook = _log_uncaught_thread
+
+
 # How long the sidecar keeps an idle local model resident. With GPU offload
 # the weights sit in memory the OS cannot evict, so they are released once
 # the user stops submitting documents; the next job reloads them lazily.
@@ -215,25 +261,30 @@ class Sidecar:
         _seq2seq_cfg = self.seq2seq_config_repo.get_config()
         seq2seq_ready = self.seq2seq is not None and self.seq2seq.is_ready()
         use_seq2seq = seq2seq_ready and _seq2seq_cfg.is_enabled
-        sys.stderr.write(
-            f"[SoatVan-Sidecar] _run_job starting: use_model={params.get('use_model')}, "
-            f"full_review={params.get('full_review')}, use_seq2seq={use_seq2seq} "
-            f"(enabled={_seq2seq_cfg.is_enabled}, ready={seq2seq_ready}, "
-            f"transformers={is_transformers_available()}), "
-            f"custom_prompt={params.get('custom_prompt')!r}\n"
+        LOGGER.info(
+            "job %s starting: use_model=%s, full_review=%s, use_seq2seq=%s "
+            "(enabled=%s, ready=%s, transformers=%s), custom_prompt=%r",
+            job_id,
+            params.get("use_model"),
+            params.get("full_review"),
+            use_seq2seq,
+            _seq2seq_cfg.is_enabled,
+            seq2seq_ready,
+            is_transformers_available(),
+            params.get("custom_prompt"),
         )
         if _seq2seq_cfg.is_enabled and not seq2seq_ready:
             if not is_transformers_available():
-                sys.stderr.write(
-                    "[SoatVan-Sidecar] WARNING: Seq2Seq is enabled in settings but skipped because "
-                    "'torch' or 'transformers' is not installed in the Python engine environment.\n"
+                LOGGER.warning(
+                    "Seq2Seq is enabled in settings but skipped because 'torch' or "
+                    "'transformers' is not installed in the Python engine environment."
                 )
             elif not _seq2seq_cfg.is_valid():
-                sys.stderr.write(
-                    f"[SoatVan-Sidecar] WARNING: Seq2Seq is enabled in settings but skipped because "
-                    f"config.json is missing in model_dir {_seq2seq_cfg.model_dir!r}.\n"
+                LOGGER.warning(
+                    "Seq2Seq is enabled in settings but skipped because config.json "
+                    "is missing in model_dir %r.",
+                    _seq2seq_cfg.model_dir,
                 )
-        sys.stderr.flush()
         try:
             request = ProcessRequest(
                 source=Path(params["source_path"]),
@@ -263,11 +314,13 @@ class Sidecar:
                 )
 
             result = self.processor.execute(request, progress, token)
-            sys.stderr.write(
-                f"[SoatVan-Sidecar] _run_job finished successfully: finding_count={result.finding_count}, "
-                f"output_path={result.output_path}, review={result.review}\n"
+            LOGGER.info(
+                "job %s finished: finding_count=%s, output_path=%s, review=%s",
+                job_id,
+                result.finding_count,
+                result.output_path,
+                result.review,
             )
-            sys.stderr.flush()
             review_partial = bool(
                 result.review and result.review.get("status") == "partial"
             )
@@ -336,11 +389,10 @@ class Sidecar:
             except Exception as error:  # releasing memory must never kill the sidecar
                 _log_dev_exception("idle model release", error, error_code(error))
                 return
-        sys.stderr.write(
-            "[SoatVan-Sidecar] Local model runtime released after "
-            f"{MODEL_IDLE_RELEASE_SECONDS:.0f}s idle; it reloads on the next job.\n"
+        LOGGER.info(
+            "Local model runtime released after %.0fs idle; it reloads on the next job.",
+            MODEL_IDLE_RELEASE_SECONDS,
         )
-        sys.stderr.flush()
 
     def cancel_job(self, params: dict[str, Any]) -> dict[str, Any]:
         token = self.jobs.get(str(params["job_id"]))
@@ -676,18 +728,23 @@ def error_code(error: Exception) -> str:
 
 
 def _log_dev_exception(context: str, error: Exception, code: str) -> None:
-    if os.environ.get("SOATVAN_DEV_LOG") != "1":
-        return
-    print(
-        f"[engine-error] {context} failed code={code} "
-        f"type={type(error).__name__}",
-        file=sys.stderr,
-        flush=True,
+    """Record a handled failure with its traceback.
+
+    Always emitted (the host keeps only a small rotating log), so a user's bug
+    report carries the stack trace that produced the on-screen error code.
+    """
+    LOGGER.error(
+        "[engine-error] %s failed code=%s type=%s",
+        context,
+        code,
+        type(error).__name__,
+        exc_info=error,
     )
-    traceback.print_exception(type(error), error, error.__traceback__, file=sys.stderr)
 
 
 def main() -> None:
+    configure_logging()
+    LOGGER.info("engine %s starting (protocol %s)", __version__, PROTOCOL_VERSION)
     sidecar = Sidecar()
     while True:
         raw = sys.stdin.buffer.readline()

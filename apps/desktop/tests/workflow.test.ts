@@ -91,6 +91,8 @@ async function loadApp(options?: {
       return () => undefined;
     }),
     appVersion: vi.fn(() => Promise.resolve(APP_VERSION)),
+    openLogs: vi.fn(() => Promise.resolve()),
+    uiLog: vi.fn(),
     openOutput: vi.fn(options?.openOutput ?? (() => Promise.resolve())),
     customRuleList: vi.fn(options?.customRuleList ?? (() => Promise.resolve([]))),
     customRuleUpsert: vi.fn(

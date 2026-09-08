@@ -16,6 +16,37 @@ import type {
 } from "./contracts";
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
+
+// Mirror WebView warnings/errors into the desktop log file so a problem the user
+// hits in the UI leaves a trace we can read from their bug report.
+(function forwardConsoleToLog() {
+  const summarize = (args: unknown[]) =>
+    args
+      .map(value => {
+        if (value instanceof Error) return `${value.name}: ${value.message}\n${value.stack ?? ""}`;
+        if (typeof value === "string") return value;
+        try { return JSON.stringify(value); } catch { return String(value); }
+      })
+      .join(" ")
+      .slice(0, 2000);
+  const forward = (level: "info" | "warn" | "error", message: string) => {
+    try { api.uiLog?.(level, message); } catch { /* logging must never break the UI */ }
+  };
+  for (const level of ["warn", "error"] as const) {
+    const original = console[level].bind(console);
+    console[level] = (...args: unknown[]) => {
+      original(...args);
+      forward(level, summarize(args));
+    };
+  }
+  window.addEventListener("error", event => {
+    forward("error", `window.onerror: ${event.message} @ ${event.filename}:${event.lineno}`);
+  });
+  window.addEventListener("unhandledrejection", event => {
+    forward("error", `unhandledrejection: ${String((event as PromiseRejectionEvent).reason)}`);
+  });
+})();
+
 let renderedStep: Step | null = null;
 let renderedView: AppView["kind"] | null = null;
 let documentSelectionSequence = 0;
@@ -351,7 +382,7 @@ function render(preferredFocus?: string): void {
       ${state.step === "processing" ? `<section class="workflow-card processing-panel"><div class="processing-status"><span class="spinner" aria-hidden="true"></span><div class="section-copy"><h1>${progressTitle()}</h1><p class="progress-subtitle">${progressSubtitle()}</p></div></div><div class="progress-row"><div class="progress" role="progressbar" aria-label="Tiến độ xử lý" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${state.progress}"><span style="--progress-scale:${state.progress / 100}"></span></div><strong class="progress-value">${state.progress}%</strong></div><p class="sr-only progress-announcement" aria-live="polite" aria-atomic="true">${progressTitle()} ${state.progress}%</p><div class="workflow-actions"><button class="button button--secondary" id="cancel" ${state.jobStarting || state.cancelPending ? "disabled" : ""} ${state.jobStarting || state.cancelPending ? 'aria-busy="true"' : ""}>${state.jobStarting ? "Đang chuẩn bị…" : state.cancelPending ? "Đang dừng…" : "Dừng xử lý"}</button></div>${errorHtml()}</section>` : ""}
       ${(state.step === "result" || state.step === "no-findings") ? resultHtml() : ""}
     </main>` : settingsHtml()}
-    <footer class="status-bar">${isCloudActive() ? `<span><span aria-hidden="true">☁</span> ${escape(activeAiLabel())} · Gửi dữ liệu qua API đám mây</span>` : `<span><span aria-hidden="true">●</span> Xử lý cục bộ · không gửi nội dung tài liệu lên mạng</span>`}<span>v${escape(state.appVersion)}</span></footer>`;
+    <footer class="status-bar">${isCloudActive() ? `<span><span aria-hidden="true">☁</span> ${escape(activeAiLabel())} · Gửi dữ liệu qua API đám mây</span>` : `<span><span aria-hidden="true">●</span> Xử lý cục bộ · không gửi nội dung tài liệu lên mạng</span>`}<span class="status-bar__end"><button type="button" class="status-bar__link" id="open-logs">Nhật ký sự cố</button><span>v${escape(state.appVersion)}</span></span></footer>`;
   bind();
   renderedStep = state.step;
   renderedView = state.view.kind;
@@ -904,6 +935,12 @@ function bind(): void {
   document.querySelector("#settings")?.addEventListener("click", () => { if (isWorkflowView()) void openSettings("prompts", "#settings"); });
   document.querySelector("#settings-back")?.addEventListener("click", () => closeSettings());
   document.querySelectorAll<HTMLButtonElement>("[data-settings-section]").forEach(button => button.addEventListener("click", () => activateSettingsSection(button.dataset.settingsSection as SettingsSection)));
+  document.querySelector("#open-logs")?.addEventListener("click", () => {
+    void api.openLogs().catch(() => {
+      state.error = "Không mở được thư mục nhật ký. Hãy thử lại.";
+      render();
+    });
+  });
   document.querySelector("#choose")?.addEventListener("click", choose);
   document.querySelector("#back")?.addEventListener("click", reset);
   document.querySelector("#restart")?.addEventListener("click", reset);

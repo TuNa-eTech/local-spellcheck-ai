@@ -47,7 +47,24 @@ npm run tauri -- dev
 
 Trong browser-only mode (`npm run dev` hoặc mở trực tiếp `http://localhost:1420`), UI dùng dữ liệu demo. Khi chạy `npm run tauri -- dev`, hãy thao tác trong cửa sổ desktop **SoatVan-itowf** do Tauri tự mở, không mở URL Vite trong trình duyệt. Cửa sổ Tauri dùng Rust host để khởi động Python sidecar thường trú bằng `uv` và handshake protocol v1.
 
-Ở dev build, terminal hiển thị lỗi Rust host với prefix `[soatvan-host]` và chuyển tiếp `stderr` của Python/model với prefix `[soatvan-sidecar]`. Sidecar ghi mã lỗi, loại exception và traceback khi job thất bại. Release build không bật các log chẩn đoán này; `stdout` của sidecar vẫn chỉ dành cho NDJSON protocol.
+## Nhật ký sự cố (logs)
+
+Mọi bản build — kể cả portable/release — đều ghi một file log xoay vòng để đọc khi hỗ trợ người dùng và sửa lỗi:
+
+| Nền tảng | Đường dẫn |
+| --- | --- |
+| Windows | `%LOCALAPPDATA%\vn.soatvan.desktop\logs\soatvan.log` |
+| macOS | `~/Library/Logs/vn.soatvan.desktop/soatvan.log` |
+
+Trong ứng dụng, nút **Nhật ký sự cố** ở thanh trạng thái mở thẳng thư mục này. File `soatvan.log` được cắt ở ~5 MB; ba bản xoay vòng gần nhất được giữ lại với tên đánh dấu thời gian.
+
+Nội dung log gộp theo thứ tự thời gian:
+
+- Rust host: lỗi khởi động, panic (`target=panic`), mọi lệnh IPC thất bại (`target=host`).
+- Python engine: `stderr` được host thu lại (`target=engine`) — thông tin job, cảnh báo cấu hình, mã lỗi và traceback đầy đủ khi job thất bại (luôn ghi, không cần bật cờ).
+- WebView UI: `console.warn` / `console.error`, `window.onerror`, promise reject không bắt (`target=webview`).
+
+`stdout` của sidecar vẫn chỉ dành cho NDJSON protocol. Đặt `SOATVAN_DEV_LOG=1` để engine ghi thêm mức DEBUG. Trong dev build, terminal cũng in trực tiếp các dòng này.
 
 ## Kiểm tra
 

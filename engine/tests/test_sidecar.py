@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -17,6 +18,7 @@ from soatvan.entrypoints.sidecar import (
     _custom_prompt,
     _ignored_words,
     _log_dev_exception,
+    configure_logging,
     safe_message,
     validate_request,
 )
@@ -128,20 +130,52 @@ def test_custom_prompt_transport_limit_and_new_errors_have_safe_messages() -> No
     )
 
 
-def test_exception_details_are_logged_only_when_dev_logging_is_enabled(
+def test_handled_exception_details_are_always_logged_with_traceback(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    try:
+        raise ValueError("MODEL_FULL_REVIEW_FAILED")
+    except ValueError as error:
+        with caplog.at_level("ERROR", logger="soatvan.sidecar"):
+            _log_dev_exception("job id=job-1", error, "MODEL_FULL_REVIEW_FAILED")
+
+    record = next(r for r in caplog.records if "[engine-error]" in r.getMessage())
+    assert "job id=job-1 failed" in record.getMessage()
+    assert "code=MODEL_FULL_REVIEW_FAILED type=ValueError" in record.getMessage()
+    assert record.exc_info is not None
+    assert "ValueError: MODEL_FULL_REVIEW_FAILED" in caplog.text
+
+
+def test_configure_logging_is_idempotent_and_writes_to_stderr(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    error = ValueError("MODEL_FULL_REVIEW_FAILED")
-    monkeypatch.delenv("SOATVAN_DEV_LOG", raising=False)
-    _log_dev_exception("job id=job-1", error, "MODEL_FULL_REVIEW_FAILED")
-    assert capsys.readouterr().err == ""
+    root = logging.getLogger()
+    original_handlers = root.handlers[:]
+    original_level = root.level
+    original_excepthook = sys.excepthook
+    original_thread_hook = threading.excepthook
+    try:
+        monkeypatch.delenv("SOATVAN_DEV_LOG", raising=False)
+        configure_logging()
+        configure_logging()  # second call must not stack handlers
+        soatvan_handlers = [h for h in root.handlers if getattr(h, "_soatvan", False)]
+        assert len(soatvan_handlers) == 1
+        assert root.level == logging.INFO
+        assert sys.excepthook is not original_excepthook
 
-    monkeypatch.setenv("SOATVAN_DEV_LOG", "1")
-    _log_dev_exception("job id=job-1", error, "MODEL_FULL_REVIEW_FAILED")
-    logged = capsys.readouterr().err
-    assert "[engine-error] job id=job-1 failed" in logged
-    assert "code=MODEL_FULL_REVIEW_FAILED type=ValueError" in logged
-    assert "ValueError: MODEL_FULL_REVIEW_FAILED" in logged
+        logging.getLogger("soatvan.sidecar").warning("diagnostic line")
+        assert "WARNING [soatvan.sidecar] diagnostic line" in capsys.readouterr().err
+
+        monkeypatch.setenv("SOATVAN_DEV_LOG", "1")
+        for handler in soatvan_handlers:
+            root.removeHandler(handler)
+        configure_logging()
+        assert root.level == logging.DEBUG
+    finally:
+        root.handlers[:] = original_handlers
+        root.setLevel(original_level)
+        sys.excepthook = original_excepthook
+        threading.excepthook = original_thread_hook
 
 
 @pytest.mark.parametrize("name", ["use_model", "full_review", "include_rule_findings"])

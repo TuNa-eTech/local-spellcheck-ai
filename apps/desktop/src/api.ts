@@ -51,6 +51,8 @@ export const api = {
   },
   appVersion(): Promise<string> { return isTauri() ? getVersion() : Promise.resolve(APP_VERSION); },
   openOutput(path: string, reveal = false) { return invoke("open_output", { path, reveal }); },
+  openLogs(): Promise<void> { return isTauri() ? invoke("open_logs") : Promise.resolve(); },
+  uiLog(level: "info" | "warn" | "error", message: string): void { if (isTauri()) void invoke("ui_log", { level, message }).catch(() => undefined); },
   customRuleList(): Promise<CustomRule[]> { return invoke("custom_rule_list"); },
   customRuleUpsert(id: string | null, title: string, prompt: string, isDefault: boolean): Promise<CustomRule> { return invoke("custom_rule_upsert", { id, title, prompt, isDefault }); },
   customRuleDelete(id: string): Promise<boolean> { return invoke("custom_rule_delete", { id }); },

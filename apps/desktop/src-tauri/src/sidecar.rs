@@ -2,7 +2,7 @@ use crate::error::{AppError, AppResult};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Read, Write},
     path::PathBuf,
     process::{Child, ChildStdin, Command, Stdio},
     sync::{mpsc, Arc, Mutex},
@@ -36,10 +36,10 @@ impl EngineBroker {
         let mut command = engine_command(app, data_dir)?;
         #[cfg(windows)]
         command.creation_flags(0x08000000); // CREATE_NO_WINDOW
-        #[cfg(debug_assertions)]
+        // The engine writes diagnostics and Python tracebacks to stderr. Capture
+        // them in release too so a user's bug report has something to read; the
+        // draining thread below keeps the pipe from filling and stalling a job.
         command.stderr(Stdio::piped());
-        #[cfg(not(debug_assertions))]
-        command.stderr(Stdio::null());
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -47,21 +47,10 @@ impl EngineBroker {
         let parent_job = attach_kill_on_parent(&child)?;
         let input = child.stdin.take().ok_or(AppError::EngineUnavailable)?;
         let output = child.stdout.take().ok_or(AppError::EngineUnavailable)?;
-        #[cfg(debug_assertions)]
         if let Some(stderr) = child.stderr.take() {
             if let Err(error) = thread::Builder::new()
                 .name("soatvan-engine-stderr".into())
-                .spawn(move || {
-                    for line in BufReader::new(stderr).lines() {
-                        match line {
-                            Ok(line) => eprintln!("[soatvan-sidecar] {line}"),
-                            Err(error) => {
-                                eprintln!("[soatvan-sidecar] stderr read failed: {error}");
-                                break;
-                            }
-                        }
-                    }
-                })
+                .spawn(move || forward_engine_stderr(stderr))
             {
                 let _ = child.kill();
                 return Err(error.into());
@@ -216,6 +205,48 @@ impl EngineBroker {
                 }
             }
         }
+    }
+}
+
+/// Drain the engine's stderr into the shared log file. Reads raw bytes and
+/// decodes lossily so a stray non-UTF-8 byte from a native dependency (llama.cpp)
+/// never stops the drain and stalls the child on a full pipe.
+fn forward_engine_stderr(stderr: impl Read) {
+    let mut reader = BufReader::new(stderr);
+    let mut buffer = Vec::new();
+    loop {
+        buffer.clear();
+        match reader.read_until(b'\n', &mut buffer) {
+            Ok(0) => break,
+            Ok(_) => {
+                let line = String::from_utf8_lossy(&buffer);
+                let line = line.trim_end_matches(['\r', '\n']);
+                if line.is_empty() {
+                    continue;
+                }
+                match classify_engine_line(line) {
+                    log::Level::Error => log::error!(target: "engine", "{line}"),
+                    log::Level::Warn => log::warn!(target: "engine", "{line}"),
+                    _ => log::info!(target: "engine", "{line}"),
+                }
+            }
+            Err(error) => {
+                log::warn!(target: "engine", "stderr stream closed: {error}");
+                break;
+            }
+        }
+    }
+}
+
+/// Map an engine stderr line to a log level. The Python side prefixes lines with
+/// the `logging` level name; a traceback body has no prefix so match it directly.
+fn classify_engine_line(line: &str) -> log::Level {
+    if line.contains("ERROR") || line.contains("CRITICAL") || line.contains("Traceback") {
+        log::Level::Error
+    } else if line.contains("WARNING") {
+        log::Level::Warn
+    } else {
+        log::Level::Info
     }
 }
 
@@ -392,6 +423,26 @@ mod windows_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn engine_stderr_lines_map_to_log_levels() {
+        assert!(matches!(
+            classify_engine_line("ERROR [soatvan.sidecar] [engine-error] job x failed"),
+            log::Level::Error
+        ));
+        assert!(matches!(
+            classify_engine_line("  File \"sidecar.py\", line 1, in main\nTraceback"),
+            log::Level::Error
+        ));
+        assert!(matches!(
+            classify_engine_line("WARNING [soatvan.sidecar] Seq2Seq skipped"),
+            log::Level::Warn
+        ));
+        assert!(matches!(
+            classify_engine_line("INFO [soatvan.sidecar] job job-1 starting"),
+            log::Level::Info
+        ));
+    }
 
     #[test]
     fn engine_eof_releases_request_and_job_waiters() {

@@ -41,8 +41,7 @@ impl serde::Serialize for AppError {
     where
         S: serde::Serializer,
     {
-        #[cfg(debug_assertions)]
-        eprintln!("[soatvan-host] command failed: {self:?}");
+        log::warn!(target: "host", "command failed: {self:?}");
         serializer.serialize_str(&self.to_string())
     }
 }
