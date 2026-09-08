@@ -30,6 +30,22 @@ def _highlight_color(finding: Finding) -> str:
     return "red" if finding.confidence >= CERTAIN_CONFIDENCE_THRESHOLD else "yellow"
 
 
+def _comment_text(finding: Finding) -> str:
+    """Build the human-readable comment body for one finding.
+
+    The commented span is highlighted in the document, so a finding that only
+    needs text removed (repeated words, or stray punctuation/spacing from the AI
+    review) gets an explicit "delete" instruction instead of a cryptic
+    placeholder such as ``(xoá)``. Leading/trailing whitespace is trimmed from
+    the quoted span so a repeated-word finding reads ``“và”`` rather than
+    ``“ và”`` — unless the span is whitespace only, where the original is kept.
+    """
+    marked = finding.source_text.strip() or finding.source_text
+    if finding.suggestion:
+        return f"Sai: “{marked}” → Đề xuất: “{finding.suggestion}”"
+    return f"Sai: “{marked}” → Đề xuất: xoá phần được bôi màu"
+
+
 def _projected_paragraph_text(paragraph: etree._Element) -> str:
     nodes = paragraph.xpath(
         ".//w:t | .//w:tab | .//w:br | .//w:cr", namespaces=NS
@@ -291,8 +307,7 @@ class DocxPackage:
         p = etree.SubElement(comment, f"{{{W}}}p")
         r = etree.SubElement(p, f"{{{W}}}r")
         text = etree.SubElement(r, f"{{{W}}}t")
-        suggestion = finding.suggestion or "(xoá)"
-        text.text = f"Sai: “{finding.source_text}” → Đề xuất: “{suggestion}”"
+        text.text = _comment_text(finding)
         return True
 
     @staticmethod

@@ -248,6 +248,27 @@ def test_generated_comment_shows_original_and_suggestion_without_double_periods(
     assert comment == "Sai: “sát nhập” → Đề xuất: “sáp nhập.”"
 
 
+def test_generated_comment_for_deletion_finding_asks_to_remove_marked_text(
+    make_docx, tmp_path: Path
+) -> None:
+    source = make_docx([["Đây là và và một ví dụ."]])
+    package = DocxPackage()
+    finding = next(
+        f
+        for f in RuleEngine().check(package.read_blocks(source), Preset.STANDARD)
+        if f.detector_id == "word.repeated.v2"
+    )
+    assert finding.suggestion == "" and finding.source_text == " và"
+    output = tmp_path / "deletion-comment.docx"
+
+    assert package.write_annotations(source, output, [finding]).count == 1
+    with zipfile.ZipFile(output) as archive:
+        comments = etree.fromstring(archive.read("word/comments.xml"))
+    comment = comments.xpath("string(//w:comment//w:t)", namespaces=NS)
+    assert comment == "Sai: “và” → Đề xuất: xoá phần được bôi màu"
+    assert "(xoá)" not in comment
+
+
 def test_no_findings_creates_no_output(make_docx, tmp_path: Path) -> None:
     source = make_docx([["Văn bản hợp lệ."]])
     output = tmp_path / "output.docx"
