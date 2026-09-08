@@ -3,9 +3,12 @@ use serde_json::{json, Value};
 use std::{
     collections::HashMap,
     io::{BufRead, BufReader, Read, Write},
-    path::PathBuf,
-    process::{Child, ChildStdin, Command, Stdio},
-    sync::{mpsc, Arc, Mutex},
+    path::{Path, PathBuf},
+    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc, Mutex,
+    },
     thread,
     time::Duration,
 };
@@ -29,118 +32,104 @@ pub struct EngineBroker {
     waiters: Waiters,
     jobs: JobWaiters,
     parent_job: Mutex<Option<ParentJob>>,
+    app: AppHandle,
+    data_dir: PathBuf,
+    /// Serialises a respawn against `stop()` and against other respawn callers.
+    restart_lock: Mutex<()>,
+    /// Set once at shutdown so a concurrent `call()` can never resurrect the
+    /// engine after `stop()` has torn it down.
+    stopped: AtomicBool,
 }
 
 impl EngineBroker {
-    pub fn start(app: &AppHandle, data_dir: &std::path::Path) -> AppResult<Self> {
-        let mut command = engine_command(app, data_dir)?;
-        #[cfg(windows)]
-        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
-        // The engine writes diagnostics and Python tracebacks to stderr. Capture
-        // them in release too so a user's bug report has something to read; the
-        // draining thread below keeps the pipe from filling and stalling a job.
-        command.stderr(Stdio::piped());
-        let mut child = command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()?;
-        let parent_job = attach_kill_on_parent(&child)?;
-        let input = child.stdin.take().ok_or(AppError::EngineUnavailable)?;
-        let output = child.stdout.take().ok_or(AppError::EngineUnavailable)?;
-        if let Some(stderr) = child.stderr.take() {
-            if let Err(error) = thread::Builder::new()
-                .name("soatvan-engine-stderr".into())
-                .spawn(move || forward_engine_stderr(stderr))
-            {
-                let _ = child.kill();
-                return Err(error.into());
-            }
-        }
+    pub fn start(app: &AppHandle, data_dir: &Path) -> AppResult<Self> {
         let waiters: Waiters = Arc::new(Mutex::new(HashMap::new()));
         let jobs: JobWaiters = Arc::new(Mutex::new(HashMap::new()));
-        let reader_waiters = Arc::clone(&waiters);
-        let reader_jobs = Arc::clone(&jobs);
-        let app_handle = app.clone();
-        thread::Builder::new()
-            .name("soatvan-engine-reader".into())
-            .spawn(move || {
-                for line in BufReader::new(output).lines() {
-                    let Ok(line) = line else { break };
-                    let Ok(frame) = serde_json::from_str::<Value>(&line) else {
-                        continue;
-                    };
-                    if let Some(event) = frame.get("event").and_then(Value::as_str) {
-                        let payload = frame.get("data").cloned().unwrap_or(Value::Null);
-                        if event == "job.progress" {
-                            if let Some(job_id) = payload.get("job_id").and_then(Value::as_str) {
-                                if let Some(sender) =
-                                    reader_jobs.lock().expect("jobs poisoned").get(job_id)
-                                {
-                                    let _ = sender.send(JobUpdate::Activity);
-                                }
-                            }
-                        }
-                        if matches!(event, "job.completed" | "job.no_findings" | "job.failed") {
-                            if let Some(job_id) = payload.get("job_id").and_then(Value::as_str) {
-                                if let Some(sender) =
-                                    reader_jobs.lock().expect("jobs poisoned").remove(job_id)
-                                {
-                                    let result = if event == "job.failed" {
-                                        Err(AppError::Engine(
-                                            payload
-                                                .get("code")
-                                                .and_then(Value::as_str)
-                                                .unwrap_or("ENGINE_PROTOCOL_ERROR")
-                                                .to_owned(),
-                                        ))
-                                    } else {
-                                        Ok(payload.clone())
-                                    };
-                                    let _ = sender.send(JobUpdate::Finished(result));
-                                }
-                            }
-                        }
-                        // Sidecar protocol methods use dotted names, while Tauri 2 event
-                        // names only allow alphanumeric characters plus - / : _. Keep the
-                        // protocol stable and translate only at the WebView bridge.
-                        let bridge_event = event.replace('.', "-");
-                        let _ = app_handle.emit(&bridge_event, payload);
-                        continue;
-                    }
-                    if let Some(id) = frame.get("id").and_then(Value::as_str) {
-                        if let Some(sender) =
-                            reader_waiters.lock().expect("waiters poisoned").remove(id)
-                        {
-                            let result = if frame.get("ok") == Some(&Value::Bool(true)) {
-                                Ok(frame.get("result").cloned().unwrap_or(Value::Null))
-                            } else {
-                                let code = frame
-                                    .pointer("/error/code")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or("ENGINE_PROTOCOL_ERROR");
-                                Err(AppError::Engine(code.to_owned()))
-                            };
-                            let _ = sender.send(result);
-                        }
-                    }
-                }
-                fail_pending(&reader_waiters, &reader_jobs);
-            })?;
+        let (child, input, parent_job) = spawn_engine(app, data_dir, &waiters, &jobs)?;
         let broker = Self {
             child: Mutex::new(child),
             input: Mutex::new(input),
             waiters,
             jobs,
             parent_job: Mutex::new(Some(parent_job)),
+            app: app.clone(),
+            data_dir: data_dir.to_path_buf(),
+            restart_lock: Mutex::new(()),
+            stopped: AtomicBool::new(false),
         };
-        let hello = broker.call("engine.hello", json!({}), Duration::from_secs(30))?;
-        if hello.get("protocol") != Some(&Value::from(1)) {
-            return Err(AppError::EngineProtocol);
-        }
+        broker.handshake()?;
         Ok(broker)
     }
 
+    fn handshake(&self) -> AppResult<()> {
+        let hello = self.call_raw("engine.hello", json!({}), Duration::from_secs(30))?;
+        if hello.get("protocol") != Some(&Value::from(1)) {
+            return Err(AppError::EngineProtocol);
+        }
+        Ok(())
+    }
+
+    /// If the engine process has exited, spawn a fresh one and re-wire the reader
+    /// so later calls succeed. A no-op while the engine is healthy. The native
+    /// llama.cpp runtime can abort the whole sidecar on a failed allocation or an
+    /// unsupported CPU instruction; without this every subsequent model import
+    /// (and every review) would fail until the app was restarted by hand.
+    fn ensure_alive(&self) -> AppResult<()> {
+        if self.stopped.load(Ordering::Acquire) {
+            return Err(AppError::EngineUnavailable);
+        }
+        let _restart = self.restart_lock.lock().expect("restart lock poisoned");
+        if self.stopped.load(Ordering::Acquire) {
+            return Err(AppError::EngineUnavailable);
+        }
+        {
+            let mut child = self.child.lock().expect("child poisoned");
+            match child.try_wait() {
+                Ok(None) => return Ok(()), // still running — another caller won the race, or a false alarm
+                Ok(Some(status)) => {
+                    log::warn!(target: "host", "engine process exited ({status}); restarting");
+                }
+                Err(error) => {
+                    log::warn!(target: "host", "engine process wait failed ({error}); restarting");
+                }
+            }
+        }
+        // Make sure nothing is still blocked on the dead process before we swap.
+        fail_pending(&self.waiters, &self.jobs);
+        let (child, input, parent_job) =
+            spawn_engine(&self.app, &self.data_dir, &self.waiters, &self.jobs)?;
+        *self.child.lock().expect("child poisoned") = child;
+        *self.input.lock().expect("engine input poisoned") = input;
+        if let Some(old) = self
+            .parent_job
+            .lock()
+            .expect("parent job poisoned")
+            .replace(parent_job)
+        {
+            close_parent_job(old);
+        }
+        self.handshake()?;
+        log::info!(target: "host", "engine restarted");
+        Ok(())
+    }
+
     pub fn call(&self, method: &str, params: Value, timeout: Duration) -> AppResult<Value> {
+        match self.call_raw(method, params.clone(), timeout) {
+            // A broken pipe (write failed) or an EngineUnavailable handed back by
+            // the reader thread on EOF both mean the process died. Bring it back
+            // and give the call one more chance. A timeout is left alone — the
+            // engine may just be busy loading a large model.
+            Err(AppError::EngineUnavailable | AppError::Io(_))
+                if !self.stopped.load(Ordering::Acquire) =>
+            {
+                self.ensure_alive()?;
+                self.call_raw(method, params, timeout)
+            }
+            other => other,
+        }
+    }
+
+    fn call_raw(&self, method: &str, params: Value, timeout: Duration) -> AppResult<Value> {
         let id = Uuid::new_v4().to_string();
         let frame = json!({"v": 1, "id": id, "method": method, "params": params});
         let (sender, receiver) = mpsc::channel();
@@ -166,6 +155,11 @@ impl EngineBroker {
     }
 
     pub fn stop(&self) {
+        // Set first so an in-flight `call()` retry cannot spawn a replacement
+        // after we tear down; the restart lock then serialises us against any
+        // `ensure_alive()` already past that check.
+        self.stopped.store(true, Ordering::Release);
+        let _restart = self.restart_lock.lock().expect("restart lock poisoned");
         let _ = self.child.lock().expect("child poisoned").kill();
         if let Some(job) = self.parent_job.lock().expect("parent job poisoned").take() {
             close_parent_job(job);
@@ -206,6 +200,119 @@ impl EngineBroker {
             }
         }
     }
+}
+
+/// Spawn the engine process and wire its stdout/stderr to the shared waiter maps.
+/// Used both for the first start and for every respawn, so the reader thread the
+/// caller ends up with always drains `waiters`/`jobs` on EOF.
+fn spawn_engine(
+    app: &AppHandle,
+    data_dir: &Path,
+    waiters: &Waiters,
+    jobs: &JobWaiters,
+) -> AppResult<(Child, ChildStdin, ParentJob)> {
+    let mut command = engine_command(app, data_dir)?;
+    #[cfg(windows)]
+    command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    // The engine writes diagnostics and Python tracebacks to stderr. Capture
+    // them in release too so a user's bug report has something to read; the
+    // draining thread below keeps the pipe from filling and stalling a job.
+    command.stderr(Stdio::piped());
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()?;
+    let parent_job = attach_kill_on_parent(&child)?;
+    let input = child.stdin.take().ok_or(AppError::EngineUnavailable)?;
+    let output = child.stdout.take().ok_or(AppError::EngineUnavailable)?;
+    if let Some(stderr) = child.stderr.take() {
+        if let Err(error) = thread::Builder::new()
+            .name("soatvan-engine-stderr".into())
+            .spawn(move || forward_engine_stderr(stderr))
+        {
+            let _ = child.kill();
+            return Err(error.into());
+        }
+    }
+    if let Err(error) = spawn_reader(output, Arc::clone(waiters), Arc::clone(jobs), app.clone()) {
+        let _ = child.kill();
+        return Err(error);
+    }
+    Ok((child, input, parent_job))
+}
+
+fn spawn_reader(
+    output: ChildStdout,
+    reader_waiters: Waiters,
+    reader_jobs: JobWaiters,
+    app_handle: AppHandle,
+) -> AppResult<()> {
+    thread::Builder::new()
+        .name("soatvan-engine-reader".into())
+        .spawn(move || {
+            for line in BufReader::new(output).lines() {
+                let Ok(line) = line else { break };
+                let Ok(frame) = serde_json::from_str::<Value>(&line) else {
+                    continue;
+                };
+                if let Some(event) = frame.get("event").and_then(Value::as_str) {
+                    let payload = frame.get("data").cloned().unwrap_or(Value::Null);
+                    if event == "job.progress" {
+                        if let Some(job_id) = payload.get("job_id").and_then(Value::as_str) {
+                            if let Some(sender) =
+                                reader_jobs.lock().expect("jobs poisoned").get(job_id)
+                            {
+                                let _ = sender.send(JobUpdate::Activity);
+                            }
+                        }
+                    }
+                    if matches!(event, "job.completed" | "job.no_findings" | "job.failed") {
+                        if let Some(job_id) = payload.get("job_id").and_then(Value::as_str) {
+                            if let Some(sender) =
+                                reader_jobs.lock().expect("jobs poisoned").remove(job_id)
+                            {
+                                let result = if event == "job.failed" {
+                                    Err(AppError::Engine(
+                                        payload
+                                            .get("code")
+                                            .and_then(Value::as_str)
+                                            .unwrap_or("ENGINE_PROTOCOL_ERROR")
+                                            .to_owned(),
+                                    ))
+                                } else {
+                                    Ok(payload.clone())
+                                };
+                                let _ = sender.send(JobUpdate::Finished(result));
+                            }
+                        }
+                    }
+                    // Sidecar protocol methods use dotted names, while Tauri 2 event
+                    // names only allow alphanumeric characters plus - / : _. Keep the
+                    // protocol stable and translate only at the WebView bridge.
+                    let bridge_event = event.replace('.', "-");
+                    let _ = app_handle.emit(&bridge_event, payload);
+                    continue;
+                }
+                if let Some(id) = frame.get("id").and_then(Value::as_str) {
+                    if let Some(sender) =
+                        reader_waiters.lock().expect("waiters poisoned").remove(id)
+                    {
+                        let result = if frame.get("ok") == Some(&Value::Bool(true)) {
+                            Ok(frame.get("result").cloned().unwrap_or(Value::Null))
+                        } else {
+                            let code = frame
+                                .pointer("/error/code")
+                                .and_then(Value::as_str)
+                                .unwrap_or("ENGINE_PROTOCOL_ERROR");
+                            Err(AppError::Engine(code.to_owned()))
+                        };
+                        let _ = sender.send(result);
+                    }
+                }
+            }
+            fail_pending(&reader_waiters, &reader_jobs);
+        })?;
+    Ok(())
 }
 
 /// Drain the engine's stderr into the shared log file. Reads raw bytes and

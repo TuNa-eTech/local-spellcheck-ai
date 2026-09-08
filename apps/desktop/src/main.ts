@@ -1642,23 +1642,30 @@ async function modelImport(): Promise<void> {
 }
 async function cancelModelOperation(): Promise<void> {
   if (!modelOperationBusy() || state.modelRemovalRunning) return;
+  let confirmed = false;
   try {
-    const cancelled = await api.modelCancel();
-    if (!cancelled) throw new Error("not cancelled");
-    const baseline = modelOperationBaseline;
-    modelOperationSequence += 1;
-    if (baseline) {
-      state.model = baseline.model;
-      state.useModel = baseline.useModel;
-    } else {
-      state.model = { state: "cancelled" };
-      state.useModel = false;
-    }
-    modelOperationBaseline = null;
-    state.settingsMessage = { tone: "status", text: "Đã dừng thao tác model." };
+    confirmed = await api.modelCancel();
   } catch {
-    state.settingsMessage = { tone: "error", text: "Không dừng được thao tác model. Hãy chờ tác vụ hiện tại kết thúc." };
+    confirmed = false;
   }
+  // Whether or not the backend confirmed the cancel, return the UI to a usable
+  // state: bumping the sequence makes any late-resolving import/verify a no-op,
+  // and restoring the baseline brings the "Nhập file model" button back so the
+  // user is never stuck on a frozen "Đang nhập…" card (e.g. when the backend is
+  // still inside the OS file picker, or a slow model load has not returned yet).
+  const baseline = modelOperationBaseline;
+  modelOperationSequence += 1;
+  modelOperationBaseline = null;
+  if (baseline) {
+    state.model = baseline.model;
+    state.useModel = baseline.useModel;
+  } else {
+    state.model = { state: "cancelled" };
+    state.useModel = false;
+  }
+  state.settingsMessage = confirmed
+    ? { tone: "status", text: "Đã dừng thao tác model." }
+    : { tone: "status", text: "Đã thoát khỏi thao tác model. Nếu vừa chọn tệp, quá trình nhập có thể vẫn đang chạy nền — hãy chờ giây lát rồi mở lại Cài đặt để kiểm tra." };
   clearUnavailableFullReview();
   render("#model-action");
 }

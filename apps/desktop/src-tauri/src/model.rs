@@ -6,14 +6,47 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::HashSet,
     fs,
-    io::{Read, Write},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
+    thread,
+    time::Duration,
 };
 
 const LOCAL_GEMMA_REVIEW_CONTEXT_TOKENS: u64 = 4096;
 const LOCAL_REVIEW_TIMEOUT_SECONDS: u64 = 600;
 pub(crate) const MAX_MODEL_TIMEOUT_SECONDS: u64 = 900;
 const _: () = assert!(LOCAL_REVIEW_TIMEOUT_SECONDS <= MAX_MODEL_TIMEOUT_SECONDS);
+
+/// On Windows, antivirus scanning a freshly written multi-GB `.gguf`, or the
+/// engine still holding a memory-map on the model file it just closed, can lock
+/// a path for a fraction of a second — surfacing as os error 5 (access denied)
+/// or 32 (sharing violation). A short bounded backoff clears essentially all of
+/// these; a genuine permission error still propagates after the last attempt.
+fn is_transient_fs_error(error: &io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(5) | Some(32))
+}
+
+fn with_fs_retry<T>(mut op: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+    let mut delay = Duration::from_millis(40);
+    for _ in 0..7 {
+        match op() {
+            Err(error) if is_transient_fs_error(&error) => {
+                thread::sleep(delay);
+                delay = (delay * 2).min(Duration::from_millis(750));
+            }
+            other => return other,
+        }
+    }
+    op()
+}
+
+fn rename_retrying(from: &Path, to: &Path) -> io::Result<()> {
+    with_fs_retry(|| fs::rename(from, to))
+}
+
+fn remove_dir_all_retrying(path: &Path) -> io::Result<()> {
+    with_fs_retry(|| fs::remove_dir_all(path))
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelStatus {
@@ -102,14 +135,14 @@ impl ModelProvisioner {
         let active = self.root.join("active");
         let previous = self.root.join("previous");
         if !active.exists() && previous.exists() {
-            fs::rename(&previous, &active)?;
+            rename_retrying(&previous, &active)?;
         }
         for entry in fs::read_dir(&self.root)? {
             let entry = entry?;
             if entry.file_type()?.is_dir()
                 && entry.file_name().to_string_lossy().starts_with("staging-")
             {
-                fs::remove_dir_all(entry.path())?;
+                remove_dir_all_retrying(&entry.path())?;
             }
         }
         self.migrate_local_experimental_review_defaults()?;
@@ -235,14 +268,14 @@ impl ModelProvisioner {
                 let active = self.root.join("active");
                 let backup = self.root.join("previous");
                 if backup.exists() {
-                    fs::remove_dir_all(&backup)?;
+                    remove_dir_all_retrying(&backup)?;
                 }
                 if active.exists() {
-                    fs::rename(&active, &backup)?;
+                    rename_retrying(&active, &backup)?;
                 }
-                if let Err(error) = fs::rename(&staging, &active) {
+                if let Err(error) = rename_retrying(&staging, &active) {
                     if backup.exists() {
-                        let _ = fs::rename(&backup, &active);
+                        let _ = rename_retrying(&backup, &active);
                     }
                     return Err(error.into());
                 }
@@ -429,7 +462,7 @@ impl ModelProvisioner {
         target.flush()?;
         target.sync_all()?;
         let sha256 = format!("{:x}", hasher.finalize());
-        fs::rename(partial_path, &target_path)?;
+        rename_retrying(&partial_path, &target_path)?;
 
         let license_name = "LOCAL-IMPORT-NOTICE.txt";
         fs::write(
@@ -477,7 +510,7 @@ impl ModelProvisioner {
     pub fn commit_activation(&self) -> AppResult<()> {
         let backup = self.root.join("previous");
         if backup.exists() {
-            fs::remove_dir_all(backup)?;
+            remove_dir_all_retrying(&backup)?;
         }
         Ok(())
     }
@@ -485,17 +518,17 @@ impl ModelProvisioner {
         let active = self.root.join("active");
         let backup = self.root.join("previous");
         if active.exists() {
-            fs::remove_dir_all(&active)?;
+            remove_dir_all_retrying(&active)?;
         }
         if backup.exists() {
-            fs::rename(backup, active)?;
+            rename_retrying(&backup, &active)?;
         }
         Ok(())
     }
     pub fn remove(&self) -> AppResult<ModelStatus> {
         let active = self.root.join("active");
         if active.exists() {
-            fs::remove_dir_all(active)?;
+            remove_dir_all_retrying(&active)?;
         }
         Ok(self.status())
     }
@@ -562,7 +595,7 @@ where
     if copied != manifest.size || format!("{:x}", digest.finalize()) != manifest.sha256 {
         return Err(AppError::ModelPackageInvalid);
     }
-    fs::rename(partial, final_path)?;
+    rename_retrying(&partial, &final_path)?;
     Ok(())
 }
 fn canonical_unsigned(value: &Manifest) -> AppResult<Vec<u8>> {

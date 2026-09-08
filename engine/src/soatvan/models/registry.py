@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,11 @@ class ModelRegistry:
         self._cache_key: tuple[int, int, int, int, int] | None = None
         self._verified_key: tuple[int, int, int, int, int] | None = None
         self._classifier: ContextClassifier | None = None
+        # Serialises loading the llama.cpp runtime (on the request thread) against
+        # closing it (on the idle-release Timer thread). Concurrent native
+        # load/free on Windows can abort the whole process. Reentrant so the
+        # cache-clearing helpers can be called from inside a locked section.
+        self._runtime_lock = threading.RLock()
         self._public_key = public_key or os.environ.get("SOATVAN_MODEL_PUBLIC_KEY")
 
     def status(self, activate: bool = True) -> dict[str, Any]:
@@ -53,7 +59,7 @@ class ModelRegistry:
             if manifest.get("schema_version") != 2 or not _capabilities_valid(
                 capabilities, trust
             ):
-                print(f"[soatvan-engine] ModelRegistry.status: schema/capabilities invalid → MODEL_MANIFEST_INVALID", file=sys.stderr)
+                print("[soatvan-engine] ModelRegistry.status: schema/capabilities invalid → MODEL_MANIFEST_INVALID", file=sys.stderr)
                 self._clear_cache()
                 return {"state": "invalid", "code": "MODEL_MANIFEST_INVALID"}
             if trust == "release_signed":
@@ -118,16 +124,17 @@ class ModelRegistry:
                 self._close_runtime()
                 print("[soatvan-engine] ModelRegistry.status: activate=False → installed", file=sys.stderr)
                 return _status("installed", manifest)
-            if self._cache_key != key or self._classifier is None:
-                print(f"[soatvan-engine] ModelRegistry.status: loading LlamaCppClassifier for {model}...", file=sys.stderr)
-                factory = self._runtime_factory
-                self._classifier = (
-                    LlamaCppClassifier(model, manifest, factory)
-                    if factory is not None
-                    else LlamaCppClassifier(model, manifest)
-                )
-                self._cache_key = key
-                print("[soatvan-engine] ModelRegistry.status: LlamaCppClassifier loaded OK", file=sys.stderr)
+            with self._runtime_lock:
+                if self._cache_key != key or self._classifier is None:
+                    print(f"[soatvan-engine] ModelRegistry.status: loading LlamaCppClassifier for {model}...", file=sys.stderr)
+                    factory = self._runtime_factory
+                    self._classifier = (
+                        LlamaCppClassifier(model, manifest, factory)
+                        if factory is not None
+                        else LlamaCppClassifier(model, manifest)
+                    )
+                    self._cache_key = key
+                    print("[soatvan-engine] ModelRegistry.status: LlamaCppClassifier loaded OK", file=sys.stderr)
             return _status("ready", manifest)
         except ModelRuntimeUnavailable as exc:
             print(f"[soatvan-engine] ModelRegistry.status: ModelRuntimeUnavailable: {exc}", file=sys.stderr)
@@ -173,28 +180,47 @@ class ModelRegistry:
         OS cannot evict, so holding them across an idle period is expensive.
         Unlike `deactivate`, this keeps `_verified_key`, so the next
         `status()` reloads the model without re-hashing several GB.
+
+        Called from the idle-release Timer thread: if a load or close is already
+        running on the request thread, skip rather than block — the timer will
+        try again after the next idle period.
         """
-        self._close_runtime()
+        import sys
+
+        if not self._runtime_lock.acquire(blocking=False):
+            print(
+                "[soatvan-engine] ModelRegistry.release_runtime: runtime busy, skipping",
+                file=sys.stderr,
+            )
+            return
+        try:
+            self._close_runtime()
+        finally:
+            self._runtime_lock.release()
 
     def _clear_cache(self) -> None:
-        self._close_runtime()
-        self._verified_key = None
+        with self._runtime_lock:
+            self._close_runtime()
+            self._verified_key = None
 
     def _close_runtime(self) -> None:
-        classifier = self._classifier
-        self._cache_key = None
-        self._classifier = None
-        if classifier is not None:
-            close = getattr(classifier, "close", None)
-            if callable(close):
-                close()
-            del classifier
-            # Force immediate garbage collection to release native memory
-            # (especially Metal GPU allocations on macOS).  Without this the
-            # OS can kill the process when the seq2seq model tries to allocate
-            # while stale llama.cpp buffers still occupy the address space.
-            import gc
-            gc.collect()
+        # The native free must not overlap a native load on another thread, so
+        # the whole close — including close()/gc — happens under the lock.
+        with self._runtime_lock:
+            classifier = self._classifier
+            self._cache_key = None
+            self._classifier = None
+            if classifier is not None:
+                close = getattr(classifier, "close", None)
+                if callable(close):
+                    close()
+                del classifier
+                # Force immediate garbage collection to release native memory
+                # (especially Metal GPU allocations on macOS).  Without this the
+                # OS can kill the process when the seq2seq model tries to allocate
+                # while stale llama.cpp buffers still occupy the address space.
+                import gc
+                gc.collect()
 
     def _verify_signature(self, manifest: dict[str, Any]) -> bool:
         if not self._public_key or not isinstance(manifest.get("signature"), str):

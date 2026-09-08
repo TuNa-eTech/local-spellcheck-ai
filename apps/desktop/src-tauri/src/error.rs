@@ -24,6 +24,9 @@ pub enum AppError {
     ModelDiskSpace,
     #[error("MODEL_OPERATION_CANCELLED")]
     ModelCancelled,
+    // Kept for the stable error-code surface even though the import path now
+    // supersedes an in-flight operation instead of rejecting the new one.
+    #[allow(dead_code)]
     #[error("MODEL_OPERATION_IN_PROGRESS")]
     ModelOperationInProgress,
     #[error("{0}")]

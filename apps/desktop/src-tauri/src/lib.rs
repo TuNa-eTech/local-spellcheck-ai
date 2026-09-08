@@ -28,6 +28,10 @@ use tokio::sync::Mutex as AsyncMutex;
 
 const MODEL_JOB_IDLE_GRACE_SECONDS: u64 = 120;
 
+/// A pure status check that must not activate the runtime. Kept short so the UI
+/// never hangs on it — opening Settings issues one of these on every visit.
+const MODEL_STATUS_TIMEOUT_SECONDS: u64 = 120;
+
 fn model_job_idle_timeout() -> Duration {
     Duration::from_secs(MAX_MODEL_TIMEOUT_SECONDS + MODEL_JOB_IDLE_GRACE_SECONDS)
 }
@@ -232,14 +236,23 @@ struct AiConfigUpdateRequest {
     is_active: Option<bool>,
 }
 
+/// A file dialog already parented to the main window. Without an explicit parent
+/// the native picker on Windows can open *behind* the app window or fail to take
+/// focus — users report this as "the picker never showed".
+fn file_dialog(app: &AppHandle) -> tauri_plugin_dialog::FileDialogBuilder<tauri::Wry> {
+    let builder = app.dialog().file();
+    match app.get_webview_window("main") {
+        Some(window) => builder.set_parent(&window),
+        None => builder,
+    }
+}
+
 #[tauri::command]
 async fn choose_document(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> AppResult<Option<DocumentInfo>> {
-    let selected = app
-        .dialog()
-        .file()
+    let selected = file_dialog(&app)
         .add_filter("Tệp Word", &["docx"])
         .blocking_pick_file();
     let Some(path) = selected.and_then(|value| value.into_path().ok()) else {
@@ -697,7 +710,7 @@ async fn seq2seq_config_update(
 
 #[tauri::command]
 async fn choose_seq2seq_model_dir(app: AppHandle) -> AppResult<Option<String>> {
-    let selected = app.dialog().file().blocking_pick_folder();
+    let selected = file_dialog(&app).blocking_pick_folder();
     let Some(path) = selected.and_then(|v| v.into_path().ok()) else {
         return Ok(None);
     };
@@ -766,18 +779,18 @@ async fn model_import(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> AppResult<Option<ModelStatus>> {
-    let selected = app
-        .dialog()
-        .file()
+    let selected = file_dialog(&app)
         .add_filter("Gói model SoatVan-itowf", &["svmodel", "zip", "gguf"])
         .blocking_pick_file();
     let Some(path) = selected.and_then(|value| value.into_path().ok()) else {
         return Ok(None);
     };
-    let _operation = state
-        .model_operation
-        .try_lock()
-        .map_err(|_| AppError::ModelOperationInProgress)?;
+    // Supersede whatever is in flight (a slow activation, or an operation left
+    // wedged by an engine restart) instead of failing the user's fresh import
+    // with MODEL_OPERATION_IN_PROGRESS, then wait our turn. The dialog stays
+    // *before* the lock so we never hold it while the user browses files.
+    cancel_current_model_operation(&state);
+    let _operation = state.model_operation.lock().await;
     let generation = next_model_generation(&state.model_generation);
     let status = install_model_package(&state, &path, None, generation)?;
     Ok(Some(status))
@@ -861,10 +874,20 @@ fn cancel_current_model_operation(state: &AppState) -> bool {
 }
 
 fn engine_model_status(engine: &EngineBroker, activate: bool) -> AppResult<ModelStatus> {
+    // Activating re-hashes the GGUF and loads it into llama.cpp on the CPU. For a
+    // multi-GB model on a slow disk — with an antivirus scanning the freshly
+    // staged file — that legitimately takes minutes, so the import/activation
+    // path gets the full model budget. A plain status check (activate == false)
+    // does no I/O of that size and stays snappy.
+    let timeout = Duration::from_secs(if activate {
+        MAX_MODEL_TIMEOUT_SECONDS
+    } else {
+        MODEL_STATUS_TIMEOUT_SECONDS
+    });
     Ok(serde_json::from_value(engine.call(
         "model.status",
         json!({"activate": activate}),
-        Duration::from_secs(120),
+        timeout,
     )?)?)
 }
 
