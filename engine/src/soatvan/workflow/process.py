@@ -297,7 +297,9 @@ def _run_seq2seq_subprocess(
     import threading
     import time
 
-    model_dir = getattr(seq2seq, "_model_dir", None) or getattr(seq2seq, "_speller", None) and getattr(seq2seq._speller, "model_id", None)  # type: ignore[union-attr]
+    model_dir = getattr(seq2seq, "_model_dir", None) or getattr(
+        getattr(seq2seq, "_speller", None), "model_id", None
+    )
     if model_dir is None:
         raise RuntimeError("Cannot determine seq2seq model_dir for subprocess")
 
