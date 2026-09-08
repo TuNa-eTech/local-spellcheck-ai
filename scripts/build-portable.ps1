@@ -65,12 +65,26 @@ try {
     #    hidden-import va VC++ runtime truoc khi ton thoi gian build Rust.
     Write-Host "`n[2/5] Kiem tra sidecar dong goi khoi dong va chay job that..." -ForegroundColor Yellow
     $acceptanceDir = Join-Path $distDir "portable-acceptance"
-    Invoke-Checked "uv" @(
+    $acceptanceArgs = @(
         "run", "--project", "engine", "python",
         (Join-Path $engineDir "tests\windows_frozen_acceptance.py"),
         "--engine", $engineExecutable,
         "--artifacts", $acceptanceDir
     )
+    # Neu co model seq2seq that, kiem tra luon ca duong torch/transformers/
+    # sentencepiece trong ban dong goi (bang khong thi buoc nay bo qua seq2seq).
+    if (-not [string]::IsNullOrWhiteSpace($env:SOATVAN_SEQ2SEQ_MODEL_DIR)) {
+        if (Test-Path -LiteralPath (Join-Path $env:SOATVAN_SEQ2SEQ_MODEL_DIR "config.json") -PathType Leaf) {
+            $acceptanceArgs += @("--seq2seq-model-dir", $env:SOATVAN_SEQ2SEQ_MODEL_DIR)
+        }
+        else {
+            Write-Warning "SOATVAN_SEQ2SEQ_MODEL_DIR khong co config.json — bo qua kiem tra seq2seq frozen."
+        }
+    }
+    else {
+        Write-Warning "SOATVAN_SEQ2SEQ_MODEL_DIR chua set — KHONG kiem tra duoc duong seq2seq trong ban dong goi. Dat bien nay tro toi thu muc model de bat kiem tra."
+    }
+    Invoke-Checked "uv" $acceptanceArgs
 
     # 4. Dong bo resource va build Tauri Desktop
     Write-Host "`n[3/5] Dong bo sidecar vao Tauri va build release desktop..." -ForegroundColor Yellow

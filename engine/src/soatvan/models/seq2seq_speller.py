@@ -35,12 +35,35 @@ def _no_grad_ctx() -> Iterator[None]:
         yield
 
 
+_RUNTIME_IMPORTABLE: bool | None = None
+
+
 def is_transformers_available() -> bool:
-    """Check if torch, transformers, and sentencepiece are importable."""
-    return all(
-        importlib.util.find_spec(pkg) is not None
-        for pkg in ("sentencepiece", "torch", "transformers")
-    )
+    """Whether the seq2seq runtime (torch, transformers, sentencepiece) is usable.
+
+    torch and transformers ship PyInstaller hooks and are expensive to import,
+    so they are probed with ``find_spec``. ``sentencepiece`` has no hook and is
+    the one most likely to be half-bundled in a frozen build — its directory
+    present but the compiled ``_sentencepiece`` extension missing, which
+    ``find_spec`` cannot detect — so it is imported for real. Cheap (no native
+    model load) and cached for the life of the process.
+    """
+    global _RUNTIME_IMPORTABLE
+    if _RUNTIME_IMPORTABLE is None:
+        has_specs = all(
+            importlib.util.find_spec(pkg) is not None
+            for pkg in ("torch", "transformers")
+        )
+        if not has_specs:
+            _RUNTIME_IMPORTABLE = False
+        else:
+            try:
+                import sentencepiece  # noqa: F401
+
+                _RUNTIME_IMPORTABLE = True
+            except Exception:
+                _RUNTIME_IMPORTABLE = False
+    return _RUNTIME_IMPORTABLE
 
 
 class Seq2SeqSpeller:

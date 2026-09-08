@@ -74,8 +74,16 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--engine", type=Path, required=True)
     parser.add_argument("--artifacts", type=Path, required=True)
+    parser.add_argument(
+        "--seq2seq-model-dir",
+        type=Path,
+        default=None,
+        help="If given, additionally verify the frozen sidecar can load and run "
+        "the seq2seq speller from this model directory (must contain config.json).",
+    )
     args = parser.parse_args()
     args.artifacts.mkdir(parents=True, exist_ok=True)
+    stderr_log = args.artifacts / "frozen-sidecar-stderr.log"
     with tempfile.TemporaryDirectory(prefix="soatvan-windows-") as temporary:
         root = Path(temporary)
         long_folder = root / "Tài liệu kiểm thử có khoảng trắng"
@@ -91,11 +99,15 @@ def main() -> int:
         environment["PATH"] = str(Path(os.environ["SYSTEMROOT"]) / "System32")
         environment.pop("PYTHONHOME", None)
         environment.pop("PYTHONPATH", None)
+        # Drain stderr to a file rather than PIPE: loading torch is verbose enough
+        # to fill a 64 KB pipe and deadlock the sidecar, and the log is useful
+        # when a bundled dependency is missing.
+        stderr_handle = stderr_log.open("wb")
         process = subprocess.Popen(
             [str(args.engine)],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=stderr_handle,
             text=True,
             encoding="utf-8",
             env=environment,
@@ -163,10 +175,84 @@ def main() -> int:
         assert cancelled.get("event") == "job.failed", cancelled
         assert cancelled["data"]["code"] == "JOB_CANCELLED"  # type: ignore[index]
         assert not cancel_output.exists()
+
+        if args.seq2seq_model_dir is not None:
+            _verify_seq2seq(process, frames, args.seq2seq_model_dir, root, stderr_log)
+
         assert process.stdin
         process.stdin.close()
         assert process.wait(timeout=10) == 0
+        stderr_handle.close()
     return 0
+
+
+def _verify_seq2seq(
+    process: subprocess.Popen[str],
+    frames: Frames,
+    model_dir: Path,
+    root: Path,
+    stderr_log: Path,
+) -> None:
+    """Point the frozen sidecar at a real seq2seq model and run one job through it.
+
+    Proves the bundled torch / transformers / sentencepiece / protobuf stack
+    actually imports and the tokenizer + model load — the path the rules-only
+    checks above never touch.
+    """
+    if not (model_dir / "config.json").is_file():
+        raise SystemExit(f"--seq2seq-model-dir has no config.json: {model_dir}")
+
+    send(
+        process,
+        {
+            "v": 1,
+            "id": "s2s-config",
+            "method": "seq2seq_config.update",
+            "params": {"model_dir": str(model_dir), "is_enabled": True},
+        },
+    )
+    config = frames.until(lambda frame: frame.get("id") == "s2s-config")
+    result = config.get("result", {})
+    assert result.get("runtime_available") is True, (
+        f"frozen sidecar cannot import the seq2seq runtime: {result}"
+    )
+    assert result.get("is_ready") is True, f"seq2seq model not ready: {result}"
+
+    s2s_source = root / "seq2seq-source.docx"
+    s2s_output = root / "seq2seq-output.docx"
+    make_docx(s2s_source, ["Toi yeu Viet Nam va tieng Viet."])
+    send(
+        process,
+        {
+            "v": 1,
+            "id": "s2s-start",
+            "method": "job.start",
+            "params": {
+                "job_id": "seq2seq-e2e",
+                "source_path": str(s2s_source),
+                "temporary_output_path": str(s2s_output),
+                "preset": "standard",
+            },
+        },
+    )
+    terminal = frames.until(
+        lambda frame: frame.get("event")
+        in {"job.completed", "job.no_findings", "job.failed"},
+        timeout=300,
+    )
+    assert terminal.get("event") in {"job.completed", "job.no_findings"}, terminal
+
+    # A job completes even when the seq2seq pass throws (the workflow catches it
+    # and drops the pass). Inspect the sidecar's own log — the engine flushes
+    # these lines explicitly — to be sure it ran the model rather than skipping.
+    log = stderr_log.read_text(encoding="utf-8", errors="replace")
+    assert "Seq2Seq pass failed" not in log, (
+        "seq2seq loaded-check passed but the pass threw at runtime; see "
+        f"{stderr_log}\n--- tail ---\n{log[-2000:]}"
+    )
+    assert "Running Seq2Seq spell-check pass" in log, (
+        f"seq2seq pass never started; see {stderr_log}\n--- tail ---\n{log[-2000:]}"
+    )
 
 
 if __name__ == "__main__":
