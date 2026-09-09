@@ -7,7 +7,13 @@ import re
 import sys
 from pathlib import Path
 
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:
+    try:
+        import tomli as tomllib  # type: ignore[no-redef]
+    except ModuleNotFoundError:
+        tomllib = None  # type: ignore[assignment]
 
 
 def main() -> int:
@@ -29,13 +35,21 @@ def main() -> int:
     tauri_config = json.loads(
         (repo_root / "apps/desktop/src-tauri/tauri.conf.json").read_text(encoding="utf-8")
     )
-    with (repo_root / "engine/pyproject.toml").open("rb") as engine_file:
-        engine_project = tomllib.load(engine_file)
+    if tomllib is not None:
+        with (repo_root / "engine/pyproject.toml").open("rb") as engine_file:
+            engine_project = tomllib.load(engine_file)
+        engine_version = engine_project["project"]["version"]
+    else:
+        pyproject_text = (repo_root / "engine/pyproject.toml").read_text(encoding="utf-8")
+        match = re.search(r'\[project\][\s\S]*?version\s*=\s*"([^"]+)"', pyproject_text)
+        if not match:
+            raise RuntimeError("Could not find project.version in engine/pyproject.toml")
+        engine_version = match.group(1)
 
     versions = {
         "apps/desktop/package.json": desktop_package["version"],
         "apps/desktop/src-tauri/tauri.conf.json": tauri_config["version"],
-        "engine/pyproject.toml": engine_project["project"]["version"],
+        "engine/pyproject.toml": engine_version,
     }
     mismatches = {path: version for path, version in versions.items() if version != expected}
 
