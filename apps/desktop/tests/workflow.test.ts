@@ -1649,5 +1649,68 @@ describe("AI model selection and configuration UX", () => {
   });
 });
 
+describe("startup loading overlay", () => {
+  it("renders loading overlay while app is initializing and dismisses it when ready", async () => {
+    const aiConfigDeferred = deferred<any>();
+    loadApp({
+      aiConfigGet: () => aiConfigDeferred.promise,
+    });
 
+    await vi.waitFor(() => {
+      const overlay = document.querySelector(".app-init-overlay");
+      expect(overlay).not.toBeNull();
+      expect(overlay?.getAttribute("role")).toBe("dialog");
+      expect(overlay?.getAttribute("aria-modal")).toBe("true");
+      expect(document.querySelector("#app-init-title")?.textContent).toContain("Đang chuẩn bị ứng dụng, vui lòng chờ…");
+      expect(document.querySelector(".app-init-card .spinner")).not.toBeNull();
+    });
 
+    // Resolve initial background call
+    aiConfigDeferred.resolve({
+      active_provider: "local",
+      configs: [
+        { provider: "openai", base_url: "https://api.openai.com/v1", model_name: "gpt-4o-mini", masked_key: "sk-1234" },
+        { provider: "gemini", base_url: "https://generativelanguage.googleapis.com/v1beta", model_name: "gemini-2.5-flash", masked_key: "AIza...5678" },
+      ],
+    });
+
+    await vi.waitFor(() => {
+      expect(document.querySelector(".app-init-overlay")).toBeNull();
+      expect(document.querySelector("#choose")).not.toBeNull();
+    });
+  });
+
+  it("displays error card and retries when initialization fails", async () => {
+    let callCount = 0;
+    const aiConfigMock = vi.fn(() => {
+      callCount += 1;
+      if (callCount === 1) {
+        return Promise.reject(new Error("ENGINE_DISCONNECTED"));
+      }
+      return Promise.resolve({
+        active_provider: "local",
+        configs: [],
+      });
+    });
+
+    await loadApp({
+      aiConfigGet: aiConfigMock,
+    });
+
+    // Expect error card and retry button
+    await vi.waitFor(() => {
+      const overlay = document.querySelector(".app-init-overlay");
+      expect(overlay).not.toBeNull();
+      expect(document.querySelector(".app-init-card--error")).not.toBeNull();
+      expect(document.querySelector("#retry-app-init")).not.toBeNull();
+    });
+
+    // Click retry
+    document.querySelector<HTMLButtonElement>("#retry-app-init")!.click();
+
+    // After retry succeeds, overlay should be dismissed
+    await vi.waitFor(() => {
+      expect(document.querySelector(".app-init-overlay")).toBeNull();
+    });
+  });
+});

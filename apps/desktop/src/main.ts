@@ -129,6 +129,8 @@ const state: {
   modelRemovalRunning: boolean;
   outputActionPending: OutputAction | null;
   appVersion: string;
+  appInitializing: boolean;
+  appInitError: string | null;
 } = {
   view: { kind: "workflow" },
   step: "file",
@@ -175,6 +177,8 @@ const state: {
   modelRemovalRunning: false,
   outputActionPending: null,
   appVersion: APP_VERSION,
+  appInitializing: true,
+  appInitError: null,
 };
 
 const defaultPreset: Preset = "standard";
@@ -354,6 +358,26 @@ function customRuleSelectionHtml(): string {
   return `<fieldset class="prompt-picker-group"><legend class="sr-only">Quy tắc riêng áp dụng cho lần rà soát này</legend><div class="prompt-picker-group__header"><div><strong>${count.toLocaleString("vi-VN")} quy tắc riêng</strong><span>${summary}</span></div></div>${picker}</fieldset>${warningHtml}`;
 }
 
+function initOverlayHtml(): string {
+  if (!state.appInitializing) return "";
+  if (state.appInitError) {
+    return `<div class="app-init-overlay" role="dialog" aria-modal="true" aria-labelledby="app-init-title">
+      <div class="app-init-card app-init-card--error" role="alert">
+        <div class="app-init-error-icon" aria-hidden="true">⚠️</div>
+        <h2 class="app-init-title" id="app-init-title">Không thể chuẩn bị ứng dụng</h2>
+        <p class="app-init-message">${escape(state.appInitError)}</p>
+        <button class="button button--primary" id="retry-app-init" type="button">Thử lại</button>
+      </div>
+    </div>`;
+  }
+  return `<div class="app-init-overlay" role="dialog" aria-modal="true" aria-labelledby="app-init-title">
+    <div class="app-init-card" role="status">
+      <div class="spinner" aria-hidden="true"></div>
+      <p class="app-init-title" id="app-init-title">Đang chuẩn bị ứng dụng, vui lòng chờ…</p>
+    </div>
+  </div>`;
+}
+
 function render(preferredFocus?: string): void {
   const previousFocus = focusSelectorFor(document.activeElement);
   const workflowView = isWorkflowView();
@@ -382,7 +406,8 @@ function render(preferredFocus?: string): void {
       ${state.step === "processing" ? `<section class="workflow-card processing-panel"><div class="processing-status"><span class="spinner" aria-hidden="true"></span><div class="section-copy"><h1>${progressTitle()}</h1><p class="progress-subtitle">${progressSubtitle()}</p></div></div><div class="progress-row"><div class="progress" role="progressbar" aria-label="Tiến độ xử lý" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${state.progress}"><span style="--progress-scale:${state.progress / 100}"></span></div><strong class="progress-value">${state.progress}%</strong></div><p class="sr-only progress-announcement" aria-live="polite" aria-atomic="true">${progressTitle()} ${state.progress}%</p><div class="workflow-actions"><button class="button button--secondary" id="cancel" ${state.jobStarting || state.cancelPending ? "disabled" : ""} ${state.jobStarting || state.cancelPending ? 'aria-busy="true"' : ""}>${state.jobStarting ? "Đang chuẩn bị…" : state.cancelPending ? "Đang dừng…" : "Dừng xử lý"}</button></div>${errorHtml()}</section>` : ""}
       ${(state.step === "result" || state.step === "no-findings") ? resultHtml() : ""}
     </main>` : settingsHtml()}
-    <footer class="status-bar">${isCloudActive() ? `<span><span aria-hidden="true">☁</span> ${escape(activeAiLabel())} · Gửi dữ liệu qua API đám mây</span>` : `<span><span aria-hidden="true">●</span> Xử lý cục bộ · không gửi nội dung tài liệu lên mạng</span>`}<span class="status-bar__end"><button type="button" class="status-bar__link" id="open-logs">Nhật ký sự cố</button><span>v${escape(state.appVersion)}</span></span></footer>`;
+    <footer class="status-bar">${isCloudActive() ? `<span><span aria-hidden="true">☁</span> ${escape(activeAiLabel())} · Gửi dữ liệu qua API đám mây</span>` : `<span><span aria-hidden="true">●</span> Xử lý cục bộ · không gửi nội dung tài liệu lên mạng</span>`}<span class="status-bar__end"><button type="button" class="status-bar__link" id="open-logs">Nhật ký sự cố</button><span>v${escape(state.appVersion)}</span></span></footer>
+    ${initOverlayHtml()}`;
   bind();
   renderedStep = state.step;
   renderedView = state.view.kind;
@@ -931,6 +956,7 @@ function settingsContent(section: SettingsSection): { body: string; footer: stri
 }
 
 function bind(): void {
+  document.querySelector("#retry-app-init")?.addEventListener("click", () => { void initializeApp(); });
   document.querySelector("#review-nav")?.addEventListener("click", () => { if (state.view.kind === "settings") closeSettings("#review-nav"); });
   document.querySelector("#settings")?.addEventListener("click", () => { if (isWorkflowView()) void openSettings("prompts", "#settings"); });
   document.querySelector("#settings-back")?.addEventListener("click", () => closeSettings());
@@ -1963,18 +1989,35 @@ try {
   }).catch(() => {});
 } catch { /* noop */ }
 
-try {
-  const initialModelPreference = loadModelPreference();
-  const modelSequence = modelOperationSequence;
-  const statusRequest = ++modelStatusRequestSequence;
-  const customRuleSequence = customRuleOperationSequence;
-  const request = ++customRuleRequestSequence;
+let initSequence = 0;
+async function initializeApp(): Promise<void> {
+  const currentInit = ++initSequence;
+  state.appInitializing = true;
+  state.appInitError = null;
+  render();
 
-  void Promise.allSettled([
-    api.aiConfigGet(),
-    api.customRuleList(),
-    api.seq2seqConfigGet().catch(() => null),
-  ]).then(([aiConfigRes, rulesRes, seq2seqRes]) => {
+  try {
+    const initialModelPreference = loadModelPreference();
+    const modelSequence = modelOperationSequence;
+    const statusRequest = ++modelStatusRequestSequence;
+    const customRuleSequence = customRuleOperationSequence;
+    const request = ++customRuleRequestSequence;
+
+    const [aiConfigRes, rulesRes, seq2seqRes] = await Promise.allSettled([
+      api.aiConfigGet(),
+      api.customRuleList(),
+      api.seq2seqConfigGet().catch(() => null),
+    ]);
+
+    if (currentInit !== initSequence) return;
+
+    if (aiConfigRes.status === "rejected") {
+      throw new Error(aiConfigRes.reason?.message || "Không thể kết nối với dịch vụ cấu hình AI.");
+    }
+    if (rulesRes.status === "rejected") {
+      throw new Error(rulesRes.reason?.message || "Không thể kết nối với dịch vụ quy tắc.");
+    }
+
     if (seq2seqRes.status === "fulfilled" && seq2seqRes.value) {
       state.seq2seqConfig = seq2seqRes.value;
     }
@@ -1987,6 +2030,7 @@ try {
         state.fullReview = true;
       }
     }
+
     if (rulesRes.status === "fulfilled" && customRuleSequence === customRuleOperationSequence && request === customRuleRequestSequence) {
       state.customRules = rulesRes.value;
       syncDefaultRuleSelection();
@@ -1995,8 +2039,12 @@ try {
     clearUnavailableFullReview();
     render();
 
-    return api.modelStatus(initialModelPreference);
-  }).then((modelRes) => {
+    const modelRes = await api.modelStatus(initialModelPreference).catch((err) => {
+      console.warn("modelStatus error on startup:", err);
+      return null;
+    });
+    if (currentInit !== initSequence) return;
+
     if (modelRes && modelSequence === modelOperationSequence && statusRequest === modelStatusRequestSequence) {
       state.model = modelRes;
       if (!isCloudActive()) {
@@ -2005,9 +2053,21 @@ try {
       }
       state.includeRuleFindings = false;
       clearUnavailableFullReview();
-      render();
     }
-  }).catch(() => {});
+
+    state.appInitializing = false;
+    state.appInitError = null;
+    render();
+  } catch (error: any) {
+    if (currentInit !== initSequence) return;
+    state.appInitializing = true;
+    state.appInitError = error?.message || "Không thể khởi động dịch vụ ứng dụng. Hãy thử lại.";
+    render();
+  }
+}
+
+try {
+  void initializeApp();
 } catch { /* noop */ }
 
 try { void api.appVersion().then(version => { state.appVersion = version; render(); }).catch(() => {}); } catch { /* noop */ }
