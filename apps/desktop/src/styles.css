@@ -2230,6 +2230,62 @@ button:not(:disabled):not([aria-disabled="true"]):active,
   to { transform: rotate(360deg); }
 }
 
+/* Startup Loading Overlay */
+.app-init-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 1.5rem;
+  background: rgba(15, 23, 42, 0.5);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+.app-init-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  padding: 2rem 2.5rem;
+  max-inline-size: 28rem;
+  inline-size: 100%;
+  background: var(--color-surface, #ffffff);
+  border: 1px solid var(--color-rule, #e2e8f0);
+  border-radius: var(--radius-card, 0.75rem);
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+  text-align: center;
+}
+
+.app-init-card .spinner {
+  inline-size: 2.25rem;
+  block-size: 2.25rem;
+}
+
+.app-init-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--color-text, #0f172a);
+}
+
+.app-init-card--error {
+  border-color: var(--color-danger, #ef4444);
+}
+
+.app-init-error-icon {
+  font-size: 2rem;
+  line-height: 1;
+}
+
+.app-init-message {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--color-muted, #64748b);
+  line-height: 1.4;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
