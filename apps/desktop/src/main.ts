@@ -1405,7 +1405,7 @@ async function openSettings(section: SettingsSection = "prompts", returnFocus = 
   state.pendingPromptAction = null;
   render(returnFocus === "#settings" ? "#settings-title" : settingsSectionHeading(section));
   const [modelResult, customRulesResult, aiConfigResult] = await Promise.allSettled([
-    api.modelStatus(state.useModel),
+    api.modelStatus(false),
     api.customRuleList(),
     api.aiConfigGet(),
   ]);

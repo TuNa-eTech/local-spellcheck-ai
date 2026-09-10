@@ -933,6 +933,16 @@ describe("four-step desktop workflow", () => {
     await vi.waitFor(() => expect((document.activeElement as HTMLElement | null)?.id).toBe("settings"));
   });
 
+  it("checks model status in non-activating mode when opening settings to avoid freezing UI", async () => {
+    const api = await loadApp({
+      modelStatus: vi.fn(() => Promise.resolve(signedReadyModel)),
+    });
+    api.modelStatus.mockClear();
+    document.querySelector<HTMLButtonElement>("#settings")!.click();
+    await vi.waitFor(() => expect(document.querySelector("#settings-page")).not.toBeNull());
+    expect(api.modelStatus).toHaveBeenCalledWith(false);
+  });
+
   it("returns focus to each workflow Settings opener", async () => {
     const api = await loadApp({
       customRuleList: () => Promise.resolve([customRule("rule-1", "Giữ nguyên tên SoátVăn.")]),
