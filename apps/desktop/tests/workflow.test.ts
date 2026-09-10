@@ -702,7 +702,10 @@ describe("four-step desktop workflow", () => {
     const externalSubmit = () => document.querySelector<HTMLButtonElement>('button[type="submit"][form="custom-rule-form"]')!;
     prompt.value = "Dùng thuật ngữ “khách hàng”.";
     prompt.dispatchEvent(new InputEvent("input", { bubbles: true }));
-    expect(externalSubmit().disabled).toBe(true);
+    expect(externalSubmit().disabled).toBe(false);
+    externalSubmit().click();
+    await vi.waitFor(() => expect(document.querySelector<HTMLInputElement>("#custom-rule-title")?.getAttribute("aria-invalid")).toBe("true"));
+    expect(api.customRuleUpsert).not.toHaveBeenCalled();
     fillPromptEditor("Thuật ngữ khách hàng", "Dùng thuật ngữ “khách hàng”.");
     expect(externalSubmit().form?.id).toBe("custom-rule-form");
     expect(externalSubmit().disabled).toBe(false);
@@ -757,12 +760,16 @@ describe("four-step desktop workflow", () => {
     prompt.value = "Nội dung không có tiêu đề.";
     prompt.dispatchEvent(new InputEvent("input", { bubbles: true }));
 
-    const form = document.querySelector<HTMLFormElement>("#custom-rule-form")!;
-    expect(document.querySelector<HTMLButtonElement>('button[type="submit"][form="custom-rule-form"]')!.disabled).toBe(true);
-    expect(form.checkValidity()).toBe(false);
-    form.requestSubmit();
-    await Promise.resolve();
+    const submitBtn = document.querySelector<HTMLButtonElement>('button[type="submit"][form="custom-rule-form"]')!;
+    expect(submitBtn.disabled).toBe(false);
+
+    submitBtn.click();
+    await vi.waitFor(() => expect(document.querySelector<HTMLInputElement>("#custom-rule-title")?.getAttribute("aria-invalid")).toBe("true"));
+    expect(document.body.textContent).toContain("Tiêu đề là bắt buộc");
     expect(api.customRuleUpsert).not.toHaveBeenCalled();
+
+    const form = document.querySelector<HTMLFormElement>("#custom-rule-form")!;
+    expect(form.checkValidity()).toBe(false);
 
     // A submit that bypasses constraint validation must still be rejected.
     form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));

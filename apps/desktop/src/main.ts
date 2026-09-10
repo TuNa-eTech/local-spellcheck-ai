@@ -713,7 +713,7 @@ function settingsContent(section: SettingsSection): { body: string; footer: stri
     const draftLength = [...state.customRuleDraft].length;
     const isOverBudget = draftLength > available;
     const controlsLocked = state.customRulePending || state.settingsLoading;
-    const saveDisabled = controlsLocked || !state.customRuleTitleDraft.trim() || !state.customRuleDraft.trim();
+    const saveDisabled = controlsLocked;
     const promptList = state.customRules.length
       ? state.customRules.map((rule, index) => {
           const id = escape(rule.id);
@@ -723,8 +723,8 @@ function settingsContent(section: SettingsSection): { body: string; footer: stri
         }).join("")
       : `<div class="empty-state"><strong>Chưa có prompt riêng.</strong><span>Tạo một prompt để cung cấp thuật ngữ, ngữ cảnh hoặc tiêu chí kiểm tra riêng cho AI.</span></div>`;
     return {
-      body: `<section class="settings-section settings-prompts" id="settings-prompts" aria-labelledby="settings-prompts-title"><header class="settings-section__header"><div class="section-copy"><h2 id="settings-prompts-title">Prompt</h2><p>Mỗi mục là một đoạn hướng dẫn bổ sung cho AI; ứng dụng tự quản lý định dạng kết quả và vị trí bôi vàng.</p></div><button class="button button--secondary" id="new-custom-rule" type="button" ${controlsLocked ? "disabled" : ""}>Prompt mới</button></header><div class="prompt-manager"><div class="prompt-manager__master"><nav class="prompt-list" aria-label="Danh sách prompt" aria-live="polite">${promptList}</nav></div><section class="prompt-manager__detail" aria-labelledby="custom-rule-editor-title"><div class="section-copy"><h3 id="custom-rule-editor-title">${editing ? "Sửa prompt" : "Tạo prompt"}</h3><p>${editing ? "Chỉnh nội dung rồi lưu thay đổi, hoặc huỷ để trở về chế độ tạo mới." : "Mô tả thuật ngữ, ngữ cảnh hoặc tiêu chí mà AI cần chú ý."}</p></div><form class="custom-rule-form" id="custom-rule-form"><div class="control"><label for="custom-rule-title">Tiêu đề</label><input type="text" id="custom-rule-title" name="title" required maxlength="${customRuleTitleLimit}" aria-describedby="custom-rule-title-help${state.customRuleTitleInvalid ? " settings-message" : ""}" ${state.customRuleTitleInvalid ? 'aria-invalid="true"' : ""} placeholder="Ví dụ: Thuật ngữ khách hàng" value="${escape(state.customRuleTitleDraft)}" ${controlsLocked ? "disabled" : ""}><span class="field__helper" id="custom-rule-title-help">Bắt buộc, tối đa ${customRuleTitleLimit} ký tự. Tiêu đề hiển thị ở bước Chuẩn bị rà soát và không được gửi cho AI.</span></div><div class="control"><label for="custom-rule-prompt">Nội dung prompt</label><textarea id="custom-rule-prompt" name="prompt" rows="7" required maxlength="${customRulePromptLimit}" aria-describedby="custom-rule-help custom-rule-count${state.customRulePromptInvalid ? " settings-message" : ""}" ${state.customRulePromptInvalid ? 'aria-invalid="true"' : ""} placeholder="Ví dụ: Dùng thuật ngữ “khách hàng”, không dùng “client”." ${controlsLocked ? "disabled" : ""}>${escape(state.customRuleDraft)}</textarea><div class="field__meta"><span class="field__helper" id="custom-rule-help">Không yêu cầu AI trả cả câu/đoạn hoặc tự đặt cấu trúc output. Tổng tất cả prompt tối đa 4.000 ký tự.</span><small id="custom-rule-count" class="${isOverBudget ? "field__meta--overbudget" : ""}">${isOverBudget ? `Vượt quá dung lượng còn lại ${(draftLength - available).toLocaleString("vi-VN")} ký tự (còn ${available.toLocaleString("vi-VN")}/${customRulePromptLimit.toLocaleString("vi-VN")})` : `${draftLength.toLocaleString("vi-VN")}/${available.toLocaleString("vi-VN")} ký tự còn dùng được cho mục này`}</small></div></div><label class="setting-row"><span><strong>Chọn sẵn ở bước Chuẩn bị rà soát</strong><small>Prompt này sẽ được tick mặc định khi bắt đầu một lần rà soát mới.</small></span><input type="checkbox" id="custom-rule-default" ${state.customRuleDefaultDraft ? "checked" : ""} ${controlsLocked ? "disabled" : ""}></label></form></section></div></section>`,
-      footer: `<footer class="settings-footer"><div class="settings-footer__inner"><div class="button-row"><button class="button button--primary" type="submit" form="custom-rule-form" ${saveDisabled ? "disabled" : ""}>${state.customRulePending ? "Đang lưu…" : editing ? "Lưu thay đổi" : "Thêm prompt"}</button>${editing ? `<button class="button button--secondary" id="cancel-rule-edit" type="button" ${controlsLocked ? "disabled" : ""}>Huỷ sửa</button>` : ""}</div></div></footer>`,
+      body: `<section class="settings-section settings-prompts" id="settings-prompts" aria-labelledby="settings-prompts-title"><header class="settings-section__header"><div class="section-copy"><h2 id="settings-prompts-title">Prompt</h2><p>Mỗi mục là một đoạn hướng dẫn bổ sung cho AI; ứng dụng tự quản lý định dạng kết quả và vị trí bôi vàng.</p></div><button class="button button--secondary" id="new-custom-rule" type="button" ${controlsLocked ? "disabled" : ""}>Prompt mới</button></header><div class="prompt-manager"><div class="prompt-manager__master"><nav class="prompt-list" aria-label="Danh sách prompt" aria-live="polite">${promptList}</nav></div><section class="prompt-manager__detail" aria-labelledby="custom-rule-editor-title"><div class="section-copy"><h3 id="custom-rule-editor-title">${editing ? "Sửa prompt" : "Tạo prompt"}</h3><p>${editing ? "Chỉnh nội dung rồi lưu thay đổi, hoặc huỷ để trở về chế độ tạo mới." : "Mô tả thuật ngữ, ngữ cảnh hoặc tiêu chí mà AI cần chú ý."}</p></div><form class="custom-rule-form" id="custom-rule-form" novalidate><div class="control"><label for="custom-rule-title">Tiêu đề</label><input type="text" id="custom-rule-title" name="title" required maxlength="${customRuleTitleLimit}" aria-describedby="custom-rule-title-help${state.customRuleTitleInvalid ? " settings-message" : ""}" ${state.customRuleTitleInvalid ? 'aria-invalid="true"' : ""} placeholder="Ví dụ: Thuật ngữ khách hàng" value="${escape(state.customRuleTitleDraft)}" ${controlsLocked ? "disabled" : ""}><span class="field__helper" id="custom-rule-title-help">Bắt buộc, tối đa ${customRuleTitleLimit} ký tự. Tiêu đề hiển thị ở bước Chuẩn bị rà soát và không được gửi cho AI.</span></div><div class="control"><label for="custom-rule-prompt">Nội dung prompt</label><textarea id="custom-rule-prompt" name="prompt" rows="7" required maxlength="${customRulePromptLimit}" aria-describedby="custom-rule-help custom-rule-count${state.customRulePromptInvalid ? " settings-message" : ""}" ${state.customRulePromptInvalid ? 'aria-invalid="true"' : ""} placeholder="Ví dụ: Dùng thuật ngữ “khách hàng”, không dùng “client”." ${controlsLocked ? "disabled" : ""}>${escape(state.customRuleDraft)}</textarea><div class="field__meta"><span class="field__helper" id="custom-rule-help">Không yêu cầu AI trả cả câu/đoạn hoặc tự đặt cấu trúc output. Tổng tất cả prompt tối đa 4.000 ký tự.</span><small id="custom-rule-count" class="${isOverBudget ? "field__meta--overbudget" : ""}">${isOverBudget ? `Vượt quá dung lượng còn lại ${(draftLength - available).toLocaleString("vi-VN")} ký tự (còn ${available.toLocaleString("vi-VN")}/${customRulePromptLimit.toLocaleString("vi-VN")})` : `${draftLength.toLocaleString("vi-VN")}/${available.toLocaleString("vi-VN")} ký tự còn dùng được cho mục này`}</small></div></div><label class="setting-row"><span><strong>Chọn sẵn ở bước Chuẩn bị rà soát</strong><small>Prompt này sẽ được tick mặc định khi bắt đầu một lần rà soát mới.</small></span><input type="checkbox" id="custom-rule-default" ${state.customRuleDefaultDraft ? "checked" : ""} ${controlsLocked ? "disabled" : ""}></label><div class="prompt-form-actions"><button class="button button--primary" type="submit" form="custom-rule-form" ${saveDisabled ? "disabled" : ""}>${state.customRulePending ? "Đang lưu…" : editing ? "Lưu thay đổi" : "Thêm prompt"}</button>${editing ? `<button class="button button--secondary cancel-rule-edit" type="button" ${controlsLocked ? "disabled" : ""}>Huỷ sửa</button>` : ""}</div></form></section></div></section>`,
+      footer: `<footer class="settings-footer"><div class="settings-footer__inner"><div class="button-row"><button class="button button--primary" type="submit" form="custom-rule-form" ${saveDisabled ? "disabled" : ""}>${state.customRulePending ? "Đang lưu…" : editing ? "Lưu thay đổi" : "Thêm prompt"}</button>${editing ? `<button class="button button--secondary cancel-rule-edit" id="cancel-rule-edit" type="button" ${controlsLocked ? "disabled" : ""}>Huỷ sửa</button>` : ""}</div></div></footer>`,
     };
   }
   if (section === "review-rules") {
@@ -1025,7 +1025,7 @@ function bind(): void {
   });
   document.querySelector<HTMLFormElement>("#custom-rule-form")?.addEventListener("submit", event => void saveCustomRule(event));
   document.querySelector("#new-custom-rule")?.addEventListener("click", () => newCustomRule());
-  document.querySelector("#cancel-rule-edit")?.addEventListener("click", cancelCustomRuleEdit);
+  document.querySelectorAll<HTMLButtonElement>(".cancel-rule-edit, #cancel-rule-edit").forEach(btn => btn.addEventListener("click", cancelCustomRuleEdit));
   document.querySelector("#cancel-prompt-discard")?.addEventListener("click", cancelPromptDiscard);
   document.querySelector("#confirm-prompt-discard")?.addEventListener("click", confirmPromptDiscard);
   document.querySelectorAll<HTMLButtonElement>("[data-edit-rule]").forEach(button => button.addEventListener("click", () => editCustomRule(button.dataset.editRule!)));
@@ -1147,8 +1147,10 @@ async function removeSeq2SeqConfig(): Promise<void> {
 }
 
 function updateCustomRuleSaveControl(): void {
-  const submit = document.querySelector<HTMLButtonElement>('button[type="submit"][form="custom-rule-form"]');
-  if (submit) submit.disabled = !state.customRuleTitleDraft.trim() || !state.customRuleDraft.trim();
+  const controlsLocked = state.customRulePending || state.settingsLoading;
+  document.querySelectorAll<HTMLButtonElement>('button[type="submit"][form="custom-rule-form"]').forEach(submit => {
+    submit.disabled = controlsLocked;
+  });
 }
 
 function requestPromptAction(action: PendingPromptAction): boolean {
@@ -1455,15 +1457,27 @@ function applyRuleDefaultSelection(rule: CustomRule): void {
 async function saveCustomRule(event: SubmitEvent): Promise<void> {
   event.preventDefault();
   if (state.customRulePending) return;
-  const title = state.customRuleTitleDraft.trim().normalize("NFC");
+  const rawTitle = state.customRuleTitleDraft.replace(/[\r\n\t]+/g, " ");
+  const title = rawTitle.trim().normalize("NFC");
   const prompt = state.customRuleDraft.trim().normalize("NFC");
   if (!title || [...title].length > customRuleTitleLimit) {
     state.customRuleTitleInvalid = true;
-    state.settingsMessage = { tone: "error", text: `Tiêu đề là bắt buộc và tối đa ${customRuleTitleLimit} ký tự.` };
+    state.settingsMessage = {
+      tone: "error",
+      text: !title ? "Tiêu đề là bắt buộc và tối đa 80 ký tự." : `Tiêu đề tối đa ${customRuleTitleLimit} ký tự.`,
+    };
     render("#custom-rule-title");
     return;
   }
-  if (!prompt) return;
+  if (!prompt) {
+    state.customRulePromptInvalid = true;
+    state.settingsMessage = {
+      tone: "error",
+      text: "Nội dung prompt là bắt buộc.",
+    };
+    render("#custom-rule-prompt");
+    return;
+  }
   const editing = state.customRules.find(rule => rule.id === state.editingCustomRuleId);
   const existingLength = editing ? [...editing.prompt].length : 0;
   const available = Math.max(0, customRulePromptLimit - customRuleCharacterCount() + existingLength);
