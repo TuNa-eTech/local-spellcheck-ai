@@ -1205,6 +1205,16 @@ describe("four-step desktop workflow", () => {
     expect(api.startJob.mock.calls[0][3]).toBe("");
   });
 
+  it("displays helpful action guidance when prompts exist but AI is inactive", async () => {
+    await loadApp({
+      customRuleList: () => Promise.resolve([customRule("rule-1", "Prompt 1")]),
+      modelStatus: () => Promise.resolve({ state: "not_installed" }),
+    });
+    await chooseDocument();
+    expect(document.body.textContent).toContain("Prompt riêng cần AI rà soát");
+    expect(document.querySelector("#open-model-settings")).not.toBeNull();
+  });
+
   it("switches AI provider cleanly in settings", async () => {
     const api = await loadApp({
       modelStatus: () => Promise.resolve(signedReadyModel),
