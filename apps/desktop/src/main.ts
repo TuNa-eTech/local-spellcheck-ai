@@ -1504,18 +1504,45 @@ async function saveCustomRule(event: SubmitEvent): Promise<void> {
     state.customRules = existing >= 0
       ? state.customRules.map(rule => rule.id === saved.id ? saved : rule)
       : [...state.customRules, saved];
-    state.customRules.sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
+    state.customRules.sort((a, b) => (a.created_at || "").localeCompare(b.created_at || "") || (a.id || "").localeCompare(b.id || ""));
     applyRuleDefaultSelection(saved);
-    state.customRuleTitleDraft = "";
-    state.customRuleDraft = "";
-    state.customRuleDefaultDraft = false;
-    state.editingCustomRuleId = null;
+    const isEditMode = state.editingCustomRuleId !== null;
+    if (isEditMode) {
+      // Khi sửa: giữ nguyên dữ liệu trên form và thông báo rõ đã lưu
+      state.customRuleTitleDraft = saved.title;
+      state.customRuleDraft = saved.prompt;
+      state.customRuleDefaultDraft = saved.is_default;
+      state.settingsMessage = { tone: "status", text: "Đã lưu thay đổi prompt." };
+    } else {
+      // Khi thêm mới: dọn form để người dùng có thể thêm tiếp prompt khác nếu muốn
+      state.customRuleTitleDraft = "";
+      state.customRuleDraft = "";
+      state.customRuleDefaultDraft = false;
+      state.editingCustomRuleId = null;
+      state.settingsMessage = { tone: "status", text: "Đã thêm prompt mới." };
+    }
     state.lastDeletedRule = null;
-    state.settingsMessage = { tone: "status", text: "Đã lưu prompt." };
-  } catch {
+  } catch (error: any) {
     if (operation === customRuleOperationSequence) {
-      state.customRulePromptInvalid = true;
-      state.settingsMessage = { tone: "error", text: "Không lưu được prompt. Tổng nội dung tối đa 4.000 ký tự; hãy rút gọn rồi thử lại." };
+      const errStr = String(error?.message || error || "");
+      if (errStr.includes("CUSTOM_RULE_INVALID_TITLE")) {
+        state.customRuleTitleInvalid = true;
+        state.settingsMessage = { tone: "error", text: "Tiêu đề không hợp lệ. Vui lòng kiểm tra lại." };
+      } else if (errStr.includes("CUSTOM_RULE_INVALID_PROMPT")) {
+        state.customRulePromptInvalid = true;
+        state.settingsMessage = { tone: "error", text: "Nội dung prompt không hợp lệ." };
+      } else if (errStr.includes("CUSTOM_RULE_LIMIT_REACHED")) {
+        state.customRulePromptInvalid = true;
+        state.settingsMessage = {
+          tone: "error",
+          text: state.customRules.length >= 100
+            ? "Đã đạt giới hạn tối đa 100 quy tắc riêng."
+            : "Tổng dung lượng tất cả prompt đã vượt quá 4.000 ký tự cho phép.",
+        };
+      } else {
+        state.customRulePromptInvalid = true;
+        state.settingsMessage = { tone: "error", text: "Không lưu được prompt. Vui lòng thử lại." };
+      }
     }
   } finally {
     if (operation === customRuleOperationSequence) {

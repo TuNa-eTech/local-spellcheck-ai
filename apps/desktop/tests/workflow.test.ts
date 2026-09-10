@@ -872,6 +872,41 @@ describe("four-step desktop workflow", () => {
     expect(document.activeElement).toBe(invalidPrompt);
   });
 
+  it("displays specific backend error message when save fails", async () => {
+    const api = await loadApp({
+      customRuleUpsert: () => Promise.reject(new Error("CUSTOM_RULE_INVALID_TITLE")),
+    });
+    document.querySelector<HTMLButtonElement>("#settings")!.click();
+    await vi.waitFor(() => expect(document.querySelector("#custom-rule-title")).not.toBeNull());
+
+    fillPromptEditor("Tiêu đề lỗi", "Nội dung hợp lệ.");
+    document.querySelector<HTMLFormElement>("#custom-rule-form")!.requestSubmit();
+
+    await vi.waitFor(() => expect(api.customRuleUpsert).toHaveBeenCalledOnce());
+    expect(document.querySelector("#settings-message")?.textContent).toContain("Tiêu đề không hợp lệ");
+    expect(document.querySelector("#settings-message")?.textContent).not.toContain("4.000 ký tự");
+  });
+
+  it("preserves edited prompt in form and shows success tone after editing", async () => {
+    const existing = customRule("rule-1", "Nội dung cũ", undefined, "Tiêu đề cũ");
+    const api = await loadApp({
+      customRuleList: () => Promise.resolve([existing]),
+      customRuleUpsert: (id, title, prompt, isDefault) => Promise.resolve(customRule(id ?? "rule-1", prompt, undefined, title, isDefault)),
+    });
+    document.querySelector<HTMLButtonElement>("#settings")!.click();
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-edit-rule="rule-1"]')?.disabled).toBe(false));
+
+    document.querySelector<HTMLButtonElement>('[data-edit-rule="rule-1"]')!.click();
+    fillPromptEditor("Tiêu đề mới", "Nội dung mới");
+    document.querySelector<HTMLFormElement>("#custom-rule-form")!.requestSubmit();
+
+    await vi.waitFor(() => expect(api.customRuleUpsert).toHaveBeenCalledOnce());
+    expect(document.querySelector("#settings-message")?.textContent).toContain("Đã lưu thay đổi prompt");
+    // Vẫn giữ lại dữ liệu vừa sửa trong editor để người dùng yên tâm
+    expect(document.querySelector<HTMLInputElement>("#custom-rule-title")!.value).toBe("Tiêu đề mới");
+    expect(document.querySelector<HTMLTextAreaElement>("#custom-rule-prompt")!.value).toBe("Nội dung mới");
+  });
+
   it("keeps busy prompt navigation focusable and sends blocked actions to the status message", async () => {
     const save = deferred<CustomRule>();
     const api = await loadApp({ customRuleUpsert: () => save.promise });
