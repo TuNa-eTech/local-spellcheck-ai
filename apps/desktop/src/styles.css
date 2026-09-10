@@ -1093,6 +1093,20 @@ button:not(:disabled):not([aria-disabled="true"]):active,
   gap: var(--space-sm);
 }
 
+.prompt-form-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-block-start: var(--space-xs);
+  padding-block-start: var(--space-xs);
+  border-block-start: var(--rule-thin) solid var(--color-rule);
+}
+
+.field__meta--overbudget {
+  color: var(--color-danger, #dc2626) !important;
+  font-weight: 600;
+}
+
 .prompt-list,
 .review-rule-inventory {
   min-inline-size: 0;

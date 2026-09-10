@@ -729,6 +729,26 @@ describe("four-step desktop workflow", () => {
     await vi.waitFor(() => expect(api.customRuleUpsert).toHaveBeenCalledWith("rule-1", "Tên riêng SoátVăn", "Giữ nguyên tên riêng SoátVăn.", false));
   });
 
+  it("allows typing in prompt textarea even when aggregate budget is tight and warns clearly", async () => {
+    await loadApp({
+      customRuleList: () => Promise.resolve([
+        customRule("rule-1", "a".repeat(3950)),
+      ]),
+    });
+    document.querySelector<HTMLButtonElement>("#settings")!.click();
+    await vi.waitFor(() => expect(document.querySelector("#custom-rule-prompt")).not.toBeNull());
+
+    const prompt = document.querySelector<HTMLTextAreaElement>("#custom-rule-prompt")!;
+    expect(prompt.maxLength).toBe(4000);
+
+    prompt.value = "b".repeat(60);
+    prompt.dispatchEvent(new InputEvent("input", { bubbles: true }));
+
+    const counter = document.querySelector("#custom-rule-count")!;
+    expect(counter.classList.contains("field__meta--overbudget")).toBe(true);
+    expect(counter.textContent).toContain("Vượt quá dung lượng còn lại");
+  });
+
   it("refuses to save a prompt without a title", async () => {
     const api = await loadApp();
     document.querySelector<HTMLButtonElement>("#settings")!.click();
