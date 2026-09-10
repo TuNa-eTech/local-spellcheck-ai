@@ -954,9 +954,8 @@ describe("four-step desktop workflow", () => {
     expect(localNav.querySelectorAll('[aria-current="page"]')).toHaveLength(1);
     expect(localNav.querySelector('[aria-current="page"]')?.getAttribute("data-settings-section")).toBe("prompts");
     expect(page.querySelectorAll(".settings-section")).toHaveLength(1);
-    expect(page.querySelector("#settings-prompts")?.getAttribute("aria-labelledby")).toBe("settings-prompts-title");
-    const footer = page.querySelector<HTMLElement>(".settings-footer")!;
-    expect(footer.querySelector('button[type="submit"][form="custom-rule-form"]')).not.toBeNull();
+    expect(page.querySelector('.prompt-form-actions button[type="submit"][form="custom-rule-form"]')).not.toBeNull();
+    expect(page.querySelector(".settings-footer")).toBeNull();
 
     document.querySelector<HTMLButtonElement>('[data-settings-section="review-rules"]')!.click();
     await vi.waitFor(() => expect((document.activeElement as HTMLElement | null)?.id).toBe("settings-review-rules-title"));
