@@ -83,21 +83,26 @@ VERDICT_SCHEMA = {
 def classification_messages(
     candidates: tuple[ClassificationCandidate, ...], custom_prompt: str
 ) -> list[dict[str, str]]:
+    system = (
+        "Bạn là bộ phân loại lỗi tiếng Việt chạy cục bộ. "
+        "Chỉ đánh giá candidate đã cho. Trả JSON duy nhất dạng "
+        '{"verdicts":[{"candidate_id":"...","verdict":"keep|drop",'
+        '"confidence":0.0}]}. Không thêm candidate và không sửa văn bản.'
+    )
+    if custom_prompt:
+        system += (
+            "\n\n## QUY TẮC RIÊNG CỦA NGƯỜI DÙNG (BẮT BUỘC TUÂN THỦ):\n"
+            f"<custom_rules>\n{custom_prompt}\n</custom_rules>"
+        )
     return [
         {
             "role": "system",
-            "content": (
-                "Bạn là bộ phân loại lỗi tiếng Việt chạy cục bộ. "
-                "Chỉ đánh giá candidate đã cho. Trả JSON duy nhất dạng "
-                '{"verdicts":[{"candidate_id":"...","verdict":"keep|drop",'
-                '"confidence":0.0}]}. Không thêm candidate và không sửa văn bản.'
-            ),
+            "content": system,
         },
         {
             "role": "user",
             "content": json.dumps(
                 {
-                    "custom_rule": custom_prompt,
                     "candidates": [
                         {
                             "candidate_id": item.candidate_id,

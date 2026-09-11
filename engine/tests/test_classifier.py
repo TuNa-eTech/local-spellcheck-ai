@@ -12,7 +12,11 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from soatvan.models import LlamaCppClassifier, ModelInferenceTimeout, ModelRegistry
 from soatvan.models import registry as registry_module
-from soatvan.models.classifier import _NativeLlamaRuntime, _preferred_gpu_layers
+from soatvan.models.classifier import (
+    _NativeLlamaRuntime,
+    _preferred_gpu_layers,
+    classification_messages,
+)
 from soatvan.workflow.ports import ClassificationCandidate
 
 
@@ -133,9 +137,26 @@ def test_llama_classifier_accepts_only_schema_constrained_known_candidates(tmp_p
     assert runtime.calls[0]["response_format"]["type"] == "json_object"
     assert runtime.calls[0]["response_format"]["schema"]["additionalProperties"] is False
     assert runtime.calls[0]["stream"] is True
+    system_prompt = runtime.calls[0]["messages"][0]["content"]
+    assert "## QUY TẮC RIÊNG CỦA NGƯỜI DÙNG (BẮT BUỘC TUÂN THỦ):" in system_prompt
+    assert "<custom_rules>\nƯu tiên thuật ngữ nội bộ\n</custom_rules>" in system_prompt
     prompt = json.loads(runtime.calls[0]["messages"][1]["content"])
-    assert prompt["custom_rule"] == "Ưu tiên thuật ngữ nội bộ"
+    assert "custom_rule" not in prompt
     assert prompt["candidates"][0]["source_text"] == "sát nhập"
+
+
+def test_classifier_injects_custom_prompt_into_system_message() -> None:
+    cand = candidate()
+    messages = classification_messages((cand,), "Ưu tiên thuật ngữ nội bộ")
+
+    assert len(messages) == 2
+    assert messages[0]["role"] == "system"
+    assert "## QUY TẮC RIÊNG CỦA NGƯỜI DÙNG (BẮT BUỘC TUÂN THỦ):" in messages[0]["content"]
+    assert "<custom_rules>\nƯu tiên thuật ngữ nội bộ\n</custom_rules>" in messages[0]["content"]
+
+    user_payload = json.loads(messages[1]["content"])
+    assert "custom_rule" not in user_payload
+    assert "candidates" in user_payload
 
 
 def test_classifier_rejects_custom_prompt_that_exceeds_input_context(
@@ -143,7 +164,7 @@ def test_classifier_rejects_custom_prompt_that_exceeds_input_context(
 ) -> None:
     class CountingRuntime(Runtime):
         def count_chat_tokens(self, messages: list[dict[str, str]]) -> int:
-            return 1400 if '"custom_rule":""' not in messages[1]["content"] else 200
+            return 1400 if "<custom_rules>" in messages[0]["content"] else 200
 
     runtime = CountingRuntime('{"verdicts":[]}')
     classifier = LlamaCppClassifier(
