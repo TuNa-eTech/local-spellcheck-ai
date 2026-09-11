@@ -11,6 +11,8 @@ import type {
   DocumentInfo,
   JobResult,
   ModelStatus,
+  OutputConfig,
+  OutputMode,
   Preset,
   ProgressEvent,
   RuleOptions,
@@ -25,12 +27,13 @@ export const api = {
     return invoke("choose_document");
   },
   async inspectDropped(path: string): Promise<DocumentInfo> { return invoke("inspect_document", { path }); },
-  async startJob(jobId: string, sourcePath: string, preset: Preset, customPrompt: string, useModel: boolean, ruleOptions: RuleOptions, ignoredWords: string[], fullReview: boolean, includeRuleFindings = false): Promise<JobResult> {
+  async startJob(jobId: string, sourcePath: string, preset: Preset, customPrompt: string, useModel: boolean, ruleOptions: RuleOptions, ignoredWords: string[], fullReview: boolean, includeRuleFindings = false, outputMode: OutputMode = "new_file", backupOriginal = true): Promise<JobResult> {
     if (!isTauri()) {
       await new Promise(resolve => setTimeout(resolve, 1400));
-      return { job_id: jobId, status: "completed", output_path: sourcePath.replace(/\.docx$/i, "-soat.docx"), finding_count: 5, counts: { category: { spelling: 2, technical: 3 }, origin: { rule: 5 } } };
+      const outPath = outputMode === "in_place" ? sourcePath : sourcePath.replace(/\.docx$/i, "-soat.docx");
+      return { job_id: jobId, status: "completed", output_path: outPath, finding_count: 5, counts: { category: { spelling: 2, technical: 3 }, origin: { rule: 5 } } };
     }
-    return invoke("start_job", { request: { jobId, sourcePath, preset, customPrompt, useModel, fullReview, includeRuleFindings, ruleOptions, ignoredWords } });
+    return invoke("start_job", { request: { jobId, sourcePath, preset, customPrompt, useModel, fullReview, includeRuleFindings, ruleOptions, ignoredWords, outputMode, backupOriginal } });
   },
   cancelJob(jobId: string) { return isTauri() ? invoke("cancel_job", { jobId }) : Promise.resolve(false); },
   onProgress(handler: (event: ProgressEvent) => void, jobId?: string): Promise<UnlistenFn> {
@@ -166,5 +169,23 @@ export const api = {
   async chooseSeq2SeqModelDir(): Promise<string | null> {
     if (!isTauri()) return null;
     return invoke("choose_seq2seq_model_dir");
+  },
+  async outputConfigGet(): Promise<OutputConfig> {
+    if (!isTauri()) return { mode: "new_file", backup_original: true };
+    return invoke("output_config_get");
+  },
+  async outputConfigUpdate(mode?: OutputMode, backupOriginal?: boolean): Promise<OutputConfig> {
+    if (!isTauri()) {
+      return {
+        mode: mode ?? "new_file",
+        backup_original: backupOriginal ?? true,
+      };
+    }
+    return invoke("output_config_update", {
+      request: {
+        mode: mode ?? null,
+        backupOriginal: backupOriginal ?? null,
+      },
+    });
   },
 };

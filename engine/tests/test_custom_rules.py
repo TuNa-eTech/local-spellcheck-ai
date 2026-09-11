@@ -125,20 +125,46 @@ def test_prompt_title_and_identifier_validation_boundaries(tmp_path: Path) -> No
             repository.delete(rule_id)
 
 
-def test_aggregate_prompt_budget_ignores_titles(tmp_path: Path) -> None:
+def test_multiple_long_prompts_can_coexist_without_shared_budget(tmp_path: Path) -> None:
     repository = SqliteCustomRuleRepository(tmp_path / "preferences.db")
     first = repository.upsert("a" * 2_500, None, "t" * 80)
     second = repository.upsert("b" * 1_500, None, "u" * 80)
+    third = repository.upsert("c" * 5_000, None, "v" * 80)
 
-    with pytest.raises(ValueError, match="CUSTOM_RULE_LIMIT_REACHED"):
-        repository.upsert("c", None, "Tiêu đề")
-    with pytest.raises(ValueError, match="CUSTOM_RULE_LIMIT_REACHED"):
-        repository.upsert("a" * 2_501, first.id, "Tiêu đề")
+    entries = repository.list()
+    assert len(entries) == 3
+    assert sum(len(entry.prompt) for entry in entries) == 9_000
+    assert [e.id for e in entries] == [first.id, second.id, third.id]
 
-    shortened = repository.upsert("a", first.id, "Ngắn")
-    expanded = repository.upsert("b" * 3_999, second.id, "Dài")
-    assert sum(len(entry.prompt) for entry in repository.list()) == 4_000
-    assert repository.list() == [shortened, expanded]
+
+def test_schema_migration_relaxes_legacy_4000_check_constraint(tmp_path: Path) -> None:
+    db_path = tmp_path / "preferences.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE custom_rules ("
+        "id TEXT PRIMARY KEY, "
+        "title TEXT NOT NULL DEFAULT '', "
+        "prompt TEXT NOT NULL, "
+        "is_default INTEGER NOT NULL DEFAULT 0, "
+        "created_at TEXT NOT NULL, "
+        "updated_at TEXT NOT NULL, "
+        "CHECK(length(prompt) BETWEEN 1 AND 4000)"
+        ")"
+    )
+    conn.execute(
+        "INSERT INTO custom_rules VALUES ('00000000-0000-0000-0000-000000000001', 'Cũ', 'Nội dung cũ', 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')"
+    )
+    conn.commit()
+    conn.close()
+
+    # Opening repository should auto-migrate schema
+    repository = SqliteCustomRuleRepository(db_path)
+    assert len(repository.list()) == 1
+
+    # Inserting prompt > 4000 characters should now succeed
+    long_rule = repository.upsert("x" * 6000, None, "Prompt dài")
+    assert len(long_rule.prompt) == 6000
+    assert len(repository.list()) == 2
 
 
 def test_concurrent_create_never_exceeds_count_limit(tmp_path: Path) -> None:

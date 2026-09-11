@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { APP_VERSION } from "../src/version";
-import type { AiConfigState, AiTestConnectionResult, CustomRule, DocumentInfo, JobResult, ModelStatus, ProgressEvent, Seq2SeqConfig } from "../src/contracts";
+import type { AiConfigState, AiTestConnectionResult, CustomRule, DocumentInfo, JobResult, ModelStatus, OutputConfig, OutputMode, ProgressEvent, Seq2SeqConfig } from "../src/contracts";
 
 const documentInfo: DocumentInfo = {
   path: "C:\\Tài liệu\\nguồn.docx",
@@ -63,6 +63,8 @@ async function loadApp(options?: {
   seq2seqConfigGet?: () => Promise<Seq2SeqConfig>;
   seq2seqConfigUpdate?: (modelDir?: string, isEnabled?: boolean) => Promise<Seq2SeqConfig>;
   chooseSeq2SeqModelDir?: () => Promise<string | null>;
+  outputConfigGet?: () => Promise<OutputConfig>;
+  outputConfigUpdate?: (mode?: OutputMode, backupOriginal?: boolean) => Promise<OutputConfig>;
 }) {
   let progressHandler: ((event: ProgressEvent) => void) | undefined;
   let fileDropHandler: ((path: string) => void) | undefined;
@@ -119,6 +121,8 @@ async function loadApp(options?: {
     seq2seqConfigGet: vi.fn(options?.seq2seqConfigGet ?? (() => Promise.resolve({ model_dir: "", is_configured: false, is_valid: false, is_enabled: true }))),
     seq2seqConfigUpdate: vi.fn(options?.seq2seqConfigUpdate ?? ((dir?: string, isEnabled?: boolean) => Promise.resolve({ model_dir: dir ?? "", is_configured: Boolean(dir), is_valid: false, is_enabled: isEnabled ?? true }))),
     chooseSeq2SeqModelDir: vi.fn(options?.chooseSeq2SeqModelDir ?? (() => Promise.resolve(null))),
+    outputConfigGet: vi.fn(options?.outputConfigGet ?? (() => Promise.resolve({ mode: "new_file" as const, backup_original: true }))),
+    outputConfigUpdate: vi.fn(options?.outputConfigUpdate ?? ((mode?: OutputMode, backupOriginal?: boolean) => Promise.resolve({ mode: mode ?? ("new_file" as const), backup_original: backupOriginal ?? true }))),
   };
   vi.doMock("../src/api", () => ({ api }));
   await import("../src/main");
@@ -681,16 +685,16 @@ describe("four-step desktop workflow", () => {
     expect(titleField).not.toBeNull();
     expect(titleField.required).toBe(true);
     expect(titleField.maxLength).toBe(80);
-    expect(document.querySelector("#custom-rule-help")?.textContent).toContain("4.000 ký tự");
+    expect(document.querySelector("#custom-rule-help")?.textContent).toContain("Không giới hạn số lượng prompt");
 
     firstRow.click();
     await vi.waitFor(() => expect(document.querySelector('[data-prompt-id="rule-1"]')?.getAttribute("aria-current")).toBe("true"));
     let prompt = document.querySelector<HTMLTextAreaElement>("#custom-rule-prompt")!;
     expect(prompt.value).toBe("Giữ nguyên tên SoátVăn.");
-    expect(prompt.maxLength).toBe(4000);
+    expect(prompt.maxLength).toBe(100000);
     expect(document.querySelector<HTMLInputElement>("#custom-rule-title")!.value).toBe("Tên riêng SoátVăn");
     expect(document.querySelector<HTMLInputElement>("#custom-rule-default")!.checked).toBe(true);
-    expect(document.querySelector("#custom-rule-count")?.textContent).toContain("/4.000 ký tự");
+    expect(document.querySelector("#custom-rule-count")?.textContent).toContain("23 ký tự");
 
     document.querySelector<HTMLButtonElement>("#new-custom-rule")!.click();
     prompt = document.querySelector<HTMLTextAreaElement>("#custom-rule-prompt")!;
@@ -732,24 +736,45 @@ describe("four-step desktop workflow", () => {
     await vi.waitFor(() => expect(api.customRuleUpsert).toHaveBeenCalledWith("rule-1", "Tên riêng SoátVăn", "Giữ nguyên tên riêng SoátVăn.", false));
   });
 
-  it("allows typing in prompt textarea even when aggregate budget is tight and warns clearly", async () => {
+  it("allows typing long prompts without aggregate budget restriction and displays warning when long", async () => {
     await loadApp({
       customRuleList: () => Promise.resolve([
-        customRule("rule-1", "a".repeat(3950)),
+        customRule("rule-1", "a".repeat(5000)),
       ]),
     });
     document.querySelector<HTMLButtonElement>("#settings")!.click();
     await vi.waitFor(() => expect(document.querySelector("#custom-rule-prompt")).not.toBeNull());
 
     const prompt = document.querySelector<HTMLTextAreaElement>("#custom-rule-prompt")!;
-    expect(prompt.maxLength).toBe(4000);
+    expect(prompt.maxLength).toBe(100000);
 
-    prompt.value = "b".repeat(60);
+    prompt.value = "b".repeat(2500);
     prompt.dispatchEvent(new InputEvent("input", { bubbles: true }));
 
     const counter = document.querySelector("#custom-rule-count")!;
-    expect(counter.classList.contains("field__meta--overbudget")).toBe(true);
-    expect(counter.textContent).toContain("Vượt quá dung lượng còn lại");
+    expect(counter.textContent).toContain("2.500 ký tự");
+
+    const warning = document.querySelector("#custom-rule-warning");
+    expect(warning).not.toBeNull();
+    expect(warning?.textContent).toContain("Prompt khá dài (2.500 ký tự)");
+  });
+
+  it("shows amber warning at review step when selected prompts exceed recommended length", async () => {
+    await loadApp({
+      modelStatus: () => Promise.resolve(signedReadyModel),
+      customRuleList: () => Promise.resolve([
+        customRule("rule-1", "a".repeat(1500), undefined, "Quy tắc 1", true),
+        customRule("rule-2", "b".repeat(1500), undefined, "Quy tắc 2", true),
+      ]),
+    });
+
+    await chooseDocument();
+    await vi.waitFor(() => expect(document.querySelector(".prompt-picker")).not.toBeNull());
+
+    const warning = document.querySelector("#prompt-picker-warning");
+    expect(warning).not.toBeNull();
+    expect(warning?.textContent).toContain("Lưu ý về AI cục bộ");
+    expect(warning?.textContent).toContain("3.000 ký tự");
   });
 
   it("refuses to save a prompt without a title", async () => {
@@ -950,7 +975,7 @@ describe("four-step desktop workflow", () => {
 
     const localNav = page.querySelector<HTMLElement>('nav.settings-nav[aria-label="Mục cài đặt"]')!;
     const sectionButtons = [...localNav.querySelectorAll<HTMLButtonElement>("[data-settings-section]")];
-    expect(sectionButtons.map(button => button.dataset.settingsSection)).toEqual(["prompts", "review-rules", "models", "seq2seq"]);
+    expect(sectionButtons.map(button => button.dataset.settingsSection)).toEqual(["prompts", "review-rules", "models", "seq2seq", "output"]);
     expect(localNav.querySelectorAll('[aria-current="page"]')).toHaveLength(1);
     expect(localNav.querySelector('[aria-current="page"]')?.getAttribute("data-settings-section")).toBe("prompts");
     expect(page.querySelectorAll(".settings-section")).toHaveLength(1);
@@ -1476,7 +1501,7 @@ describe("four-step desktop workflow", () => {
 
     // Verify 4 settings nav items exist
     const navItems = [...document.querySelectorAll<HTMLButtonElement>("[data-settings-section]")];
-    expect(navItems.map(btn => btn.dataset.settingsSection)).toEqual(["prompts", "review-rules", "models", "seq2seq"]);
+    expect(navItems.map(btn => btn.dataset.settingsSection)).toEqual(["prompts", "review-rules", "models", "seq2seq", "output"]);
     expect(document.querySelector('[data-settings-section="seq2seq"]')?.textContent).toBe("Mô hình Chính tả");
     expect(document.querySelector('[data-settings-section="models"]')?.textContent).toBe("Mô hình LLM");
 
@@ -1808,6 +1833,84 @@ describe("startup loading overlay", () => {
     // After retry succeeds, overlay should be dismissed
     await vi.waitFor(() => {
       expect(document.querySelector(".app-init-overlay")).toBeNull();
+    });
+  });
+});
+
+describe("output configuration settings", () => {
+  it("navigates to output settings, displays default values, and allows switching to in-place mode", async () => {
+    let currentConfig: OutputConfig = { mode: "new_file", backup_original: true };
+    const api = await loadApp({
+      outputConfigGet: () => Promise.resolve(currentConfig),
+      outputConfigUpdate: vi.fn((mode, backupOriginal) => {
+        currentConfig = { mode: mode ?? currentConfig.mode, backup_original: backupOriginal ?? currentConfig.backup_original };
+        return Promise.resolve(currentConfig);
+      }),
+    });
+
+    document.querySelector<HTMLButtonElement>("#settings")!.click();
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-settings-section="output"]')?.disabled).toBe(false));
+
+    document.querySelector<HTMLButtonElement>('[data-settings-section="output"]')!.click();
+    await vi.waitFor(() => expect(document.querySelector("#settings-output")).not.toBeNull());
+
+    const newFileRadio = document.querySelector<HTMLInputElement>("#output-mode-new-file")!;
+    const inPlaceRadio = document.querySelector<HTMLInputElement>("#output-mode-in-place")!;
+
+    expect(newFileRadio.checked).toBe(true);
+    expect(inPlaceRadio.checked).toBe(false);
+    expect(document.querySelector("#output-backup-checkbox")).toBeNull();
+
+    inPlaceRadio.click();
+    await vi.waitFor(() => expect(api.outputConfigUpdate).toHaveBeenCalledWith("in_place", true));
+
+    expect(inPlaceRadio.checked).toBe(true);
+    const backupCheckbox = document.querySelector<HTMLInputElement>("#output-backup-checkbox")!;
+    expect(backupCheckbox).not.toBeNull();
+    expect(backupCheckbox.checked).toBe(true);
+
+    backupCheckbox.click();
+    await vi.waitFor(() => expect(api.outputConfigUpdate).toHaveBeenCalledWith("in_place", false));
+  });
+
+  it("reflects in-place output mode in Step 1 and Step 4 results", async () => {
+    const api = await loadApp({
+      outputConfigGet: () => Promise.resolve({ mode: "in_place", backup_original: true }),
+    });
+
+    expect(document.querySelector(".workflow-card--file p")?.textContent).toContain("ghi chú trực tiếp lên tệp gốc");
+    expect(document.querySelector(".workflow-card--file p")?.textContent).toContain(".bak");
+
+    await chooseDocument();
+
+    document.querySelector<HTMLButtonElement>("#start")!.click();
+    await vi.waitFor(() => expect(api.startJob).toHaveBeenCalled());
+
+    // Verify outputMode and backupOriginal were passed to startJob
+    expect(api.startJob.mock.calls[0][9]).toBe("in_place");
+    expect(api.startJob.mock.calls[0][10]).toBe(true);
+
+    await vi.waitFor(() => expect(document.querySelector(".result-panel")).not.toBeNull());
+    expect(document.querySelector(".result-heading h1")?.textContent).toBe("Đã cập nhật tệp Word");
+    expect(document.querySelector(".result-heading p")?.textContent).toContain("trực tiếp vào tệp gốc");
+    expect(document.querySelector(".summary")?.textContent).toContain(".bak");
+    expect(document.querySelector("#open")?.textContent).toContain("Mở tệp");
+    expect(document.querySelector("#open")?.textContent).not.toContain("Mở tệp mới");
+  });
+
+  it("shows locked file error message when in_place mode fails due to file being in use", async () => {
+    const api = await loadApp({
+      outputConfigGet: () => Promise.resolve({ mode: "in_place", backup_original: true }),
+      start: () => Promise.reject(new Error("OUTPUT_FILE_LOCKED")),
+    });
+
+    await chooseDocument();
+    document.querySelector<HTMLButtonElement>("#start")!.click();
+
+    await vi.waitFor(() => {
+      const errorEl = document.querySelector(".error");
+      expect(errorEl).not.toBeNull();
+      expect(errorEl?.textContent).toContain("Tệp Word đang được mở bởi ứng dụng khác");
     });
   });
 });

@@ -57,6 +57,8 @@ describe("desktop API", () => {
         includeRuleFindings: true,
         ruleOptions,
         ignoredWords: [],
+        outputMode: "new_file",
+        backupOriginal: true,
       },
     });
   });
@@ -177,6 +179,33 @@ describe("desktop API", () => {
     expect(mocks.invoke).toHaveBeenNthCalledWith(2, "seq2seq_config_update", {
       modelDir: null,
       isEnabled: true,
+    });
+  });
+
+  it("handles output config get and update", async () => {
+    const fakeOutputConfig = {
+      mode: "new_file" as const,
+      backup_original: true,
+    };
+    mocks.invoke.mockResolvedValueOnce(fakeOutputConfig);
+
+    const got = await api.outputConfigGet();
+    expect(got).toEqual(fakeOutputConfig);
+    expect(mocks.invoke).toHaveBeenNthCalledWith(1, "output_config_get");
+
+    const updatedConfig = {
+      mode: "in_place" as const,
+      backup_original: false,
+    };
+    mocks.invoke.mockResolvedValueOnce(updatedConfig);
+
+    const updated = await api.outputConfigUpdate("in_place", false);
+    expect(updated).toEqual(updatedConfig);
+    expect(mocks.invoke).toHaveBeenNthCalledWith(2, "output_config_update", {
+      request: {
+        mode: "in_place",
+        backupOriginal: false,
+      },
     });
   });
 });

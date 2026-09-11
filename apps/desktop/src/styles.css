@@ -654,6 +654,20 @@ button:not(:disabled):not([aria-disabled="true"]):active,
   color: var(--color-error);
 }
 
+.settings-message--warning {
+  border: var(--rule-thin) solid var(--color-warning);
+  background: var(--color-warning-soft);
+  color: var(--color-ink-2);
+}
+
+.settings-message--warning strong {
+  color: var(--color-warning);
+}
+
+.prompt-picker-warning {
+  margin-top: var(--space-xs);
+}
+
 .field,
 .control {
   min-inline-size: 0;

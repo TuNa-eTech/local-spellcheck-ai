@@ -186,7 +186,7 @@ def test_custom_prompt_uses_the_custom_rule_store_limit(tmp_path: Path) -> None:
                 tmp_path / "output.docx",
                 Preset.STANDARD,
                 use_model=True,
-                custom_prompt="x" * 4_201,
+                custom_prompt="x" * 500_001,
             ),
             lambda *_: None,
             Token(),

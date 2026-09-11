@@ -16,6 +16,7 @@ from soatvan.custom_rules import (
     AiConfigEntry,
     SqliteAiConfigRepository,
     SqliteCustomRuleRepository,
+    SqliteOutputConfigRepository,
 )
 from soatvan.custom_rules.seq2seq_config_repository import SqliteSeq2SeqConfigRepository
 from soatvan.dictionary import SqliteDictionaryRepository
@@ -29,6 +30,7 @@ from soatvan.models import (
 from soatvan.models.seq2seq_speller import is_transformers_available
 from soatvan.workflow import ProcessDocument, ProcessRequest
 from soatvan.workflow.ports import ContextClassifier
+from soatvan.workflow.process import MAX_CUSTOM_PROMPT_LENGTH
 
 MAX_FRAME = 1024 * 1024
 EMIT_LOCK = threading.Lock()
@@ -174,6 +176,7 @@ class Sidecar:
         self.models = ModelRegistry(local_data / "models")
         self.classifiers = DynamicClassifierProvider(self.models, self.ai_config)
         self.seq2seq_config_repo = SqliteSeq2SeqConfigRepository(local_data / "preferences.db")
+        self.output_config_repo = SqliteOutputConfigRepository(local_data / "preferences.db")
         _seq2seq_cfg = self.seq2seq_config_repo.get_config()
         from soatvan.workflow.seq2seq_provider import LocalSeq2SeqProvider, find_default_model_dir
 
@@ -212,6 +215,8 @@ class Sidecar:
             "ai_config.test_connection": self.ai_config_test_connection,
             "seq2seq_config.get": self.seq2seq_config_get,
             "seq2seq_config.update": self.seq2seq_config_update,
+            "output_config.get": self.output_config_get,
+            "output_config.update": self.output_config_update,
         }
         if method in {"model.import", "model.cancel"}:
             raise ValueError("MODEL_PROVISIONING_OWNED_BY_HOST")
@@ -642,6 +647,27 @@ class Sidecar:
             "is_ready": (self.seq2seq.is_ready() if self.seq2seq else False),
         }
 
+    def output_config_get(self, _: dict[str, Any]) -> dict[str, Any]:
+        cfg = self.output_config_repo.get_config()
+        return {
+            "mode": cfg.mode,
+            "backup_original": cfg.backup_original,
+        }
+
+    def output_config_update(self, params: dict[str, Any]) -> dict[str, Any]:
+        mode = params.get("mode")
+        backup_original = params.get("backup_original")
+        if backup_original is not None:
+            backup_original = bool(backup_original)
+        cfg = self.output_config_repo.set_config(
+            mode=str(mode) if mode is not None else None,
+            backup_original=backup_original,
+        )
+        return {
+            "mode": cfg.mode,
+            "backup_original": cfg.backup_original,
+        }
+
 
 EngineSidecar = Sidecar
 
@@ -664,7 +690,7 @@ def _boolean_param(params: dict[str, Any], name: str) -> bool:
 def _custom_prompt(value: object) -> str:
     if not isinstance(value, str):
         raise ValueError("INVALID_PARAMS")
-    if len(value) > 4200:
+    if len(value) > MAX_CUSTOM_PROMPT_LENGTH:
         raise ValueError("CUSTOM_PROMPT_TOO_LONG")
     return value
 

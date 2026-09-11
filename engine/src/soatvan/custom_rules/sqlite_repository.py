@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sqlite3
 import threading
 import unicodedata
@@ -8,8 +9,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-MAX_CUSTOM_RULE_COUNT = 100
-MAX_CUSTOM_RULE_PROMPT_LENGTH = 4_000
+MAX_CUSTOM_RULE_COUNT = 500
+MAX_CUSTOM_RULE_PROMPT_LENGTH = 100_000
 MAX_CUSTOM_RULE_TITLE_LENGTH = 80
 _CUSTOM_RULES_DATABASE_LOCK = threading.RLock()
 
@@ -80,6 +81,28 @@ class SqliteCustomRuleRepository:
             "UPDATE custom_rules SET title = substr(prompt, 1, ?) WHERE title = ''",
             (MAX_CUSTOM_RULE_TITLE_LENGTH,),
         )
+        table_def_row = self._connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'custom_rules'"
+        ).fetchone()
+        if table_def_row and table_def_row[0]:
+            match = re.search(r"BETWEEN\s+1\s+AND\s+(\d+)", str(table_def_row[0]), re.IGNORECASE)
+            if match and int(match.group(1)) < MAX_CUSTOM_RULE_PROMPT_LENGTH:
+                self._connection.executescript(
+                    "CREATE TABLE custom_rules_new ("
+                    "id TEXT PRIMARY KEY, "
+                    "title TEXT NOT NULL DEFAULT '', "
+                    "prompt TEXT NOT NULL, "
+                    "is_default INTEGER NOT NULL DEFAULT 0, "
+                    "created_at TEXT NOT NULL, "
+                    "updated_at TEXT NOT NULL, "
+                    f"CHECK(length(prompt) BETWEEN 1 AND {MAX_CUSTOM_RULE_PROMPT_LENGTH})"
+                    ");"
+                    "INSERT INTO custom_rules_new (id, title, prompt, is_default, created_at, updated_at) "
+                    "SELECT id, title, prompt, is_default, created_at, updated_at FROM custom_rules;"
+                    "DROP TABLE custom_rules;"
+                    "ALTER TABLE custom_rules_new RENAME TO custom_rules;"
+                    "CREATE INDEX IF NOT EXISTS custom_rules_created_at_idx ON custom_rules(created_at, id);"
+                )
 
     def list(self) -> list[CustomRule]:
         with self._lock:
@@ -116,15 +139,6 @@ class SqliteCustomRuleRepository:
                     )
                     if count >= MAX_CUSTOM_RULE_COUNT:
                         raise ValueError("CUSTOM_RULE_LIMIT_REACHED")
-
-                aggregate_length = int(
-                    self._connection.execute(
-                        "SELECT COALESCE(SUM(length(prompt)), 0) FROM custom_rules"
-                    ).fetchone()[0]
-                )
-                previous_length = len(str(existing["prompt"])) if existing else 0
-                if aggregate_length - previous_length + len(clean_prompt) > MAX_CUSTOM_RULE_PROMPT_LENGTH:
-                    raise ValueError("CUSTOM_RULE_LIMIT_REACHED")
 
                 latest_timestamp = self._connection.execute(
                     "SELECT MAX(updated_at) FROM custom_rules"

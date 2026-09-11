@@ -143,6 +143,23 @@ struct StartJobRequest {
     include_rule_findings: bool,
     rule_options: RuleOptions,
     ignored_words: Vec<String>,
+    #[serde(default)]
+    output_mode: Option<String>,
+    #[serde(default)]
+    backup_original: Option<bool>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct OutputConfig {
+    pub mode: String,
+    pub backup_original: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OutputConfigUpdateRequest {
+    mode: Option<String>,
+    backup_original: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -297,6 +314,8 @@ async fn start_job(request: StartJobRequest, state: State<'_, AppState>) -> AppR
         include_rule_findings,
         rule_options,
         ignored_words,
+        output_mode,
+        backup_original,
     } = request;
     eprintln!(
         "[SoatVan-Host] start_job received: job_id={}, use_model={}, full_review={}, custom_prompt_len={}",
@@ -397,7 +416,9 @@ async fn start_job(request: StartJobRequest, state: State<'_, AppState>) -> AppR
             review,
         });
     }
-    let output = finalize_output_or_cleanup(&source, &temporary_path)?;
+    let output_mode_str = output_mode.as_deref().unwrap_or("new_file");
+    let backup_orig = backup_original.unwrap_or(true);
+    let output = finalize_output_or_cleanup(&source, &temporary_path, output_mode_str, backup_orig)?;
     let output = match register_produced_output(&output, &state.produced_outputs) {
         Ok(output) => output,
         Err(error) => {
@@ -513,7 +534,7 @@ fn validate_model_job_options(
 }
 
 fn validate_custom_prompt(custom_prompt: &str) -> AppResult<()> {
-    if custom_prompt.chars().count() > 4200 {
+    if custom_prompt.chars().count() > 500_000 {
         return Err(AppError::Engine("CUSTOM_PROMPT_TOO_LONG".into()));
     }
     Ok(())
@@ -722,6 +743,32 @@ async fn choose_seq2seq_model_dir(app: AppHandle) -> AppResult<Option<String>> {
         return Err(AppError::Engine("SEQ2SEQ_DIR_INVALID".into()));
     }
     Ok(Some(path.to_string_lossy().into_owned()))
+}
+
+#[tauri::command]
+async fn output_config_get(state: State<'_, AppState>) -> AppResult<OutputConfig> {
+    let result = state
+        .engine
+        .call("output_config.get", json!({}), Duration::from_secs(30))?;
+    Ok(serde_json::from_value(result)?)
+}
+
+#[tauri::command]
+async fn output_config_update(
+    request: OutputConfigUpdateRequest,
+    state: State<'_, AppState>,
+) -> AppResult<OutputConfig> {
+    let mut params = json!({});
+    if let Some(mode) = request.mode {
+        params["mode"] = json!(mode);
+    }
+    if let Some(backup) = request.backup_original {
+        params["backup_original"] = json!(backup);
+    }
+    let result = state
+        .engine
+        .call("output_config.update", params, Duration::from_secs(30))?;
+    Ok(serde_json::from_value(result)?)
 }
 
 #[tauri::command]
@@ -1263,7 +1310,102 @@ fn install_output_no_clobber(temporary: &Path, candidate: &Path) -> io::Result<(
     copy_output_no_clobber(temporary, candidate)
 }
 
-fn finalize_output(source: &Path, temporary: &Path) -> AppResult<PathBuf> {
+fn finalize_output_in_place(
+    source: &Path,
+    temporary: &Path,
+    backup_original: bool,
+) -> AppResult<PathBuf> {
+    validate_docx_package(temporary).map_err(|_| AppError::OutputWrite)?;
+
+    match OpenOptions::new().write(true).open(source) {
+        Ok(file) => drop(file),
+        Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {
+            return Err(AppError::OutputFileLocked);
+        }
+        Err(_) => return Err(AppError::OutputWrite),
+    }
+
+    if backup_original {
+        let parent = source.parent().ok_or(AppError::InvalidPath)?;
+        let file_name = source
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or(AppError::InvalidPath)?;
+        let backup_path = parent.join(format!("{file_name}.bak"));
+        fs::copy(source, &backup_path).map_err(|_| AppError::OutputWrite)?;
+    }
+
+    #[cfg(windows)]
+    {
+        use std::{iter, os::windows::ffi::OsStrExt};
+        use windows_sys::Win32::Storage::FileSystem::{
+            MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+        };
+
+        let source_w = temporary
+            .as_os_str()
+            .encode_wide()
+            .chain(iter::once(0))
+            .collect::<Vec<_>>();
+        let dest_w = source
+            .as_os_str()
+            .encode_wide()
+            .chain(iter::once(0))
+            .collect::<Vec<_>>();
+        let moved = unsafe {
+            MoveFileExW(
+                source_w.as_ptr(),
+                dest_w.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        };
+        if moved == 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::PermissionDenied {
+                return Err(AppError::OutputFileLocked);
+            }
+            return Err(AppError::OutputWrite);
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        if let Err(err) = fs::rename(temporary, source) {
+            if err.kind() == io::ErrorKind::PermissionDenied {
+                return Err(AppError::OutputFileLocked);
+            }
+            let mut input = fs::File::open(temporary).map_err(|_| AppError::OutputWrite)?;
+            let mut output = OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(source)
+                .map_err(|err| {
+                    if err.kind() == io::ErrorKind::PermissionDenied {
+                        AppError::OutputFileLocked
+                    } else {
+                        AppError::OutputWrite
+                    }
+                })?;
+            io::copy(&mut input, &mut output).map_err(|_| AppError::OutputWrite)?;
+            output.flush().map_err(|_| AppError::OutputWrite)?;
+            output.sync_all().map_err(|_| AppError::OutputWrite)?;
+            let _ = fs::remove_file(temporary);
+        }
+    }
+
+    let _ = fs::remove_file(temporary);
+    Ok(source.to_path_buf())
+}
+
+fn finalize_output(
+    source: &Path,
+    temporary: &Path,
+    mode: &str,
+    backup_original: bool,
+) -> AppResult<PathBuf> {
+    if mode == "in_place" {
+        return finalize_output_in_place(source, temporary, backup_original);
+    }
     validate_docx_package(temporary).map_err(|_| AppError::OutputWrite)?;
     for index in 1..=10_000 {
         let candidate = output_candidate(source, index)?;
@@ -1279,8 +1421,13 @@ fn finalize_output(source: &Path, temporary: &Path) -> AppResult<PathBuf> {
     Err(AppError::OutputWrite)
 }
 
-fn finalize_output_or_cleanup(source: &Path, temporary: &Path) -> AppResult<PathBuf> {
-    match finalize_output(source, temporary) {
+fn finalize_output_or_cleanup(
+    source: &Path,
+    temporary: &Path,
+    mode: &str,
+    backup_original: bool,
+) -> AppResult<PathBuf> {
+    match finalize_output(source, temporary, mode, backup_original) {
         Ok(output) => Ok(output),
         Err(error) => {
             let _ = fs::remove_file(temporary);
@@ -1379,6 +1526,8 @@ pub fn run() {
             seq2seq_config_get,
             seq2seq_config_update,
             choose_seq2seq_model_dir,
+            output_config_get,
+            output_config_update,
             model_status,
             model_deactivate,
             model_import,
@@ -1521,8 +1670,8 @@ mod tests {
 
     #[test]
     fn custom_prompt_transport_accepts_saved_rule_budget_and_rejects_overflow() {
-        assert!(validate_custom_prompt(&"á".repeat(4200)).is_ok());
-        let error = validate_custom_prompt(&"á".repeat(4201)).expect_err("must reject overflow");
+        assert!(validate_custom_prompt(&"á".repeat(500_000)).is_ok());
+        let error = validate_custom_prompt(&"á".repeat(500_001)).expect_err("must reject overflow");
         assert_eq!(error.to_string(), "CUSTOM_PROMPT_TOO_LONG");
     }
 
@@ -1840,11 +1989,72 @@ mod tests {
         let temporary = folder.path().join(".temporary.docx");
         write_test_docx(&temporary);
         let expected = fs::read(&temporary).unwrap();
-        let output = finalize_output(&source, &temporary).unwrap();
+        let output = finalize_output(&source, &temporary, "new_file", true).unwrap();
         assert_eq!(output.file_name().unwrap(), "văn bản-soat-2.docx");
         assert_eq!(fs::read(existing).unwrap(), b"old");
         assert_eq!(fs::read(output).unwrap(), expected);
         assert!(!temporary.exists());
+    }
+
+    #[test]
+    fn output_in_place_overwrites_original_and_creates_backup() {
+        let folder = tempfile::tempdir().unwrap();
+        let source = folder.path().join("văn bản.docx");
+        fs::write(&source, b"original content").unwrap();
+
+        let temporary = folder.path().join(".temporary.docx");
+        write_test_docx(&temporary);
+        let expected = fs::read(&temporary).unwrap();
+
+        let output = finalize_output(&source, &temporary, "in_place", true).unwrap();
+        assert_eq!(output, source);
+        assert_eq!(fs::read(&output).unwrap(), expected);
+
+        let backup = folder.path().join("văn bản.docx.bak");
+        assert!(backup.exists());
+        assert_eq!(fs::read(backup).unwrap(), b"original content");
+        assert!(!temporary.exists());
+    }
+
+    #[test]
+    fn output_in_place_without_backup_does_not_create_bak() {
+        let folder = tempfile::tempdir().unwrap();
+        let source = folder.path().join("document.docx");
+        fs::write(&source, b"original").unwrap();
+
+        let temporary = folder.path().join(".temporary.docx");
+        write_test_docx(&temporary);
+        let expected = fs::read(&temporary).unwrap();
+
+        let output = finalize_output(&source, &temporary, "in_place", false).unwrap();
+        assert_eq!(output, source);
+        assert_eq!(fs::read(&output).unwrap(), expected);
+
+        let backup = folder.path().join("document.docx.bak");
+        assert!(!backup.exists());
+        assert!(!temporary.exists());
+    }
+
+    #[test]
+    fn output_in_place_detects_locked_file() {
+        let folder = tempfile::tempdir().unwrap();
+        let source = folder.path().join("locked.docx");
+        fs::write(&source, b"locked").unwrap();
+
+        let mut perms = fs::metadata(&source).unwrap().permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(&source, perms.clone()).unwrap();
+
+        let temporary = folder.path().join(".temporary.docx");
+        write_test_docx(&temporary);
+
+        let res = finalize_output_or_cleanup(&source, &temporary, "in_place", true);
+        assert!(matches!(res, Err(AppError::OutputFileLocked)));
+        assert!(!temporary.exists());
+
+        // Restore permissions for tempdir cleanup
+        perms.set_readonly(false);
+        let _ = fs::set_permissions(&source, perms);
     }
 
     #[cfg(windows)]
@@ -1882,7 +2092,7 @@ mod tests {
         write_test_docx(&temporary);
 
         assert!(matches!(
-            finalize_output_or_cleanup(&source, &temporary),
+            finalize_output_or_cleanup(&source, &temporary, "new_file", true),
             Err(AppError::OutputWrite)
         ));
         assert!(!temporary.exists());
@@ -1896,7 +2106,7 @@ mod tests {
         fs::write(&temporary, b"this is not an OOXML package").unwrap();
 
         assert!(matches!(
-            finalize_output_or_cleanup(&source, &temporary),
+            finalize_output_or_cleanup(&source, &temporary, "new_file", true),
             Err(AppError::OutputWrite)
         ));
         assert!(!temporary.exists());

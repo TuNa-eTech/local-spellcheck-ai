@@ -9,6 +9,8 @@ import type {
   DocumentInfo,
   JobResult,
   ModelStatus,
+  OutputConfig,
+  OutputMode,
   Preset,
   RuleOptions,
   Seq2SeqConfig,
@@ -57,7 +59,7 @@ let customRuleOperationSequence = 0;
 let modelStatusRequestSequence = 0;
 let customRuleRequestSequence = 0;
 let modelOperationBaseline: { model: ModelStatus; useModel: boolean } | null = null;
-type SettingsSection = "prompts" | "review-rules" | "models" | "seq2seq";
+type SettingsSection = "prompts" | "review-rules" | "models" | "seq2seq" | "output";
 type ProviderTab = "local" | "openai" | "gemini";
 type AppView =
   | { kind: "workflow" }
@@ -140,6 +142,8 @@ const state: {
   useModel: boolean;
   seq2seqConfig: Seq2SeqConfig | null;
   seq2seqSaving: boolean;
+  outputConfig: OutputConfig;
+  outputConfigSaving: boolean;
   fullReview: boolean;
   includeRuleFindings: boolean;
   jobId: string;
@@ -188,6 +192,8 @@ const state: {
   useModel: false,
   seq2seqConfig: null,
   seq2seqSaving: false,
+  outputConfig: { mode: "new_file", backup_original: true },
+  outputConfigSaving: false,
   fullReview: false,
   includeRuleFindings: true,
   result: null,
@@ -227,12 +233,13 @@ const state: {
   ruleOptions: loadRuleOptionsPreference(),
 };
 
-const customRulePromptLimit = 4000;
+const customRulePromptLimit = 100000;
 const customRuleTitleLimit = 80;
 const genericProcessingError = "Không xử lý được tệp. Hãy kiểm tra tệp rồi thử lại; tệp gốc chưa bị thay đổi.";
 const processingErrorMessages: Record<string, string> = {
   CUSTOM_PROMPT_CONTEXT_EXCEEDED: "Quy tắc riêng quá dài so với dung lượng ngữ cảnh đang dùng. Hãy rút gọn quy tắc hoặc chọn model có context lớn hơn. Tệp gốc chưa bị thay đổi.",
   MODEL_REVIEW_CONTEXT_TOO_SMALL: "Dung lượng ngữ cảnh của model quá nhỏ để rà soát sâu. Hãy chọn model có context lớn hơn. Tệp gốc chưa bị thay đổi.",
+  OUTPUT_FILE_LOCKED: "Tệp Word đang được mở bởi ứng dụng khác (như Microsoft Word). Vui lòng lưu và đóng tệp Word trước khi rà soát trực tiếp.",
 };
 
 function processingErrorMessage(error: unknown): string {
@@ -325,7 +332,6 @@ function selectedCustomRules(): CustomRule[] { return state.customRules.filter(r
 function compiledCustomPrompt(): string { return (isCloudActive() || state.useModel) ? selectedCustomRules().map(rule => rule.prompt).join("\n\n") : ""; }
 
 function syncDefaultRuleSelection(): void { state.selectedRuleIds = state.customRules.filter(rule => rule.is_default).map(rule => rule.id); }
-function customRuleCharacterCount(): number { return state.customRules.reduce((total, rule) => total + [...rule.prompt].length, 0); }
 function modelOperationBusy(): boolean { return state.modelRemovalRunning || ["importing", "verifying"].includes(state.model.state); }
 function isWorkflowView(): boolean { return state.view.kind === "workflow"; }
 function settingsOperationLocked(): boolean { return modelOperationBusy() || modelOperationBaseline !== null || state.modelRemovalPending || state.customRulePending || state.cloudTestLoading || state.cloudSaving; }
@@ -356,7 +362,9 @@ function settingsSectionHeading(section: SettingsSection): string {
       ? "#settings-review-rules-title"
       : section === "models"
         ? "#settings-models-title"
-        : "#settings-seq2seq-title";
+        : section === "seq2seq"
+          ? "#settings-seq2seq-title"
+          : "#settings-output-title";
 }
 
 
@@ -386,7 +394,19 @@ function customRuleSelectionHtml(): string {
   const warningHtml = count > 0 && !applies
     ? `<p class="settings-message settings-message--status" role="status">Prompt riêng cần AI rà soát (GGUF hoặc Cloud) để được áp dụng. <button class="inline-button" id="open-model-settings" type="button">Cấu hình AI</button></p>`
     : "";
-  return `<fieldset class="prompt-picker-group"><legend class="sr-only">Quy tắc riêng áp dụng cho lần rà soát này</legend><div class="prompt-picker-group__header"><div><strong>${count.toLocaleString("vi-VN")} quy tắc riêng</strong><span>${summary}</span></div></div>${picker}</fieldset>${warningHtml}`;
+
+  const selectedRules = selectedCustomRules();
+  const totalSelectedLength = selectedRules.reduce((total, rule) => total + [...rule.prompt].length, 0);
+  let lengthWarningHtml = "";
+  if (applies && selectedRules.length > 0) {
+    if (!cloud && totalSelectedLength > 2000) {
+      lengthWarningHtml = `<p class="settings-message settings-message--warning prompt-picker-warning" id="prompt-picker-warning" role="status">⚠️ <strong>Lưu ý về AI cục bộ:</strong> Bạn đang chọn ${selectedRules.length} prompt (tổng ${totalSelectedLength.toLocaleString("vi-VN")} ký tự). Model offline có bộ nhớ ngữ cảnh giới hạn (~2.048 - 4.096 token); nếu prompt quá dài có thể bị quá tải và không xử lý được. Hãy cân nhắc chỉ chọn các prompt cần thiết hoặc chuyển sang dùng AI Cloud trong Cài đặt.</p>`;
+    } else if (cloud && totalSelectedLength > 5000) {
+      lengthWarningHtml = `<p class="settings-message settings-message--warning prompt-picker-warning" id="prompt-picker-warning" role="status">ℹ️ <strong>Lưu ý về AI Cloud:</strong> Bạn đang chọn ${selectedRules.length} prompt (tổng ${totalSelectedLength.toLocaleString("vi-VN")} ký tự). Toàn bộ nội dung sẽ được gửi kèm cho Cloud AI; thời gian rà soát và chi phí token có thể tăng tương ứng.</p>`;
+    }
+  }
+
+  return `<fieldset class="prompt-picker-group"><legend class="sr-only">Quy tắc riêng áp dụng cho lần rà soát này</legend><div class="prompt-picker-group__header"><div><strong>${count.toLocaleString("vi-VN")} quy tắc riêng</strong><span>${summary}</span></div></div>${picker}</fieldset>${warningHtml}${lengthWarningHtml}`;
 }
 
 function initOverlayHtml(): string {
@@ -432,7 +452,7 @@ function render(preferredFocus?: string): void {
       }).join("")}</ol>
     </nav>
     <main class="workflow-shell">
-      ${state.step === "file" ? `<section class="workflow-card workflow-card--file"><div class="section-copy"><h1>Chọn tệp Word cần kiểm tra</h1><p>Ứng dụng tạo một bản kết quả mới và luôn giữ nguyên tệp gốc.</p></div><button class="drop-zone" id="choose"><strong>Chọn hoặc kéo thả tệp .docx</strong><span>Nhấn Ctrl+O để mở nhanh</span></button>${errorHtml()}</section>` : ""}
+      ${state.step === "file" ? `<section class="workflow-card workflow-card--file"><div class="section-copy"><h1>Chọn tệp Word cần kiểm tra</h1><p>${state.outputConfig.mode === "in_place" ? `Ứng dụng sẽ ghi chú trực tiếp lên tệp gốc${state.outputConfig.backup_original ? " (có tự động sao lưu .bak)" : ""}.` : "Ứng dụng tạo một bản kết quả mới và luôn giữ nguyên tệp gốc."}</p></div><button class="drop-zone" id="choose"><strong>Chọn hoặc kéo thả tệp .docx</strong><span>Nhấn Ctrl+O để mở nhanh</span></button>${errorHtml()}</section>` : ""}
       ${state.step === "rules" && doc ? `<section class="workflow-card"><div class="workflow-context"><button class="back-button" id="back">← Chọn tệp khác</button><div class="file-chip"><strong>${escape(doc.name)}</strong><span>${documentMetadata(doc)}</span></div></div><div class="workflow-lead"><div class="section-copy"><div class="ai-provider-badge" id="workflow-ai-badge"><span class="badge-dot ${isCloudActive() ? "badge-dot--cloud" : "badge-dot--local"}"></span><span>${escape(activeAiLabel())}</span></div><h1>Chuẩn bị rà soát</h1><p>${reviewModeDescription()}</p></div><div class="workflow-actions workflow-actions--lead"><button class="button button--primary" id="start">Bắt đầu xử lý</button></div></div>${customRuleSelectionHtml()}${errorHtml()}</section>` : ""}
       ${state.step === "processing" ? `<section class="workflow-card processing-panel"><div class="processing-status"><span class="spinner" aria-hidden="true"></span><div class="section-copy"><h1>${progressTitle()}</h1><p class="progress-subtitle">${progressSubtitle()}</p></div></div><div class="progress-row"><div class="progress" role="progressbar" aria-label="Tiến độ xử lý" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${state.progress}"><span style="--progress-scale:${state.progress / 100}"></span></div><strong class="progress-value">${state.progress}%</strong></div><p class="sr-only progress-announcement" aria-live="polite" aria-atomic="true">${progressTitle()} ${state.progress}%</p><div class="workflow-actions"><button class="button button--secondary" id="cancel" ${state.jobStarting || state.cancelPending ? "disabled" : ""} ${state.jobStarting || state.cancelPending ? 'aria-busy="true"' : ""}>${state.jobStarting ? "Đang chuẩn bị…" : state.cancelPending ? "Đang dừng…" : "Dừng xử lý"}</button></div>${errorHtml()}</section>` : ""}
       ${(state.step === "result" || state.step === "no-findings") ? resultHtml() : ""}
@@ -565,10 +585,16 @@ function partialResultHeading(): { title: string; body: string } {
 function resultHtml(): string {
   const partial = isPartialReview();
   const path = state.result?.output_path ?? "";
+  const isInPlace = state.outputConfig.mode === "in_place";
   if (partial && !path) return `<section class="workflow-card result-panel"><div class="result-heading"><div class="partial-symbol" aria-hidden="true">!</div><div class="section-copy"><h1>Rà soát chỉ hoàn tất một phần</h1><p>Không tạo bản sao vì chưa ghi nhận cảnh báo. Tệp gốc vẫn giữ nguyên.</p></div></div>${reviewCoverageWarningHtml()}<div class="workflow-actions"><button class="button button--primary" id="restart">Kiểm tra tệp khác</button></div>${errorHtml()}</section>`;
-  if (state.step === "no-findings") return `<section class="workflow-card result-panel"><div class="result-heading"><div class="success" aria-hidden="true">✓</div><div class="section-copy"><h1>Không phát hiện cảnh báo</h1><p>Không tạo bản sao; tệp gốc vẫn giữ nguyên.</p></div></div><div class="workflow-actions"><button class="button button--primary" id="restart">Kiểm tra tệp khác</button></div>${errorHtml()}</section>`;
+  if (state.step === "no-findings") return `<section class="workflow-card result-panel"><div class="result-heading"><div class="success" aria-hidden="true">✓</div><div class="section-copy"><h1>Không phát hiện cảnh báo</h1><p>Không có thay đổi; tệp gốc vẫn giữ nguyên.</p></div></div><div class="workflow-actions"><button class="button button--primary" id="restart">Kiểm tra tệp khác</button></div>${errorHtml()}</section>`;
   const outputPending = state.outputActionPending !== null;
-  return `<section class="workflow-card result-panel"><div class="result-heading"><div class="${partial ? "partial-symbol" : "success"}" aria-hidden="true">${partial ? "!" : "✓"}</div><div class="section-copy"><h1>${partial ? partialResultHeading().title : "Đã tạo tệp kết quả"}</h1><p>${partial ? partialResultHeading().body : "Ứng dụng không xem trước tài liệu. Hãy mở bằng Microsoft Word để xem các vị trí được đánh dấu."}</p></div></div>${reviewCoverageWarningHtml()}<div class="result-file"><strong>${escape(path.split(/[\\/]/).pop() ?? path)}</strong><span>${escape(path)}</span></div><dl class="summary"><div><dt>Cảnh báo</dt><dd>${state.result?.finding_count ?? 0}</dd></div><div><dt>Tệp gốc</dt><dd>Không thay đổi</dd></div></dl><div class="result-actions"><div class="button-row"><button class="button button--primary" id="open" ${outputPending ? "disabled" : ""} ${state.outputActionPending === "open" ? 'aria-busy="true"' : ""}>${state.outputActionPending === "open" ? "Đang mở tệp…" : "Mở tệp kết quả"}</button><button class="button button--secondary" id="reveal" ${outputPending ? "disabled" : ""} ${state.outputActionPending === "reveal" ? 'aria-busy="true"' : ""}>${state.outputActionPending === "reveal" ? "Đang mở thư mục…" : "Mở thư mục"}</button></div><button class="back-button" id="restart">Xử lý tệp khác</button></div>${errorHtml()}</section>`;
+  const resultTitle = partial ? partialResultHeading().title : isInPlace ? "Đã cập nhật tệp Word" : "Đã tạo tệp kết quả";
+  const resultDesc = partial ? partialResultHeading().body : isInPlace ? "Ứng dụng đã chèn các đánh dấu và ghi chú cảnh báo trực tiếp vào tệp gốc. Hãy mở bằng Microsoft Word để xem chi tiết." : "Ứng dụng không xem trước tài liệu. Hãy mở bằng Microsoft Word để xem các vị trí được đánh dấu.";
+  const originalDocStatus = isInPlace ? "Đã cập nhật trực tiếp" : "Không thay đổi";
+  const backupSummary = isInPlace && state.outputConfig.backup_original ? `<div><dt>Bản sao lưu</dt><dd>.docx.bak</dd></div>` : "";
+  const openLabel = isInPlace ? "Mở tệp" : "Mở tệp kết quả";
+  return `<section class="workflow-card result-panel"><div class="result-heading"><div class="${partial ? "partial-symbol" : "success"}" aria-hidden="true">${partial ? "!" : "✓"}</div><div class="section-copy"><h1>${resultTitle}</h1><p>${resultDesc}</p></div></div>${reviewCoverageWarningHtml()}<div class="result-file"><strong>${escape(path.split(/[\\/]/).pop() ?? path)}</strong><span>${escape(path)}</span></div><dl class="summary"><div><dt>Cảnh báo</dt><dd>${state.result?.finding_count ?? 0}</dd></div><div><dt>Tệp gốc</dt><dd>${originalDocStatus}</dd></div>${backupSummary}</dl><div class="result-actions"><div class="button-row"><button class="button button--primary" id="open" ${outputPending ? "disabled" : ""} ${state.outputActionPending === "open" ? 'aria-busy="true"' : ""}>${state.outputActionPending === "open" ? "Đang mở tệp…" : openLabel}</button><button class="button button--secondary" id="reveal" ${outputPending ? "disabled" : ""} ${state.outputActionPending === "reveal" ? 'aria-busy="true"' : ""}>${state.outputActionPending === "reveal" ? "Đang mở thư mục…" : "Mở thư mục"}</button></div><button class="back-button" id="restart">Xử lý tệp khác</button></div>${errorHtml()}</section>`;
 }
 
 function settingsHtml(): string {
@@ -579,6 +605,7 @@ function settingsHtml(): string {
     ["review-rules", "Quy tắc"],
     ["models", "Mô hình LLM"],
     ["seq2seq", "Mô hình Chính tả"],
+    ["output", "Tệp xuất"],
   ];
   const operationLocked = settingsOperationLocked();
   const content = settingsContent(section);
@@ -739,10 +766,11 @@ function providerStatusSubtitle(provider: ProviderTab): string {
 function settingsContent(section: SettingsSection): { body: string; footer: string } {
   if (section === "prompts") {
     const editing = state.customRules.find(rule => rule.id === state.editingCustomRuleId);
-    const existingLength = editing ? [...editing.prompt].length : 0;
-    const available = Math.max(0, customRulePromptLimit - customRuleCharacterCount() + existingLength);
     const draftLength = [...state.customRuleDraft].length;
-    const isOverBudget = draftLength > available;
+    const isLongPrompt = draftLength > 2000;
+    const promptWarningHtml = isLongPrompt
+      ? `<p class="settings-message settings-message--warning" id="custom-rule-warning" role="status">⚠️ <strong>Prompt khá dài (${draftLength.toLocaleString("vi-VN")} ký tự):</strong> Prompt chi tiết giúp AI hiểu rõ ngữ cảnh hơn. Tuy nhiên, nếu dùng AI cục bộ (offline), prompt quá dài có thể vượt quá bộ nhớ ngữ cảnh. Với AI Cloud, prompt dài sẽ tiêu tốn thêm token và thời gian phản hồi.</p>`
+      : "";
     const controlsLocked = state.customRulePending || state.settingsLoading;
     const saveDisabled = controlsLocked;
     const promptList = state.customRules.length
@@ -754,7 +782,7 @@ function settingsContent(section: SettingsSection): { body: string; footer: stri
         }).join("")
       : `<div class="empty-state"><strong>Chưa có prompt riêng.</strong><span>Tạo một prompt để cung cấp thuật ngữ, ngữ cảnh hoặc tiêu chí kiểm tra riêng cho AI.</span></div>`;
     return {
-      body: `<section class="settings-section settings-prompts" id="settings-prompts" aria-labelledby="settings-prompts-title"><header class="settings-section__header"><div class="section-copy"><h2 id="settings-prompts-title">Prompt</h2><p>Mỗi mục là một đoạn hướng dẫn bổ sung cho AI; ứng dụng tự quản lý định dạng kết quả và vị trí bôi vàng.</p></div><button class="button button--secondary" id="new-custom-rule" type="button" ${controlsLocked ? "disabled" : ""}>Prompt mới</button></header><div class="prompt-manager"><div class="prompt-manager__master"><nav class="prompt-list" aria-label="Danh sách prompt" aria-live="polite">${promptList}</nav></div><section class="prompt-manager__detail" aria-labelledby="custom-rule-editor-title"><div class="section-copy"><h3 id="custom-rule-editor-title">${editing ? "Sửa prompt" : "Tạo prompt"}</h3><p>${editing ? "Chỉnh nội dung rồi lưu thay đổi, hoặc huỷ để trở về chế độ tạo mới." : "Mô tả thuật ngữ, ngữ cảnh hoặc tiêu chí mà AI cần chú ý."}</p></div><form class="custom-rule-form" id="custom-rule-form" novalidate><div class="control"><label for="custom-rule-title">Tiêu đề</label><input type="text" id="custom-rule-title" name="title" required maxlength="${customRuleTitleLimit}" aria-describedby="custom-rule-title-help${state.customRuleTitleInvalid ? " settings-message" : ""}" ${state.customRuleTitleInvalid ? 'aria-invalid="true"' : ""} placeholder="Ví dụ: Thuật ngữ khách hàng" value="${escape(state.customRuleTitleDraft)}" ${controlsLocked ? "disabled" : ""}><span class="field__helper" id="custom-rule-title-help">Bắt buộc, tối đa ${customRuleTitleLimit} ký tự. Tiêu đề hiển thị ở bước Chuẩn bị rà soát và không được gửi cho AI.</span></div><div class="control"><label for="custom-rule-prompt">Nội dung prompt</label><textarea id="custom-rule-prompt" name="prompt" rows="7" required maxlength="${customRulePromptLimit}" aria-describedby="custom-rule-help custom-rule-count${state.customRulePromptInvalid ? " settings-message" : ""}" ${state.customRulePromptInvalid ? 'aria-invalid="true"' : ""} placeholder="Ví dụ: Dùng thuật ngữ “khách hàng”, không dùng “client”." ${controlsLocked ? "disabled" : ""}>${escape(state.customRuleDraft)}</textarea><div class="field__meta"><span class="field__helper" id="custom-rule-help">Không yêu cầu AI trả cả câu/đoạn hoặc tự đặt cấu trúc output. Tổng tất cả prompt tối đa 4.000 ký tự.</span><small id="custom-rule-count" class="${isOverBudget ? "field__meta--overbudget" : ""}">${isOverBudget ? `Vượt quá dung lượng còn lại ${(draftLength - available).toLocaleString("vi-VN")} ký tự (còn ${available.toLocaleString("vi-VN")}/${customRulePromptLimit.toLocaleString("vi-VN")})` : `${draftLength.toLocaleString("vi-VN")}/${available.toLocaleString("vi-VN")} ký tự còn dùng được cho mục này`}</small></div></div><label class="setting-row"><span><strong>Chọn sẵn ở bước Chuẩn bị rà soát</strong><small>Prompt này sẽ được tick mặc định khi bắt đầu một lần rà soát mới.</small></span><input type="checkbox" id="custom-rule-default" ${state.customRuleDefaultDraft ? "checked" : ""} ${controlsLocked ? "disabled" : ""}></label><div class="prompt-form-actions"><button class="button button--primary" type="submit" form="custom-rule-form" ${saveDisabled ? "disabled" : ""}>${state.customRulePending ? "Đang lưu…" : editing ? "Lưu thay đổi" : "Lưu prompt"}</button>${editing ? `<button class="button button--secondary cancel-rule-edit" id="cancel-rule-edit" type="button" ${controlsLocked ? "disabled" : ""}>Huỷ sửa</button>` : ""}</div></form></section></div></section>`,
+      body: `<section class="settings-section settings-prompts" id="settings-prompts" aria-labelledby="settings-prompts-title"><header class="settings-section__header"><div class="section-copy"><h2 id="settings-prompts-title">Prompt</h2><p>Mỗi mục là một đoạn hướng dẫn bổ sung cho AI; ứng dụng tự quản lý định dạng kết quả và vị trí bôi vàng.</p></div><button class="button button--secondary" id="new-custom-rule" type="button" ${controlsLocked ? "disabled" : ""}>Prompt mới</button></header><div class="prompt-manager"><div class="prompt-manager__master"><nav class="prompt-list" aria-label="Danh sách prompt" aria-live="polite">${promptList}</nav></div><section class="prompt-manager__detail" aria-labelledby="custom-rule-editor-title"><div class="section-copy"><h3 id="custom-rule-editor-title">${editing ? "Sửa prompt" : "Tạo prompt"}</h3><p>${editing ? "Chỉnh nội dung rồi lưu thay đổi, hoặc huỷ để trở về chế độ tạo mới." : "Mô tả thuật ngữ, ngữ cảnh hoặc tiêu chí mà AI cần chú ý."}</p></div><form class="custom-rule-form" id="custom-rule-form" novalidate><div class="control"><label for="custom-rule-title">Tiêu đề</label><input type="text" id="custom-rule-title" name="title" required maxlength="${customRuleTitleLimit}" aria-describedby="custom-rule-title-help${state.customRuleTitleInvalid ? " settings-message" : ""}" ${state.customRuleTitleInvalid ? 'aria-invalid="true"' : ""} placeholder="Ví dụ: Thuật ngữ khách hàng" value="${escape(state.customRuleTitleDraft)}" ${controlsLocked ? "disabled" : ""}><span class="field__helper" id="custom-rule-title-help">Bắt buộc, tối đa ${customRuleTitleLimit} ký tự. Tiêu đề hiển thị ở bước Chuẩn bị rà soát và không được gửi cho AI.</span></div><div class="control"><label for="custom-rule-prompt">Nội dung prompt</label><textarea id="custom-rule-prompt" name="prompt" rows="7" required maxlength="${customRulePromptLimit}" aria-describedby="custom-rule-help custom-rule-count${state.customRulePromptInvalid ? " settings-message" : ""}" ${state.customRulePromptInvalid ? 'aria-invalid="true"' : ""} placeholder="Ví dụ: Dùng thuật ngữ “khách hàng”, không dùng “client”." ${controlsLocked ? "disabled" : ""}>${escape(state.customRuleDraft)}</textarea><div class="field__meta"><span class="field__helper" id="custom-rule-help">Mô tả thuật ngữ, phong cách hoặc tiêu chuẩn văn bản mà AI cần chú ý. Không giới hạn số lượng prompt.</span><small id="custom-rule-count">${draftLength > 0 ? `${draftLength.toLocaleString("vi-VN")} ký tự` : ""}</small></div>${promptWarningHtml}</div><label class="setting-row"><span><strong>Chọn sẵn ở bước Chuẩn bị rà soát</strong><small>Prompt này sẽ được tick mặc định khi bắt đầu một lần rà soát mới.</small></span><input type="checkbox" id="custom-rule-default" ${state.customRuleDefaultDraft ? "checked" : ""} ${controlsLocked ? "disabled" : ""}></label><div class="prompt-form-actions"><button class="button button--primary" type="submit" form="custom-rule-form" ${saveDisabled ? "disabled" : ""}>${state.customRulePending ? "Đang lưu…" : editing ? "Lưu thay đổi" : "Lưu prompt"}</button>${editing ? `<button class="button button--secondary cancel-rule-edit" id="cancel-rule-edit" type="button" ${controlsLocked ? "disabled" : ""}>Huỷ sửa</button>` : ""}</div></form></section></div></section>`,
       footer: "",
     };
   }
@@ -852,6 +880,69 @@ function settingsContent(section: SettingsSection): { body: string; footer: stri
       </div>
 
       <p class="notice" style="margin-top:1rem">🔒 Mọi xử lý diễn ra trực tiếp trên máy của bạn. Nội dung tài liệu không được gửi lên mạng.</p>
+      </section>`,
+      footer: "",
+    };
+  }
+
+  if (section === "output") {
+    const isSaving = state.outputConfigSaving;
+    const isNewFile = state.outputConfig.mode === "new_file";
+    const isInPlace = state.outputConfig.mode === "in_place";
+    const backupOriginal = state.outputConfig.backup_original;
+
+    return {
+      body: `<section class="settings-section settings-output" id="settings-output" aria-labelledby="settings-output-title">
+        <header class="settings-section__header">
+          <div class="section-copy">
+            <h2 id="settings-output-title">Tệp xuất</h2>
+            <p>Tùy chọn cách lưu tệp Word sau khi rà soát và chèn các ghi chú cảnh báo.</p>
+          </div>
+        </header>
+
+        <div class="model-card" style="margin-top:0.5rem;">
+          <div class="section-copy" style="margin-bottom:0.75rem;">
+            <h3>Chế độ xuất tệp</h3>
+            <p>Chọn cách ứng dụng lưu lại tài liệu chứa các từ bị bôi màu và bình luận kiểm tra.</p>
+          </div>
+          <div style="display:flex; flex-direction:column; gap:0.75rem;">
+            <label class="setting-row" style="cursor:pointer;">
+              <span>
+                <strong>Tạo tệp mới (Khuyến nghị)</strong>
+                <small>Tạo một bản sao có đuôi <code>-soat.docx</code> trong cùng thư mục; luôn bảo toàn 100% tệp gốc ban đầu.</small>
+              </span>
+              <input type="radio" id="output-mode-new-file" name="output-mode" value="new_file" ${isNewFile ? "checked" : ""} ${isSaving ? "disabled" : ""}>
+            </label>
+            <label class="setting-row" style="cursor:pointer;">
+              <span>
+                <strong>Chỉnh sửa trực tiếp trên tệp gốc</strong>
+                <small>Ghi highlight và bình luận trực tiếp vào chính tệp Word được chọn. Không phát sinh thêm tệp kết quả trong thư mục.</small>
+              </span>
+              <input type="radio" id="output-mode-in-place" name="output-mode" value="in_place" ${isInPlace ? "checked" : ""} ${isSaving ? "disabled" : ""}>
+            </label>
+          </div>
+        </div>
+
+        ${isInPlace ? `
+        <div class="model-card" style="margin-top:1rem;">
+          <div class="section-copy" style="margin-bottom:0.75rem;">
+            <h3>Tùy chọn an toàn khi ghi đè</h3>
+          </div>
+          <label class="setting-row" style="cursor:pointer;">
+            <span>
+              <strong>Tự động sao lưu tệp gốc (.docx.bak)</strong>
+              <small>Tạo bản sao dự phòng <code>[tên].docx.bak</code> trước khi ghi đè, giúp bạn dễ dàng khôi phục nguyên trạng khi cần.</small>
+            </span>
+            <input type="checkbox" id="output-backup-checkbox" ${backupOriginal ? "checked" : ""} ${isSaving ? "disabled" : ""}>
+          </label>
+          <div class="privacy-banner" role="alert" style="margin-top:0.75rem; border-color:#f59e0b; background-color:rgba(245, 158, 11, 0.08);">
+            <div class="privacy-banner__icon" aria-hidden="true">⚠️</div>
+            <div>
+              <strong style="color:#d97706;">Lưu ý về khóa tệp Word:</strong>
+              <p style="margin-top:0.25rem;">Nếu tệp Word đang mở trong Microsoft Word hoặc ứng dụng khác, hãy lưu và đóng tệp trước khi bắt đầu rà soát để hệ thống có quyền ghi đè dữ liệu.</p>
+            </div>
+          </div>
+        </div>` : ""}
       </section>`,
       footer: "",
     };
@@ -1043,17 +1134,25 @@ function bind(): void {
       (event.target as HTMLTextAreaElement).setAttribute("aria-describedby", "custom-rule-help custom-rule-count");
       document.querySelector("#settings-message")?.remove();
     }
-    const editing = state.customRules.find(rule => rule.id === state.editingCustomRuleId);
-    const existingLength = editing ? [...editing.prompt].length : 0;
-    const available = Math.max(0, customRulePromptLimit - customRuleCharacterCount() + existingLength);
     const draftLength = [...state.customRuleDraft].length;
-    const isOver = draftLength > available;
     const counter = document.querySelector<HTMLElement>("#custom-rule-count");
     if (counter) {
-      counter.classList.toggle("field__meta--overbudget", isOver);
-      counter.textContent = isOver
-        ? `Vượt quá dung lượng còn lại ${(draftLength - available).toLocaleString("vi-VN")} ký tự (còn ${available.toLocaleString("vi-VN")}/${customRulePromptLimit.toLocaleString("vi-VN")})`
-        : `${draftLength.toLocaleString("vi-VN")}/${available.toLocaleString("vi-VN")} ký tự còn dùng được cho mục này`;
+      counter.textContent = draftLength > 0 ? `${draftLength.toLocaleString("vi-VN")} ký tự` : "";
+    }
+    const isLong = draftLength > 2000;
+    const existingWarning = document.querySelector("#custom-rule-warning");
+    if (isLong && !existingWarning) {
+      const warning = document.createElement("p");
+      warning.className = "settings-message settings-message--warning";
+      warning.id = "custom-rule-warning";
+      warning.setAttribute("role", "status");
+      warning.innerHTML = `⚠️ <strong>Prompt khá dài (${draftLength.toLocaleString("vi-VN")} ký tự):</strong> Prompt chi tiết giúp AI hiểu rõ ngữ cảnh hơn. Tuy nhiên, nếu dùng AI cục bộ (offline), prompt quá dài có thể vượt quá bộ nhớ ngữ cảnh. Với AI Cloud, prompt dài sẽ tiêu tốn thêm token và thời gian phản hồi.`;
+      const controlParent = (event.target as HTMLTextAreaElement).closest(".control");
+      controlParent?.appendChild(warning);
+    } else if (isLong && existingWarning) {
+      existingWarning.innerHTML = `⚠️ <strong>Prompt khá dài (${draftLength.toLocaleString("vi-VN")} ký tự):</strong> Prompt chi tiết giúp AI hiểu rõ ngữ cảnh hơn. Tuy nhiên, nếu dùng AI cục bộ (offline), prompt quá dài có thể vượt quá bộ nhớ ngữ cảnh. Với AI Cloud, prompt dài sẽ tiêu tốn thêm token và thời gian phản hồi.`;
+    } else if (!isLong && existingWarning) {
+      existingWarning.remove();
     }
     updateCustomRuleSaveControl();
   });
@@ -1154,6 +1253,55 @@ function bind(): void {
       saveRuleOptionsPreference(state.ruleOptions);
       render(`#toggle-rule-${ruleId}`);
     });
+  });
+
+  document.querySelectorAll<HTMLInputElement>('input[name="output-mode"]').forEach(radio => {
+    radio.addEventListener("change", async () => {
+      if (!radio.checked || state.outputConfigSaving) return;
+      const mode = radio.value as OutputMode;
+      const prevMode = state.outputConfig.mode;
+      state.outputConfig.mode = mode;
+      state.outputConfigSaving = true;
+      render();
+      try {
+        const updated = await api.outputConfigUpdate(mode, state.outputConfig.backup_original);
+        state.outputConfig = updated;
+        state.settingsMessage = {
+          tone: "status",
+          text: mode === "in_place" ? "Đã chuyển sang chế độ chỉnh sửa trực tiếp trên tệp gốc." : "Đã chuyển sang chế độ tạo tệp kết quả mới.",
+        };
+      } catch {
+        state.outputConfig.mode = prevMode;
+        state.settingsMessage = { tone: "error", text: "Không thể lưu cấu hình tệp xuất." };
+      } finally {
+        state.outputConfigSaving = false;
+        render(`input[name="output-mode"][value="${mode}"]`);
+      }
+    });
+  });
+
+  const backupCheckbox = document.querySelector<HTMLInputElement>("#output-backup-checkbox");
+  backupCheckbox?.addEventListener("change", async () => {
+    if (state.outputConfigSaving) return;
+    const wantBackup = backupCheckbox.checked;
+    const prevBackup = state.outputConfig.backup_original;
+    state.outputConfig.backup_original = wantBackup;
+    state.outputConfigSaving = true;
+    render();
+    try {
+      const updated = await api.outputConfigUpdate(state.outputConfig.mode, wantBackup);
+      state.outputConfig = updated;
+      state.settingsMessage = {
+        tone: "status",
+        text: wantBackup ? "Đã bật tự động sao lưu tệp gốc (.docx.bak)." : "Đã tắt tự động sao lưu tệp gốc.",
+      };
+    } catch {
+      state.outputConfig.backup_original = prevBackup;
+      state.settingsMessage = { tone: "error", text: "Không thể lưu tùy chọn sao lưu." };
+    } finally {
+      state.outputConfigSaving = false;
+      render("#output-backup-checkbox");
+    }
   });
 }
 
@@ -1345,7 +1493,19 @@ async function start(): Promise<void> {
   updateCancelControl();
   try {
     console.log("[SoatVan-UI] Dispatching api.startJob with jobId:", currentJobId, "ruleOptions:", state.ruleOptions);
-    const result = await api.startJob(currentJobId, state.document.path, defaultPreset, customPrompt, effectiveUseModel, state.ruleOptions, [], effectiveFullReview, effectiveFullReview ? true : false);
+    const result = await api.startJob(
+      currentJobId,
+      state.document.path,
+      defaultPreset,
+      customPrompt,
+      effectiveUseModel,
+      state.ruleOptions,
+      [],
+      effectiveFullReview,
+      effectiveFullReview ? true : false,
+      state.outputConfig.mode,
+      state.outputConfig.backup_original
+    );
     console.log("[SoatVan-UI] api.startJob result:", result);
     if (state.jobId === currentJobId && state.step === "processing") {
       state.jobId = "";
@@ -1527,14 +1687,11 @@ async function saveCustomRule(event: SubmitEvent): Promise<void> {
     render("#custom-rule-prompt");
     return;
   }
-  const editing = state.customRules.find(rule => rule.id === state.editingCustomRuleId);
-  const existingLength = editing ? [...editing.prompt].length : 0;
-  const available = Math.max(0, customRulePromptLimit - customRuleCharacterCount() + existingLength);
-  if ([...prompt].length > available) {
+  if ([...prompt].length > customRulePromptLimit) {
     state.customRulePromptInvalid = true;
     state.settingsMessage = {
       tone: "error",
-      text: `Nội dung prompt vượt quá dung lượng khả dụng còn lại (${available.toLocaleString("vi-VN")} ký tự). Hãy rút gọn bớt nội dung.`,
+      text: `Nội dung prompt tối đa ${customRulePromptLimit.toLocaleString("vi-VN")} ký tự.`,
     };
     render("#custom-rule-prompt");
     return;
@@ -2114,10 +2271,11 @@ async function initializeApp(): Promise<void> {
     const customRuleSequence = customRuleOperationSequence;
     const request = ++customRuleRequestSequence;
 
-    const [aiConfigRes, rulesRes, seq2seqRes] = await Promise.allSettled([
+    const [aiConfigRes, rulesRes, seq2seqRes, outputConfigRes] = await Promise.allSettled([
       api.aiConfigGet(),
       api.customRuleList(),
       api.seq2seqConfigGet().catch(() => null),
+      api.outputConfigGet().catch(() => null),
     ]);
 
     if (currentInit !== initSequence) return;
@@ -2131,6 +2289,9 @@ async function initializeApp(): Promise<void> {
 
     if (seq2seqRes.status === "fulfilled" && seq2seqRes.value) {
       state.seq2seqConfig = seq2seqRes.value;
+    }
+    if (outputConfigRes.status === "fulfilled" && outputConfigRes.value) {
+      state.outputConfig = outputConfigRes.value;
     }
     if (aiConfigRes.status === "fulfilled") {
       state.aiConfig = aiConfigRes.value;

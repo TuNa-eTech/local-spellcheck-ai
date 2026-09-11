@@ -112,9 +112,9 @@ def test_custom_rule_protocol_crud_and_legacy_dictionary_is_not_public(
 
 
 def test_custom_prompt_transport_limit_and_new_errors_have_safe_messages() -> None:
-    assert _custom_prompt("x" * 4_200) == "x" * 4_200
+    assert _custom_prompt("x" * 500_000) == "x" * 500_000
     with pytest.raises(ValueError, match="CUSTOM_PROMPT_TOO_LONG"):
-        _custom_prompt("x" * 4_201)
+        _custom_prompt("x" * 500_001)
 
     assert safe_message("DOCUMENT_FINDINGS_NOT_EXPORTABLE") == (
         "Kh\u00f4ng th\u1ec3 g\u1eafn c\u00e1c c\u1ea3nh b\u00e1o v\u00e0o c\u1ea5u tr\u00fac t\u00e0i li\u1ec7u n\u00e0y."

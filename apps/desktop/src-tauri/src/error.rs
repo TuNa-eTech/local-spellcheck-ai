@@ -14,6 +14,8 @@ pub enum AppError {
     InvalidType,
     #[error("OUTPUT_WRITE_FAILED")]
     OutputWrite,
+    #[error("OUTPUT_FILE_LOCKED")]
+    OutputFileLocked,
     #[error("MODEL_NOT_CONFIGURED")]
     ModelNotConfigured,
     #[error("MODEL_PACKAGE_INVALID")]

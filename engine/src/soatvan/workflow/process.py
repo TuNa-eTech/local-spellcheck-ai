@@ -25,9 +25,8 @@ from .ports import (
     Seq2SeqProvider,
 )
 
-# Stored rule text is capped at 4,000 characters. The transport also carries
-# up to 99 blank-line separators when those records are compiled for the model.
-MAX_CUSTOM_PROMPT_LENGTH = 4_200
+# Upper bound for the compiled custom rules transport.
+MAX_CUSTOM_PROMPT_LENGTH = 500_000
 LLM_DISCOVERY_VERSION = "v2"
 # Upper bound for the isolated seq2seq worker. The worker has no deadline of
 # its own, so the parent enforces one while polling for cancellation.

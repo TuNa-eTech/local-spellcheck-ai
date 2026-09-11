@@ -109,4 +109,12 @@ export interface Seq2SeqConfig {
   is_ready?: boolean;
 }
 
+export type OutputMode = "new_file" | "in_place";
+
+export interface OutputConfig {
+  mode: OutputMode;
+  backup_original: boolean;
+}
+
+
 
