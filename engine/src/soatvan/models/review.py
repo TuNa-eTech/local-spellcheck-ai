@@ -217,7 +217,6 @@ class ReviewChunk:
             key=lambda item: (item.order, item.source_start, item.segment_id),
         )
         payload: dict[str, object] = {
-            "custom_rule": self.custom_prompt,
             "segments": [
                 {
                     "segment_id": item.segment_id,
@@ -246,10 +245,16 @@ class ReviewChunk:
 
 def review_messages(chunk: ReviewChunk) -> list[dict[str, str]]:
     llm_only = not chunk.candidates
+    system = LLM_ONLY_REVIEW_SYSTEM_PROMPT if llm_only else REVIEW_SYSTEM_PROMPT
+    if chunk.custom_prompt:
+        system += (
+            "\n\n## QUY TẮC RIÊNG CỦA NGƯỜI DÙNG (BẮT BUỘC TUÂN THỦ):\n"
+            f"<custom_rules>\n{chunk.custom_prompt}\n</custom_rules>"
+        )
     return [
         {
             "role": "system",
-            "content": (LLM_ONLY_REVIEW_SYSTEM_PROMPT if llm_only else REVIEW_SYSTEM_PROMPT),
+            "content": system,
         },
         {
             "role": "user",

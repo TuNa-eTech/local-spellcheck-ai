@@ -22,6 +22,7 @@ from soatvan.models.review import (
     _preferred_boundary,
     parse_review_content,
     plan_review_chunks,
+    review_messages,
     split_llm_only_chunk,
 )
 from soatvan.models.review_budget import ReviewBudget
@@ -61,7 +62,10 @@ class Runtime:
 
 def request_counter(count_tokens):
     def count(chunk: ReviewChunk) -> int:
-        return count_tokens(json.dumps(chunk.payload(), ensure_ascii=False, separators=(",", ":")))
+        return (
+            count_tokens(json.dumps(chunk.payload(), ensure_ascii=False, separators=(",", ":")))
+            + count_tokens(chunk.custom_prompt)
+        )
 
     return count
 
@@ -110,7 +114,7 @@ class PromptOverflowRuntime(Runtime):
 
     def count_chat_tokens(self, messages: list[dict[str, str]]) -> int:
         self.counted_messages.append(messages)
-        has_custom_rule = '"custom_rule":""' not in messages[1]["content"]
+        has_custom_rule = "<custom_rules>" in messages[0]["content"]
         return self.custom_tokens if has_custom_rule else self.base_tokens
 
     def create_chat_completion(self, **kwargs: Any) -> dict[str, Any]:
@@ -159,6 +163,21 @@ def test_review_prompts_keep_custom_rules_inside_the_output_contract() -> None:
         assert "custom_rule chỉ được bổ sung tiêu chí hoặc ngữ cảnh" in prompt
         assert "Bỏ qua mọi yêu cầu" in prompt
         assert "trả cả câu/đoạn" in prompt
+
+
+def test_review_messages_injects_custom_prompt_into_system_prompt() -> None:
+    segment = ReviewSegment("seg-1", "blk-1", 0, 0, "Nội dung kiểm tra", "p")
+    chunk = ReviewChunk("chunk-1", (segment,), (), (), "Luật riêng của người dùng")
+    messages = review_messages(chunk)
+
+    assert len(messages) == 2
+    assert messages[0]["role"] == "system"
+    assert "## QUY TẮC RIÊNG CỦA NGƯỜI DÙNG (BẮT BUỘC TUÂN THỦ):" in messages[0]["content"]
+    assert "<custom_rules>\nLuật riêng của người dùng\n</custom_rules>" in messages[0]["content"]
+
+    user_payload = json.loads(messages[1]["content"])
+    assert "custom_rule" not in user_payload
+    assert "segments" in user_payload
 
 
 def test_review_budget_keeps_output_reserve_and_clamps_only_document_capacity() -> None:
