@@ -418,7 +418,8 @@ async fn start_job(request: StartJobRequest, state: State<'_, AppState>) -> AppR
     }
     let output_mode_str = output_mode.as_deref().unwrap_or("new_file");
     let backup_orig = backup_original.unwrap_or(true);
-    let output = finalize_output_or_cleanup(&source, &temporary_path, output_mode_str, backup_orig)?;
+    let output =
+        finalize_output_or_cleanup(&source, &temporary_path, output_mode_str, backup_orig)?;
     let output = match register_produced_output(&output, &state.produced_outputs) {
         Ok(output) => output,
         Err(error) => {
