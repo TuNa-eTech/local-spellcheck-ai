@@ -70,6 +70,50 @@ type PendingPromptAction =
   | { kind: "edit"; id: string };
 type OutputAction = "open" | "reveal";
 
+const defaultPreset: Preset = "standard";
+const defaultRuleOptions: RuleOptions = {
+  technical: false,
+  repeated_words: false,
+  confusions: false,
+  syllables: false,
+  administrative_capitalization: false,
+  dictionary: false,
+};
+const fixedReviewRules: { id: keyof RuleOptions; name: string; description: string }[] = [
+  { id: "technical", name: "Khoảng trắng và dấu câu", description: "Phát hiện khoảng trắng thừa hoặc thiếu và dấu câu đặt sai vị trí." },
+  { id: "repeated_words", name: "Từ lặp", description: "Phát hiện từ bị lặp liên tiếp ngoài chủ ý." },
+  { id: "confusions", name: "Từ và cụm từ dễ nhầm", description: "Đối chiếu danh sách những cách viết tiếng Việt thường bị nhầm lẫn." },
+  { id: "syllables", name: "Âm tiết tiếng Việt", description: "Phát hiện thận trọng các âm tiết có phụ âm đầu không hợp lệ." },
+  { id: "administrative_capitalization", name: "Viết hoa hành chính", description: "Kiểm tra quy tắc viết hoa theo Nghị định 30/2020, Phụ lục II." },
+];
+const ruleOptionsStorageKey = "soatvan.rule-options.v1";
+
+function loadRuleOptionsPreference(): RuleOptions {
+  try {
+    const raw = localStorage.getItem(ruleOptionsStorageKey);
+    if (!raw) return { ...defaultRuleOptions };
+    const parsed = JSON.parse(raw);
+    return {
+      technical: Boolean(parsed.technical),
+      repeated_words: Boolean(parsed.repeated_words),
+      confusions: Boolean(parsed.confusions),
+      syllables: Boolean(parsed.syllables),
+      administrative_capitalization: Boolean(parsed.administrative_capitalization),
+      dictionary: Boolean(parsed.dictionary ?? parsed.syllables),
+    };
+  } catch {
+    return { ...defaultRuleOptions };
+  }
+}
+
+function saveRuleOptionsPreference(options: RuleOptions): void {
+  try {
+    localStorage.setItem(ruleOptionsStorageKey, JSON.stringify(options));
+  } catch {
+    /* Storage can be unavailable in hardened WebViews. */
+  }
+}
+
 const defaultAiConfigs: Record<string, AiConfigEntry> = {
   openai: {
     provider: "openai",
@@ -131,6 +175,7 @@ const state: {
   appVersion: string;
   appInitializing: boolean;
   appInitError: string | null;
+  ruleOptions: RuleOptions;
 } = {
   view: { kind: "workflow" },
   step: "file",
@@ -179,24 +224,9 @@ const state: {
   appVersion: APP_VERSION,
   appInitializing: true,
   appInitError: null,
+  ruleOptions: loadRuleOptionsPreference(),
 };
 
-const defaultPreset: Preset = "standard";
-const defaultRuleOptions: RuleOptions = {
-  technical: true,
-  repeated_words: true,
-  confusions: true,
-  syllables: true,
-  administrative_capitalization: true,
-  dictionary: true,
-};
-const fixedReviewRules: { id: keyof RuleOptions; name: string; description: string }[] = [
-  { id: "technical", name: "Khoảng trắng và dấu câu", description: "Phát hiện khoảng trắng thừa hoặc thiếu và dấu câu đặt sai vị trí." },
-  { id: "repeated_words", name: "Từ lặp", description: "Phát hiện từ bị lặp liên tiếp ngoài chủ ý." },
-  { id: "confusions", name: "Từ và cụm từ dễ nhầm", description: "Đối chiếu danh sách những cách viết tiếng Việt thường bị nhầm lẫn." },
-  { id: "syllables", name: "Âm tiết tiếng Việt", description: "Phát hiện thận trọng các âm tiết có phụ âm đầu không hợp lệ." },
-  { id: "administrative_capitalization", name: "Viết hoa hành chính", description: "Kiểm tra quy tắc viết hoa theo Nghị định 30/2020, Phụ lục II." },
-];
 const customRulePromptLimit = 4000;
 const customRuleTitleLimit = 80;
 const genericProcessingError = "Không xử lý được tệp. Hãy kiểm tra tệp rồi thử lại; tệp gốc chưa bị thay đổi.";
@@ -229,6 +259,7 @@ function focusSelectorFor(element: Element | null): string | null {
   if (element.dataset.selectRule) return `[data-select-rule="${element.dataset.selectRule}"]`;
   if (element.dataset.editRule) return `[data-edit-rule="${element.dataset.editRule}"]`;
   if (element.dataset.deleteRule) return `[data-delete-rule="${element.dataset.deleteRule}"]`;
+  if (element.dataset.toggleRule) return `[data-toggle-rule="${element.dataset.toggleRule}"]`;
   return null;
 }
 function documentMetadata(doc: DocumentInfo): string {
@@ -729,7 +760,10 @@ function settingsContent(section: SettingsSection): { body: string; footer: stri
   }
   if (section === "review-rules") {
     return {
-      body: `<section class="settings-section settings-review-rules" id="settings-review-rules" aria-labelledby="settings-review-rules-title"><header class="settings-section__header"><div class="section-copy"><h2 id="settings-review-rules-title">Quy tắc rà soát</h2><p>Bộ quy tắc cố định, luôn chạy khi kiểm tra.</p></div></header><ul class="review-rule-inventory">${fixedReviewRules.map(rule => `<li class="review-rule-row" data-review-rule="${rule.id}"><strong>${escape(rule.name)}</strong><span class="review-rule-status">${escape(rule.description)}</span></li>`).join("")}</ul></section>`,
+      body: `<section class="settings-section settings-review-rules" id="settings-review-rules" aria-labelledby="settings-review-rules-title"><header class="settings-section__header"><div class="section-copy"><h2 id="settings-review-rules-title">Quy tắc rà soát</h2><p>Bật hoặc tắt các quy tắc rà soát bằng logic code. Cấu hình tại đây sẽ tự động áp dụng cho các lần rà soát.</p></div></header><ul class="review-rule-inventory">${fixedReviewRules.map(rule => {
+        const isChecked = Boolean(state.ruleOptions[rule.id]);
+        return `<li class="review-rule-row" data-review-rule="${rule.id}"><div class="review-rule-copy"><strong id="rule-title-${rule.id}">${escape(rule.name)}</strong><span class="review-rule-status">${escape(rule.description)}</span></div><label class="toggle-control" for="toggle-rule-${rule.id}"><input type="checkbox" class="toggle-input sr-only" id="toggle-rule-${rule.id}" data-toggle-rule="${rule.id}" ${isChecked ? "checked" : ""} aria-labelledby="rule-title-${rule.id}"><span class="toggle-switch" aria-hidden="true"></span><span class="toggle-label">${isChecked ? "Bật" : "Tắt"}</span></label></li>`;
+      }).join("")}</ul></section>`,
       footer: "",
     };
   }
@@ -1106,6 +1140,21 @@ function bind(): void {
   });
   document.querySelector("#seq2seq-choose-dir")?.addEventListener("click", () => void chooseSeq2SeqModelDir());
   document.querySelector("#seq2seq-remove")?.addEventListener("click", () => void removeSeq2SeqConfig());
+
+  document.querySelectorAll<HTMLInputElement>("[data-toggle-rule]").forEach(input => {
+    input.addEventListener("change", event => {
+      const target = event.target as HTMLInputElement;
+      const ruleId = target.dataset.toggleRule as keyof RuleOptions;
+      if (!ruleId || !(ruleId in state.ruleOptions)) return;
+      const wantChecked = target.checked;
+      state.ruleOptions[ruleId] = wantChecked;
+      if (ruleId === "syllables") {
+        state.ruleOptions.dictionary = wantChecked;
+      }
+      saveRuleOptionsPreference(state.ruleOptions);
+      render(`#toggle-rule-${ruleId}`);
+    });
+  });
 }
 
 async function chooseSeq2SeqModelDir(): Promise<void> {
@@ -1295,8 +1344,8 @@ async function start(): Promise<void> {
   state.jobStarting = false;
   updateCancelControl();
   try {
-    console.log("[SoatVan-UI] Dispatching api.startJob with jobId:", currentJobId);
-    const result = await api.startJob(currentJobId, state.document.path, defaultPreset, customPrompt, effectiveUseModel, defaultRuleOptions, [], effectiveFullReview, effectiveFullReview ? true : false);
+    console.log("[SoatVan-UI] Dispatching api.startJob with jobId:", currentJobId, "ruleOptions:", state.ruleOptions);
+    const result = await api.startJob(currentJobId, state.document.path, defaultPreset, customPrompt, effectiveUseModel, state.ruleOptions, [], effectiveFullReview, effectiveFullReview ? true : false);
     console.log("[SoatVan-UI] api.startJob result:", result);
     if (state.jobId === currentJobId && state.step === "processing") {
       state.jobId = "";

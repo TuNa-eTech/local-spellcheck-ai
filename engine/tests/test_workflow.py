@@ -294,3 +294,46 @@ def test_workflow_sequential_offload_seq2seq_and_llm(
         "llm_start",
     ]
 
+
+def test_process_document_respects_rule_config_on_off(tmp_path: Path) -> None:
+    # Text contains both a double space (technical) and "sát nhập" (confusion)
+    class CustomDoc(Documents):
+        def read_blocks(self, _: Path) -> list[Block]:
+            return [Block("document:p0", "Nội  dung sát nhập văn bản.")]
+
+        def write_annotations(self, source: Path, target: Path, findings, cancellation=None):
+            del source, target, cancellation
+            return AnnotationResult(tuple(f.id for f in findings))
+
+    processor = ProcessDocument(CustomDoc(), Dictionary(), RuleEngine())
+
+    # Case 1: All rules OFF -> 0 findings, no output file
+    all_off = RuleConfig(False, False, False, False, False, False)
+    result_off = processor.execute(
+        ProcessRequest(tmp_path / "source.docx", tmp_path / "output.docx", Preset.STANDARD, rule_config=all_off),
+        lambda *_: None,
+        Token(),
+    )
+    assert result_off.finding_count == 0
+    assert result_off.output_path is None
+
+    # Case 2: Only 'technical' ON -> only multiple space detected
+    tech_only = RuleConfig(True, False, False, False, False, False)
+    result_tech = processor.execute(
+        ProcessRequest(tmp_path / "source.docx", tmp_path / "output.docx", Preset.STANDARD, rule_config=tech_only),
+        lambda *_: None,
+        Token(),
+    )
+    assert result_tech.finding_count == 1
+    assert result_tech.counts["category"] == {"technical": 1}
+
+    # Case 3: Only 'confusions' ON -> only "sát nhập" detected
+    conf_only = RuleConfig(False, False, True, False, False, False)
+    result_conf = processor.execute(
+        ProcessRequest(tmp_path / "source.docx", tmp_path / "output.docx", Preset.STANDARD, rule_config=conf_only),
+        lambda *_: None,
+        Token(),
+    )
+    assert result_conf.finding_count == 1
+    assert result_conf.counts["category"] == {"spelling": 1}
+

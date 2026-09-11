@@ -208,12 +208,12 @@ describe("four-step desktop workflow", () => {
     expect(api.startJob.mock.calls[0][7]).toBe(false);
     expect(api.startJob.mock.calls[0][8]).toBe(false);
     expect(api.startJob.mock.calls[0][5]).toEqual({
-      technical: true,
-      repeated_words: true,
-      confusions: true,
-      syllables: true,
-      administrative_capitalization: true,
-      dictionary: true,
+      technical: false,
+      repeated_words: false,
+      confusions: false,
+      syllables: false,
+      administrative_capitalization: false,
+      dictionary: false,
     });
     expect(api.startJob.mock.calls[0][6]).toEqual([]);
     job.resolve({
@@ -1025,7 +1025,7 @@ describe("four-step desktop workflow", () => {
     expect(document.body.textContent).toContain("nguồn.docx");
   });
 
-  it("keeps the fixed review-rule inventory read-only and preserves workflow review state", async () => {
+  it("allows configuring review rules with toggles, defaults to all off, and preserves workflow review state", async () => {
     const api = await loadApp({ modelStatus: () => Promise.resolve(signedReadyModel) });
     await chooseDocument();
     document.querySelector<HTMLButtonElement>("#settings")!.click();
@@ -1039,10 +1039,26 @@ describe("four-step desktop workflow", () => {
     expect(ruleList).not.toBeNull();
     expect(ruleList.querySelectorAll(":scope > li.review-rule-row[data-review-rule]")).toHaveLength(5);
     expect([...ruleList.children].every(item => item.tagName === "LI")).toBe(true);
-    expect(inventory.querySelector("article.review-rule-row")).toBeNull();
-    expect(inventory.querySelector("button, input, select, textarea")).toBeNull();
-    expect(inventory.querySelector('[data-rule-toggle], input[name="preset"], #dictionary-form, #ignored-words')).toBeNull();
-    expect(document.querySelector("#full-review, #include-rule-findings")).toBeNull();
+
+    // Verify all toggles are OFF by default
+    const toggles = inventory.querySelectorAll<HTMLInputElement>("input[data-toggle-rule]");
+    expect(toggles).toHaveLength(5);
+    toggles.forEach(toggle => {
+      expect(toggle.checked).toBe(false);
+    });
+
+    // Toggle the first rule ("technical") ON
+    toggles[0].click();
+    await vi.waitFor(() => expect(document.querySelector<HTMLInputElement>("#toggle-rule-technical")?.checked).toBe(true));
+    expect(document.querySelector('[data-review-rule="technical"] .toggle-label')?.textContent).toBe("Bật");
+    expect(JSON.parse(localStorage.getItem("soatvan.rule-options.v1") || "{}").technical).toBe(true);
+
+    // Toggle "syllables" ON and verify dictionary is synced
+    const syllablesToggle = document.querySelector<HTMLInputElement>("#toggle-rule-syllables")!;
+    syllablesToggle.click();
+    await vi.waitFor(() => expect(document.querySelector<HTMLInputElement>("#toggle-rule-syllables")?.checked).toBe(true));
+    expect(JSON.parse(localStorage.getItem("soatvan.rule-options.v1") || "{}").syllables).toBe(true);
+    expect(JSON.parse(localStorage.getItem("soatvan.rule-options.v1") || "{}").dictionary).toBe(true);
 
     document.querySelector<HTMLButtonElement>("#settings-back")!.click();
     await vi.waitFor(() => expect((document.activeElement as HTMLElement | null)?.id).toBe("settings"));
