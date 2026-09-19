@@ -4,7 +4,7 @@
 
 .DESCRIPTION
     PyPI only publishes an sdist for llama-cpp-python, so `uv sync` compiles it
-    with CMake's defaults — CPU only. This script rebuilds the same locked
+    with CMake's defaults - CPU only. This script rebuilds the same locked
     version with `-DGGML_CUDA=on`, installs the wheel over the CPU one, and
     copies the CUDA redistributables into `llama_cpp/lib` so PyInstaller carries
     them into the portable package (no CUDA Toolkit on the user's machine).
@@ -90,7 +90,7 @@ function Import-VisualStudioEnvironment {
     }
     $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
     if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) {
-        throw "Khong tim thay vswhere.exe — can Visual Studio Build Tools (C++ workload) de bien dich CUDA."
+        throw "Khong tim thay vswhere.exe - can Visual Studio Build Tools (C++ workload) de bien dich CUDA."
     }
     $installPath = & $vswhere -latest -products * `
         -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
@@ -129,7 +129,7 @@ function Select-SupportedArchitectures {
         if ($line -match 'compute_(\d+)') { $known += $Matches[1] }
     }
     if ($known.Count -eq 0) {
-        Write-Warning "nvcc --list-gpu-arch khong tra ve gi — dung nguyen danh sach '$Requested'."
+        Write-Warning "nvcc --list-gpu-arch khong tra ve gi - dung nguyen danh sach '$Requested'."
         return $Requested
     }
     $kept = @()
@@ -140,7 +140,7 @@ function Select-SupportedArchitectures {
         else { $kept += $entry }
     }
     if ($dropped.Count -gt 0) {
-        Write-Warning "CUDA Toolkit nay khong ho tro kien truc: $($dropped -join ', ') — da bo qua."
+        Write-Warning "CUDA Toolkit nay khong ho tro kien truc: $($dropped -join ', ') - da bo qua."
     }
     if ($kept.Count -eq 0) {
         throw "Khong con kien truc CUDA nao hop le sau khi loc theo nvcc."
@@ -149,11 +149,11 @@ function Select-SupportedArchitectures {
 }
 
 if ($env:OS -ne "Windows_NT") {
-    Write-Step "Khong phai Windows — bo qua (macOS dung Metal, da bat san)."
+    Write-Step "Khong phai Windows - bo qua (macOS dung Metal, da bat san)."
     return
 }
 if ($Mode -eq "off") {
-    Write-Step "SOATVAN_CUDA=off — giu ban llama.cpp CPU."
+    Write-Step "SOATVAN_CUDA=off - giu ban llama.cpp CPU."
     return
 }
 
@@ -298,7 +298,7 @@ if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $libDir -PathType Conta
     throw "Khong xac dinh duoc thu muc lib cua llama_cpp."
 }
 if (-not (Test-Path -LiteralPath (Join-Path $libDir "ggml-cuda.dll") -PathType Leaf)) {
-    throw "Wheel vua cai khong co ggml-cuda.dll — ban build CUDA that bai."
+    throw "Wheel vua cai khong co ggml-cuda.dll - ban build CUDA that bai."
 }
 foreach ($pattern in @("cudart64_*.dll", "cublas64_*.dll", "cublasLt64_*.dll")) {
     $redistributable = Get-ChildItem -LiteralPath (Join-Path $cudaRoot "bin") -Filter $pattern -File `

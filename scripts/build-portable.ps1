@@ -40,7 +40,7 @@ try {
     # thieu, ban build van import duoc file .gguf tho (trust local_unverified),
     # nhung KHONG xac minh duoc goi .svmodel co chu ky phat hanh.
     if ([string]::IsNullOrWhiteSpace($env:SOATVAN_MODEL_PUBLIC_KEY)) {
-        Write-Warning "SOATVAN_MODEL_PUBLIC_KEY chua duoc set — ban build se KHONG import duoc goi .svmodel ky phat hanh. Import file .gguf tho van hoat dong binh thuong."
+        Write-Warning "SOATVAN_MODEL_PUBLIC_KEY chua duoc set - ban build se KHONG import duoc goi .svmodel ky phat hanh. Import file .gguf tho van hoat dong binh thuong."
     }
 
     # 2. Dong bo Python & Build PyInstaller sidecar
@@ -65,7 +65,7 @@ try {
         throw "PyInstaller khong tao executable $engineExecutable."
     }
 
-    # 3. Smoke-test sidecar da dong goi — chay engine exe that voi PATH toi thieu
+    # 3. Smoke-test sidecar da dong goi - chay engine exe that voi PATH toi thieu
     #    va khong co PYTHONPATH/PYTHONHOME, dam bao PyInstaller da gom du DLL,
     #    hidden-import va VC++ runtime truoc khi ton thoi gian build Rust.
     Write-Host "`n[2/5] Kiem tra sidecar dong goi khoi dong va chay job that..." -ForegroundColor Yellow
@@ -88,11 +88,11 @@ try {
             $acceptanceArgs += @("--seq2seq-model-dir", $env:SOATVAN_SEQ2SEQ_MODEL_DIR)
         }
         else {
-            Write-Warning "SOATVAN_SEQ2SEQ_MODEL_DIR khong co config.json — bo qua kiem tra seq2seq frozen."
+            Write-Warning "SOATVAN_SEQ2SEQ_MODEL_DIR khong co config.json - bo qua kiem tra seq2seq frozen."
         }
     }
     else {
-        Write-Warning "SOATVAN_SEQ2SEQ_MODEL_DIR chua set — KHONG kiem tra duoc duong seq2seq trong ban dong goi. Dat bien nay tro toi thu muc model de bat kiem tra."
+        Write-Warning "SOATVAN_SEQ2SEQ_MODEL_DIR chua set - KHONG kiem tra duoc duong seq2seq trong ban dong goi. Dat bien nay tro toi thu muc model de bat kiem tra."
     }
     Invoke-Checked "uv" $acceptanceArgs
 
@@ -139,7 +139,7 @@ try {
         Measure-Object -Property Length -Sum).Sum
     Write-Host ("Ban Portable truoc khi nen: {0:N0} MB" -f [math]::Round($portableBytes / 1MB))
     if ($portableBytes -gt 3GB) {
-        Write-Warning "Thu muc Portable rat lon — neu Compress-Archive that bai (gioi han 2 GB), dung SOATVAN_CUDA=off hoac nen bang 7-Zip."
+        Write-Warning "Thu muc Portable rat lon - neu Compress-Archive that bai (gioi han 2 GB), dung SOATVAN_CUDA=off hoac nen bang 7-Zip."
     }
     $portableZip = Join-Path $distDir "SoatVan-v$desktopVersion-Windows-x64-Portable.zip"
     if (Test-Path -LiteralPath $portableZip) {

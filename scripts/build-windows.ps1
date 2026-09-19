@@ -187,7 +187,7 @@ try {
         throw "PyInstaller khong tao executable $engineExecutable."
     }
 
-    # Hoi chinh engine da dong goi xem no thay backend nao — bat duoc ngay truong
+    # Hoi chinh engine da dong goi xem no thay backend nao - bat duoc ngay truong
     # hop wheel CUDA co nhung DLL runtime khong duoc goi vao ban phat hanh.
     $gpuReport = (& $engineExecutable "--gpu-report") -join "`n"
     if ($LASTEXITCODE -ne 0) {
@@ -440,7 +440,7 @@ try {
         Measure-Object -Property Length -Sum).Sum
     Write-Host ("Ban Portable truoc khi nen: {0:N0} MB" -f [math]::Round($portableBytes / 1MB))
     if ($portableBytes -gt 3GB) {
-        Write-Warning "Thu muc Portable rat lon — neu Compress-Archive that bai (gioi han 2 GB), dung SOATVAN_CUDA=off hoac nen bang 7-Zip."
+        Write-Warning "Thu muc Portable rat lon - neu Compress-Archive that bai (gioi han 2 GB), dung SOATVAN_CUDA=off hoac nen bang 7-Zip."
     }
     $portableZip = Join-Path $repoRoot "dist\SoatVan-v$desktopVersion-Windows-x64-Portable.zip"
     if (Test-Path -LiteralPath $portableZip) { Remove-Item -LiteralPath $portableZip -Force }
