@@ -222,20 +222,103 @@ class Seq2SeqSpeller:
         return findings
 
 
-def _split_into_sentences(text: str) -> list[tuple[int, int, str]]:
-    """Split block text into sentences while preserving exact character offsets."""
+def _split_into_sentences(
+    text: str, max_words: int = 35
+) -> list[tuple[int, int, str]]:
+    """Split block text into sentences/clauses while preserving exact character offsets.
+
+    Long administrative sentences (often 100+ words separated by semicolons or commas)
+    are progressively decomposed so seq2seq models (e.g. BARTpho-syllable 115M)
+    operate within their optimal context window (~10-35 words) without truncation.
+    """
     if not text.strip():
         return []
-    spans: list[tuple[int, int, str]] = []
+
+    def _clean_span(s: int, e: int) -> tuple[int, int, str] | None:
+        chunk = text[s:e]
+        if not chunk.strip():
+            return None
+        l_strip = len(chunk) - len(chunk.lstrip())
+        r_strip = len(chunk) - len(chunk.rstrip())
+        real_start = s + l_strip
+        real_end = e - r_strip
+        real_text = text[real_start:real_end]
+        return (real_start, real_end, real_text) if real_text else None
+
+    # Tier 1: Split on primary sentence boundaries (.!?) and newlines
+    initial_spans: list[tuple[int, int, str]] = []
     start = 0
     for match in re.finditer(r"(?:(?<=[.!?])\s+|\n+)", text):
         end = match.start()
-        chunk = text[start:end]
-        if chunk.strip():
-            spans.append((start, end, chunk))
+        sp = _clean_span(start, end)
+        if sp:
+            initial_spans.append(sp)
         start = match.end()
     if start < len(text):
-        chunk = text[start:]
-        if chunk.strip():
-            spans.append((start, len(text), chunk))
-    return spans
+        sp = _clean_span(start, len(text))
+        if sp:
+            initial_spans.append(sp)
+
+    # Tier 2: For spans exceeding max_words, split on clause boundaries (; and :)
+    clause_spans: list[tuple[int, int, str]] = []
+    for s, e, chunk in initial_spans:
+        words = chunk.split()
+        if len(words) <= max_words:
+            clause_spans.append((s, e, chunk))
+        else:
+            sub_start = s
+            for match in re.finditer(r"[;:]\s+", chunk):
+                m_start = s + match.start() + 1
+                m_end = s + match.end()
+                sp = _clean_span(sub_start, m_start)
+                if sp:
+                    clause_spans.append(sp)
+                sub_start = m_end
+            if sub_start < e:
+                sp = _clean_span(sub_start, e)
+                if sp:
+                    clause_spans.append(sp)
+
+    # Tier 3: For spans still exceeding max_words, split on comma boundaries (, )
+    subclause_spans: list[tuple[int, int, str]] = []
+    for s, e, chunk in clause_spans:
+        words = chunk.split()
+        if len(words) <= max_words:
+            subclause_spans.append((s, e, chunk))
+        else:
+            sub_start = s
+            for match in re.finditer(r",\s+", chunk):
+                m_start = s + match.start() + 1
+                m_end = s + match.end()
+                piece = text[sub_start:m_start]
+                if len(piece.split()) >= 10:
+                    sp = _clean_span(sub_start, m_start)
+                    if sp:
+                        subclause_spans.append(sp)
+                    sub_start = m_end
+            if sub_start < e:
+                sp = _clean_span(sub_start, e)
+                if sp:
+                    subclause_spans.append(sp)
+
+    # Tier 4: For spans still exceeding max_words (unpunctuated runs), split at word boundaries
+    final_spans: list[tuple[int, int, str]] = []
+    for s, e, chunk in subclause_spans:
+        words = chunk.split()
+        if len(words) <= max_words + 10:
+            final_spans.append((s, e, chunk))
+        else:
+            sub_start = s
+            word_matches = list(re.finditer(r"\S+", chunk))
+            for i in range(max_words, len(word_matches), max_words):
+                cut_idx = s + word_matches[i].start()
+                sp = _clean_span(sub_start, cut_idx)
+                if sp:
+                    final_spans.append(sp)
+                sub_start = cut_idx
+            if sub_start < e:
+                sp = _clean_span(sub_start, e)
+                if sp:
+                    final_spans.append(sp)
+
+    return final_spans

@@ -977,9 +977,7 @@ def estimate_prompt_budget(manifest: dict[str, Any], custom_prompt: str) -> Prom
     derived = review_budget_from_manifest(manifest)
 
     def count_request_tokens(chunk: ReviewChunk) -> int:
-        messages = (
-            lightweight_review_messages(chunk) if derived.lightweight else review_messages(chunk)
-        )
+        messages = review_messages(chunk)
         return (
             sum(estimate_tokens(message["content"]) for message in messages)
             + CHAT_FALLBACK_OVERHEAD_TOKENS

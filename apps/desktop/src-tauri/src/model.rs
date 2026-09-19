@@ -12,13 +12,15 @@ use std::{
     time::Duration,
 };
 
-/// At 4096 the input window left only ~2.7k tokens for a custom prompt, which
-/// a realistic house style guide overruns before any document text fits. 8192
-/// roughly doubles that headroom; the engine falls back to a smaller context if
-/// the machine cannot allocate the larger KV cache.
-const LOCAL_GEMMA_REVIEW_CONTEXT_TOKENS: u64 = 8192;
-const LOCAL_REVIEW_TIMEOUT_SECONDS: u64 = 600;
-pub(crate) const MAX_MODEL_TIMEOUT_SECONDS: u64 = 900;
+/// At 8192 tokens the input window left too little headroom for long custom
+/// prompts combined with large document blocks; a single oversized block could
+/// overflow the context and be silently skipped. 16384 provides ample room for
+/// the system prompt, a realistic house style guide, and document text in one
+/// request. The engine falls back to a smaller context automatically if the
+/// machine cannot allocate the larger KV cache.
+const LOCAL_GEMMA_REVIEW_CONTEXT_TOKENS: u64 = 16384;
+const LOCAL_REVIEW_TIMEOUT_SECONDS: u64 = 900;
+pub(crate) const MAX_MODEL_TIMEOUT_SECONDS: u64 = 1200;
 const _: () = assert!(LOCAL_REVIEW_TIMEOUT_SECONDS <= MAX_MODEL_TIMEOUT_SECONDS);
 
 /// On Windows, antivirus scanning a freshly written multi-GB `.gguf`, or the
@@ -214,18 +216,6 @@ impl ModelProvisioner {
         let mut changed = false;
         if eligible && !manifest.capabilities.full_review {
             manifest.capabilities.full_review = true;
-            changed = true;
-        }
-        if eligible
-            && manifest
-                .review_chunk_tokens
-                .map_or(true, |tokens| tokens > 500)
-        {
-            manifest.review_chunk_tokens = Some(500);
-            changed = true;
-        }
-        if eligible && manifest.review_mode.as_deref() != Some("lightweight") {
-            manifest.review_mode = Some("lightweight".to_string());
             changed = true;
         }
         if eligible
@@ -550,8 +540,8 @@ impl ModelProvisioner {
             context_size: Some(context_size),
             batch_size: Some(8),
             max_tokens: Some(512),
-            review_chunk_tokens: Some(500),
-            review_mode: Some("lightweight".to_string()),
+            review_chunk_tokens: None,
+            review_mode: None,
             timeout_seconds: Some(LOCAL_REVIEW_TIMEOUT_SECONDS),
             seed: Some(42),
             minimum_confidence: Some(0.8),
@@ -1087,8 +1077,8 @@ mod tests {
         assert_eq!(manifest.model_id, "gemma-4-e2b");
         assert_eq!(manifest.version, "local");
         assert_eq!(manifest.trust, ModelTrust::LocalUnverified);
-        assert_eq!(manifest.context_size, Some(8192));
-        assert_eq!(manifest.timeout_seconds, Some(600));
+        assert_eq!(manifest.context_size, Some(16384));
+        assert_eq!(manifest.timeout_seconds, Some(900));
         assert!(manifest.capabilities.candidate_filter);
         assert!(manifest.capabilities.full_review);
         assert!(manifest.quality_gate.is_none());
@@ -1157,11 +1147,11 @@ mod tests {
             serde_json::from_slice(&fs::read(root.join("active/manifest.json")).unwrap()).unwrap();
         assert_eq!(migrated.trust, ModelTrust::LocalUnverified);
         assert!(migrated.capabilities.full_review);
-        // The migration lifts an older install's 4096 to the current default.
-        assert_eq!(migrated.context_size, Some(8192));
-        assert_eq!(migrated.review_chunk_tokens, Some(500));
-        assert_eq!(migrated.review_mode.as_deref(), Some("lightweight"));
-        assert_eq!(migrated.timeout_seconds, Some(600));
+        // The migration lifts an older install's context to the current default.
+        assert_eq!(migrated.context_size, Some(16384));
+        assert_eq!(migrated.review_chunk_tokens, None);
+        assert_eq!(migrated.review_mode, None);
+        assert_eq!(migrated.timeout_seconds, Some(900));
         assert!(migrated.quality_gate.is_none());
         assert!(migrated.signature.is_none());
     }

@@ -145,3 +145,32 @@ def test_seq2seq_speller_unload_frees_resources() -> None:
     assert provider._speller.is_loaded is True
     provider.unload()
     assert provider._speller.is_loaded is False
+
+
+def test_split_into_sentences_preserves_exact_character_offsets() -> None:
+    from soatvan.models.seq2seq_speller import _split_into_sentences
+
+    text = (
+        "Căn cứ Luật số 01/2020/QH14; Căn cứ Nghị định số 30/2020/NĐ-CP; "
+        "Ủy ban nhân dân phường đã triển khai thực hiện các nhiệm vụ được giao. "
+        "Theo đó, cần chú trọng cải thiện môi trường kinh doanh, nâng cao năng lực cạnh tranh, "
+        "tăng cường thu hút đầu tư vào địa bàn phường trong năm 2025 và giai đoạn tiếp theo."
+    )
+    spans = _split_into_sentences(text, max_words=15)
+    assert len(spans) > 2
+    for start, end, chunk in spans:
+        assert text[start:end] == chunk
+        assert chunk == chunk.strip()
+        assert len(chunk.split()) <= 25
+
+
+def test_split_into_sentences_handles_unpunctuated_long_text() -> None:
+    from soatvan.models.seq2seq_speller import _split_into_sentences
+
+    text = " ".join(f"từ{i}" for i in range(100))
+    spans = _split_into_sentences(text, max_words=30)
+    assert len(spans) >= 3
+    for start, end, chunk in spans:
+        assert text[start:end] == chunk
+        assert chunk == chunk.strip()
+

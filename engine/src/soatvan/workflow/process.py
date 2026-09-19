@@ -234,6 +234,18 @@ class ProcessDocument:
         written_ids = frozenset(annotation.written_ids)
         unwritten = [finding for finding in findings if finding.id not in written_ids]
         if review_summary is not None and unwritten:
+            unwritten_blocks = sorted({f.block_id for f in unwritten})
+            sys.stderr.write(
+                f"[SoatVan-Process] Export: {len(unwritten)} finding(s) could not be "
+                f"written to output document in block(s) {unwritten_blocks}\n"
+            )
+            for uw in unwritten:
+                sys.stderr.write(
+                    f"[SoatVan-Process]   unwritten: block={uw.block_id} "
+                    f"[{uw.start}:{uw.end}] {uw.source_text!r} → {uw.suggestion!r} "
+                    f"({uw.detector_id})\n"
+                )
+            sys.stderr.flush()
             failed_block_ids = review_failed_block_ids | frozenset(
                 finding.block_id for finding in unwritten
             )
@@ -455,48 +467,20 @@ def _apply_full_review(
     cancel: CancellationToken,
     progress: Callable[[int, int], None] | None = None,
 ) -> tuple[list[Finding], dict[str, int | str], frozenset[str]]:
-    review_candidates = tuple(
-        ReviewCandidate(
-            item.id,
-            item.block_id,
-            item.start,
-            item.end,
-            item.source_text,
-            item.suggestion,
-            item.detector_id,
-        )
-        for item in findings
-    )
+    # LLM runs independently: no candidates from Seq2Seq/rules so it focuses
+    # purely on discovering new errors the other detectors missed.
     result = reviewer.review(
-        tuple(blocks), review_candidates, custom_prompt, cancel, progress
+        tuple(blocks), (), custom_prompt, cancel, progress
     )
-    verdicts = {item.candidate_id: item for item in result.verdicts}
     failed_blocks = set(result.failed_block_ids)
-    accepted: list[Finding] = []
-    for finding in findings:
-        verdict = verdicts.get(finding.id)
-        # A deterministic rule finding is never removed by the model here. The
-        # self-reported confidence is not calibrated — small local models answer
-        # with the same value for every response — so a `drop` verdict is not
-        # evidence of a false positive, and silently losing a real finding is
-        # the worse failure. The dedicated AI-filter mode still does filter.
-        if (
-            finding.block_id in failed_blocks
-            or verdict is None
-            or verdict.confidence < reviewer.minimum_confidence
-            or verdict.verdict != "keep"
-        ):
-            accepted.append(finding)
-        else:
-            accepted.append(
-                replace(
-                    finding,
-                    confidence=verdict.confidence,
-                    rule_version=f"{finding.rule_version}+{reviewer.version}",
-                )
-            )
+    # Keep all existing findings unconditionally (Seq2Seq/rules are a separate layer).
+    accepted: list[Finding] = list(findings)
 
     block_text = {block.id: block.text for block in blocks}
+    discovery_raw = len(result.discoveries)
+    discovery_anchor_rejected = 0
+    discovery_ignored = 0
+    discovery_accepted = 0
     for proposal in result.discoveries:
         text = block_text.get(proposal.block_id)
         # The discovery-side confidence gate is deliberately absent: the value is
@@ -510,6 +494,7 @@ def _apply_full_review(
             or proposal.start >= proposal.end
             or text[proposal.start : proposal.end] != proposal.source_text
         ):
+            discovery_anchor_rejected += 1
             continue
         for relative_start, source_text, suggestion in localize_llm_edits(
             proposal.source_text, proposal.suggestion, proposal.reason_code
@@ -519,6 +504,7 @@ def _apply_full_review(
             if text[start:end] != source_text or _contains_ignored_text(
                 source_text, ignored_words
             ):
+                discovery_ignored += 1
                 continue
             category, reason_code = canonicalize_llm_edit(
                 source_text, suggestion, proposal.category, proposal.reason_code
@@ -540,15 +526,47 @@ def _apply_full_review(
                     confidence=proposal.confidence,
                 )
             )
+            discovery_accepted += 1
+
+    candidate_count = len(findings)
+    llm_accepted = sum(1 for f in accepted if f.origin == "llm")
+    sys.stderr.write(
+        f"[SoatVan-Process] LLM review stats: "
+        f"input_candidates={candidate_count} "
+        f"verdicts={len(result.verdicts)} "
+        f"discoveries_raw={discovery_raw} "
+        f"discoveries_anchor_rejected={discovery_anchor_rejected} "
+        f"discoveries_ignored={discovery_ignored} "
+        f"discoveries_accepted={discovery_accepted} "
+        f"total_accepted={len(accepted)} (llm_origin={llm_accepted})\n"
+    )
+    sys.stderr.flush()
 
     merged = _merge_review_findings(accepted, blocks)
     limited = _limit_review_findings(merged, blocks, 1_000)
     exported_ids = {finding.id for finding in limited}
-    failed_blocks.update(
+    limit_dropped = {
         finding.block_id for finding in merged if finding.id not in exported_ids
-    )
+    }
+    if limit_dropped:
+        sys.stderr.write(
+            f"[SoatVan-Process] Findings limit exceeded: "
+            f"{len(merged) - len(limited)} finding(s) dropped from block(s) "
+            f"{sorted(limit_dropped)}\n"
+        )
+        sys.stderr.flush()
+    failed_blocks.update(limit_dropped)
     failed_block_ids = frozenset(failed_blocks)
     failed_block_count = len(failed_block_ids)
+    if failed_block_ids:
+        sys.stderr.write(
+            f"[SoatVan-Process] Full review result: "
+            f"inference_failed={sorted(result.failed_block_ids)} "
+            f"limit_dropped={sorted(limit_dropped)} "
+            f"combined_failed={sorted(failed_block_ids)} "
+            f"total_findings={len(merged)} exported={len(limited)}\n"
+        )
+        sys.stderr.flush()
     summary: dict[str, int | str] = {
         "status": "partial" if result.status == "partial" or failed_blocks else "complete",
         "total_chunks": result.total_chunks,

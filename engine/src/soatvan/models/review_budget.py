@@ -6,6 +6,7 @@ from typing import Any
 MIN_REVIEW_DOCUMENT_TOKENS = 64
 LLM_ONLY_2K_MAX_TOKENS = 768
 LLM_ONLY_4K_MAX_TOKENS = 2048
+LLM_ONLY_8K_MAX_TOKENS = 4096
 REVIEW_SAFETY_TOKENS = 256
 CHAT_FALLBACK_OVERHEAD_TOKENS = 32
 
@@ -73,7 +74,6 @@ class ReviewRuntimeBudget:
     """Everything the review path derives from a manifest, before any load."""
 
     budget: ReviewBudget
-    lightweight: bool
     review_output_tokens: int
     filter_output_tokens: int
 
@@ -90,13 +90,15 @@ def review_budget_from_manifest(manifest: dict[str, Any]) -> ReviewRuntimeBudget
     installed, and it keeps one derivation behind both that answer and the
     planner that enforces it.
     """
-    lightweight = manifest.get("review_mode") == "lightweight"
-    context_tokens = int(manifest.get("context_size", 2048))
-    filter_output_tokens = int(manifest.get("max_tokens", 512))
+    context_tokens = int(manifest.get("context_size") or 2048)
+    filter_output_tokens = int(manifest.get("max_tokens") or 512)
 
-    review_output_limit = (
-        LLM_ONLY_4K_MAX_TOKENS if context_tokens >= 4096 else LLM_ONLY_2K_MAX_TOKENS
-    )
+    if context_tokens >= 8192:
+        review_output_limit = LLM_ONLY_8K_MAX_TOKENS
+    elif context_tokens >= 4096:
+        review_output_limit = LLM_ONLY_4K_MAX_TOKENS
+    else:
+        review_output_limit = LLM_ONLY_2K_MAX_TOKENS
     review_output_tokens = max(
         32,
         min(
@@ -104,19 +106,12 @@ def review_budget_from_manifest(manifest: dict[str, Any]) -> ReviewRuntimeBudget
             context_tokens - REVIEW_SAFETY_TOKENS - MIN_REVIEW_DOCUMENT_TOKENS,
         ),
     )
-    # Lightweight mode: error list output is much smaller than full JSON,
-    # so cap output tokens to free more space for document text input.
-    if lightweight:
-        review_output_tokens = min(review_output_tokens, max(256, context_tokens // 4))
 
     response_tokens = max(filter_output_tokens, review_output_tokens)
-    configured_doc_tokens = int(manifest.get("review_chunk_tokens", 1200))
-    # Lightweight mode: the prompt is much shorter, so we can fit more
-    # document text per chunk.  Use input_tokens as the effective ceiling
-    # instead of the manifest cap that was tuned for the heavy JSON format.
-    if lightweight:
-        lightweight_input = context_tokens - response_tokens - REVIEW_SAFETY_TOKENS
-        configured_doc_tokens = max(configured_doc_tokens, lightweight_input)
+    # Keep chunks small enough for the model to focus on each paragraph.
+    # document_limit() will naturally cap this at (input_tokens - prompt_overhead)
+    # so it never overflows, but the planner uses this as the *target* size.
+    configured_doc_tokens = int(manifest.get("review_chunk_tokens") or 700)
 
     return ReviewRuntimeBudget(
         budget=ReviewBudget(
@@ -125,7 +120,6 @@ def review_budget_from_manifest(manifest: dict[str, Any]) -> ReviewRuntimeBudget
             safety_tokens=REVIEW_SAFETY_TOKENS,
             document_tokens=configured_doc_tokens,
         ),
-        lightweight=lightweight,
         review_output_tokens=review_output_tokens,
         filter_output_tokens=filter_output_tokens,
     )

@@ -22,12 +22,9 @@ from soatvan.workflow.ports import (
 
 from .gpu import OffloadGuard, backend_report, build_id, local_data_dir, offload_allowed
 from .review import (
-    LIGHTWEIGHT_REVIEW_SCHEMA,
     LLM_ONLY_REVIEW_SCHEMA,
     REVIEW_SCHEMA,
     ReviewChunk,
-    lightweight_review_messages,
-    parse_lightweight_content,
     parse_review_content,
     plan_review_chunks,
     prompt_budget_from,
@@ -41,7 +38,7 @@ from .review_budget import (
     review_budget_from_manifest,
 )
 
-LLM_ONLY_MAX_SPLIT_DEPTH = 2
+LLM_ONLY_MAX_SPLIT_DEPTH = 3
 #: Never shrink a context below this — under it the review prompt itself no
 #: longer leaves room for document text.
 MIN_RUNTIME_CONTEXT_TOKENS = 2048
@@ -344,7 +341,6 @@ class LlamaCppClassifier:
         # One derivation, shared with the pre-flight check that runs before a
         # model is even loaded — see review_budget.review_budget_from_manifest.
         derived = review_budget_from_manifest(manifest)
-        self._lightweight_mode = derived.lightweight
         self._filter_output_tokens = derived.filter_output_tokens
         self._review_output_tokens = derived.review_output_tokens
         self._context_size = derived.context_tokens
@@ -364,7 +360,6 @@ class LlamaCppClassifier:
             )
             sys.stderr.flush()
             derived = review_budget_from_manifest({**manifest, "context_size": actual_context})
-            self._lightweight_mode = derived.lightweight
             self._filter_output_tokens = derived.filter_output_tokens
             self._review_output_tokens = derived.review_output_tokens
             self._context_size = derived.context_tokens
@@ -463,12 +458,9 @@ class LlamaCppClassifier:
         retried_chunks = 0
         recovered_chunks = 0
         with self._lock:
-            # Lightweight mode: candidates are irrelevant (no verdicts),
-            # so skip them to avoid the candidate-limit fragmenting chunks.
-            plan_candidates = () if self._lightweight_mode else candidates
             chunks = plan_review_chunks(
                 blocks,
-                plan_candidates,
+                candidates,
                 custom_prompt,
                 self._review_budget,
                 self._count_tokens,
@@ -479,28 +471,35 @@ class LlamaCppClassifier:
             if not chunks:
                 return FullReviewResult((), (), 0, 0)
             total_chunks = len(chunks)
-            if self._lightweight_mode:
-                _b = self._review_budget
-                from .review import ReviewSegment as _RS
-                _empty = _RS("diag@0:0", "diag", 0, 0, "", "paragraph")
-                _probe = ReviewChunk("diag", (_empty,), (), (), custom_prompt)
-                _fixed = self._count_review_request_tokens(_probe)
-                _doc_limit = _b.document_limit(_fixed)
-                _total_doc = sum(
-                    self._count_tokens(seg.text)
-                    for c in chunks for seg in c.targets
-                )
-                sys.stderr.write(
-                    f"[SoatVan-Diag] lightweight_mode=True "
-                    f"output_tokens={self._review_output_tokens} "
-                    f"input_tokens={_b.input_tokens} "
-                    f"doc_limit_per_chunk={_doc_limit} "
-                    f"total_doc_tokens={_total_doc} "
-                    f"avg_doc_per_chunk={_total_doc // max(1, total_chunks)} "
-                    f"total_chunks={total_chunks} "
-                    f"prompt_overhead={_fixed}\n"
-                )
-                sys.stderr.flush()
+            _b = self._review_budget
+            from .review import ReviewSegment as _RS
+            _empty = _RS("diag@0:0", "diag", 0, 0, "", "paragraph")
+            _probe = ReviewChunk("diag", (_empty,), (), (), custom_prompt)
+            _fixed = self._count_review_request_tokens(_probe)
+            _doc_limit = _b.document_limit(_fixed)
+            _total_doc = sum(
+                self._count_tokens(seg.text)
+                for c in chunks for seg in c.targets
+            )
+            _max_seg = max(
+                (self._count_tokens(seg.text) for c in chunks for seg in c.targets),
+                default=0,
+            )
+            sys.stderr.write(
+                f"[SoatVan-Diag] "
+                f"context_size={self._context_size} "
+                f"output_tokens={self._review_output_tokens} "
+                f"input_tokens={_b.input_tokens} "
+                f"doc_limit_per_chunk={_doc_limit} "
+                f"total_doc_tokens={_total_doc} "
+                f"max_segment_tokens={_max_seg} "
+                f"avg_doc_per_chunk={_total_doc // max(1, total_chunks)} "
+                f"total_blocks={len(blocks)} "
+                f"total_chunks={total_chunks} "
+                f"prompt_overhead={_fixed} "
+                f"custom_prompt_len={len(custom_prompt)}\n"
+            )
+            sys.stderr.flush()
             for processed_chunks, chunk in enumerate(chunks, start=1):
                 cancellation.raise_if_cancelled()
                 (
@@ -529,6 +528,18 @@ class LlamaCppClassifier:
                     failure_counts[chunk_failures[0][0]] += 1
                 if progress:
                     progress(processed_chunks, total_chunks)
+        if failed_blocks or retried_chunks:
+            sys.stderr.write(
+                f"[SoatVan-Diag] Review finished: "
+                f"chunks={reviewed_chunks}/{len(chunks)} "
+                f"blocks={len(blocks) - len(failed_blocks)}/{len(blocks)} "
+                f"failed_blocks={sorted(failed_blocks)} "
+                f"retried={retried_chunks} recovered={recovered_chunks} "
+                f"timeout={failure_counts['timeout']} "
+                f"invalid_output={failure_counts['invalid_output']} "
+                f"inference_error={failure_counts['inference_error']}\n"
+            )
+            sys.stderr.flush()
         if chunks and successful_attempts == 0:
             raise ValueError("MODEL_FULL_REVIEW_FAILED")
         return FullReviewResult(
@@ -565,10 +576,27 @@ class LlamaCppClassifier:
             parsed_verdicts, parsed_discoveries = parsed
             return list(parsed_verdicts), list(parsed_discoveries), [], 0, 1
         if depth >= LLM_ONLY_MAX_SPLIT_DEPTH:
+            sys.stderr.write(
+                f"[SoatVan-Process] Chunk {chunk.chunk_id} failed ({failure}) "
+                f"at max retry depth {depth}; marking block(s) "
+                f"{sorted(chunk.target_block_ids)} as failed.\n"
+            )
+            sys.stderr.flush()
             return [], [], [(failure or "inference_error", chunk.target_block_ids)], 0, 0
         retries = split_llm_only_chunk(chunk)
         if not retries:
+            sys.stderr.write(
+                f"[SoatVan-Process] Chunk {chunk.chunk_id} failed ({failure}) "
+                f"and cannot be split further; marking block(s) "
+                f"{sorted(chunk.target_block_ids)} as failed.\n"
+            )
+            sys.stderr.flush()
             return [], [], [(failure or "inference_error", chunk.target_block_ids)], 0, 0
+        sys.stderr.write(
+            f"[SoatVan-Process] Chunk {chunk.chunk_id} failed ({failure}); "
+            f"retrying as {len(retries)} sub-chunk(s) (depth={depth + 1}).\n"
+        )
+        sys.stderr.flush()
 
         verdicts: list[ClassifierVerdict] = []
         discoveries: list[DiscoveryProposal] = []
@@ -597,19 +625,26 @@ class LlamaCppClassifier:
         str | None,
     ]:
         deadline = time.monotonic() + self._timeout_seconds
+        start_time = time.monotonic()
         abort_reason: list[Exception] = []
         should_abort = _abort_predicate(cancellation, deadline, abort_reason)
         set_abort = getattr(self._runtime, "set_abort_predicate", None)
         if callable(set_abort):
             set_abort(should_abort)
         llm_only = not chunk.candidates
-        use_lightweight = self._lightweight_mode
-        if use_lightweight:
-            messages = lightweight_review_messages(chunk)
-            schema = LIGHTWEIGHT_REVIEW_SCHEMA
-        else:
-            messages = review_messages(chunk)
-            schema = LLM_ONLY_REVIEW_SCHEMA if llm_only else REVIEW_SCHEMA
+        messages = review_messages(chunk)
+        schema = LLM_ONLY_REVIEW_SCHEMA if llm_only else REVIEW_SCHEMA
+        request_tokens = self._count_chat_tokens(messages)
+        total_request = request_tokens + self._review_output_tokens
+        if total_request > self._context_size:
+            sys.stderr.write(
+                f"[SoatVan-Diag] Chunk {chunk.chunk_id} may overflow: "
+                f"request_tokens={request_tokens} + output_tokens={self._review_output_tokens} "
+                f"= {total_request} > context_size={self._context_size} "
+                f"blocks={sorted(chunk.target_block_ids)} "
+                f"segments={len(chunk.targets)}\n"
+            )
+            sys.stderr.flush()
         try:
             completion = self._runtime.create_chat_completion(
                 messages=messages,
@@ -624,6 +659,7 @@ class LlamaCppClassifier:
             )
             raw = _collect_stream(completion, cancellation, deadline)
         except Exception as error:
+            elapsed = time.monotonic() - start_time
             reset = getattr(self._runtime, "reset_after_abort", None)
             if callable(reset):
                 reset()
@@ -636,19 +672,45 @@ class LlamaCppClassifier:
             timed_out = isinstance(error, ModelInferenceTimeout) or (
                 abort_reason and isinstance(abort_reason[0], ModelInferenceTimeout)
             )
-            return None, "timeout" if timed_out else "inference_error"
+            failure = "timeout" if timed_out else "inference_error"
+            sys.stderr.write(
+                f"[SoatVan-Diag] Chunk {chunk.chunk_id} {failure}: "
+                f"{type(error).__name__}: {error} "
+                f"(elapsed={elapsed:.1f}s request_tokens={request_tokens} "
+                f"blocks={sorted(chunk.target_block_ids)})\n"
+            )
+            sys.stderr.flush()
+            return None, failure
         if abort_reason:
+            elapsed = time.monotonic() - start_time
             reset = getattr(self._runtime, "reset_after_abort", None)
             if callable(reset):
                 reset()
             if not isinstance(abort_reason[0], ModelInferenceTimeout):
                 raise abort_reason[0]
+            sys.stderr.write(
+                f"[SoatVan-Diag] Chunk {chunk.chunk_id} timeout: "
+                f"abort after {elapsed:.1f}s "
+                f"(request_tokens={request_tokens} "
+                f"blocks={sorted(chunk.target_block_ids)})\n"
+            )
+            sys.stderr.flush()
             return None, "timeout"
-        if use_lightweight:
-            parsed = parse_lightweight_content(_response_content(raw), chunk)
-        else:
-            parsed = parse_review_content(_response_content(raw), chunk)
-        return (parsed, None) if parsed is not None else (None, "invalid_output")
+        parsed = parse_review_content(_response_content(raw), chunk)
+        if parsed is None:
+            elapsed = time.monotonic() - start_time
+            content = _response_content(raw)
+            preview = content[:200] + "..." if len(content) > 200 else content
+            sys.stderr.write(
+                f"[SoatVan-Diag] Chunk {chunk.chunk_id} invalid_output: "
+                f"could not parse model response ({len(content)} chars, "
+                f"elapsed={elapsed:.1f}s "
+                f"blocks={sorted(chunk.target_block_ids)}): "
+                f"{preview!r}\n"
+            )
+            sys.stderr.flush()
+            return None, "invalid_output"
+        return parsed, None
 
     def _count_tokens(self, value: str) -> int:
         counter = getattr(self._runtime, "count_tokens", None)
@@ -676,8 +738,6 @@ class LlamaCppClassifier:
         )
 
     def _count_review_request_tokens(self, chunk: ReviewChunk) -> int:
-        if self._lightweight_mode:
-            return self._count_chat_tokens(lightweight_review_messages(chunk))
         return self._count_chat_tokens(review_messages(chunk))
 
     def prompt_budget(self, custom_prompt: str) -> PromptBudget:

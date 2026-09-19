@@ -90,7 +90,7 @@ class PartiallyFailingRuntime(Runtime):
 class RetryStillFailingRuntime(Runtime):
     def create_chat_completion(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(kwargs)
-        if len(self.calls) in {2, 3, 4}:
+        if 2 <= len(self.calls) <= 14:
             raise RuntimeError("persistent inference failure")
         return {"choices": [{"message": {"content": self.content}}]}
 
@@ -1072,33 +1072,35 @@ def test_budget_follows_the_context_the_runtime_actually_loaded(tmp_path: Path) 
             "model_id": "test",
             "version": "1",
             "context_size": 8192,
-            "review_mode": "lightweight",
         },
         lambda *_: ShrunkRuntime('{"discoveries":[]}'),
     )
 
     budget = classifier.prompt_budget("")
     assert budget.context_tokens == 4096
-    assert budget.input_tokens == 2816
+    assert budget.input_tokens == 1792
 
 
 def test_prompt_budget_is_estimated_without_loading_the_model() -> None:
     from soatvan.models.review import estimate_prompt_budget
 
-    manifest = {"context_size": 8192, "review_mode": "lightweight", "max_tokens": 512}
+    manifest = {"context_size": 8192, "max_tokens": 512}
 
     empty = estimate_prompt_budget(manifest, "")
     assert empty.exact is False
     assert empty.fits is True
     assert empty.context_tokens == 8192
-    # 8192 - 2048 response - 256 safety; the figure the UI shows as the ceiling.
-    assert empty.input_tokens == 5888
+    # 8192 - 4096 response - 256 safety; the figure the UI shows as the ceiling.
+    assert empty.input_tokens == 3840
     assert empty.custom_prompt_tokens == 0
 
-    modest = estimate_prompt_budget(manifest, "Dùng thuật ngữ “khách hàng”.")
-    assert modest.fits is True
-    assert modest.custom_prompt_tokens > 0
-    assert modest.document_tokens_available < empty.document_tokens_available
+    # With a smaller context, a custom prompt visibly reduces available doc space.
+    small_manifest = {"context_size": 2048, "max_tokens": 512}
+    small_empty = estimate_prompt_budget(small_manifest, "")
+    small_modest = estimate_prompt_budget(small_manifest, "Quy tắc riêng. " * 10)
+    assert small_modest.fits is True
+    assert small_modest.custom_prompt_tokens > 0
+    assert small_modest.document_tokens_available < small_empty.document_tokens_available
 
     assert estimate_prompt_budget(manifest, "Quy tắc riêng. " * 2000).fits is False
 
@@ -1198,7 +1200,7 @@ def test_classifier_full_review_retries_a_failed_chunk_sequentially(
         lambda *_: runtime,
     )
     result = classifier.review(
-        (Block("document:p0", " ".join(f"từ{index}" for index in range(160))),),
+        (Block("document:p0", " ".join(f"từ{index}" for index in range(600))),),
         (),
         "",
         Token(),
@@ -1227,14 +1229,14 @@ def test_classifier_reports_failure_reason_after_sequential_retry_is_exhausted(
     )
 
     result = classifier.review(
-        (Block("document:p0", " ".join(f"từ{index}" for index in range(160))),),
+        (Block("document:p0", " ".join(f"từ{index}" for index in range(600))),),
         (),
         "",
         Token(),
     )
 
     assert result.status == "partial"
-    assert result.retried_chunks == 2
+    assert result.retried_chunks == 7
     assert result.recovered_chunks == 0
     assert result.inference_error_chunks == 1
     assert result.timeout_chunks == 0
@@ -1269,8 +1271,8 @@ def test_review_reports_activity_before_every_sequential_attempt(tmp_path: Path)
             lambda processed, total: progress.append((processed, total)),
         )
 
-    assert len(runtime.calls) == 7
-    assert progress == [(0, 1)] * 7 + [(1, 1)]
+    assert len(runtime.calls) == 15
+    assert progress == [(0, 1)] * 15 + [(1, 1)]
 
 
 def test_classifier_recovers_with_a_second_sequential_split_level(
@@ -1289,7 +1291,7 @@ def test_classifier_recovers_with_a_second_sequential_split_level(
     )
 
     result = classifier.review(
-        (Block("document:p0", " ".join(f"từ{index}" for index in range(160))),),
+        (Block("document:p0", " ".join(f"từ{index}" for index in range(600))),),
         (),
         "",
         Token(),
@@ -1405,12 +1407,11 @@ def test_workflow_full_review_optionally_includes_deterministic_findings(
         Token(),
     )
 
-    assert [(item.source_text, item.suggestion) for item in reviewer.review_candidates] == [
-        ("sát nhập", "sáp nhập")
-    ]
+    # LLM runs independently — no candidates from rules/seq2seq.
+    assert list(reviewer.review_candidates) == []
     assert [(item.source_text, item.origin) for item in documents.written] == [("sát nhập", "rule")]
-    assert documents.written[0].rule_version == "rules-0.2.0+model-review@1"
-    assert documents.written[0].confidence == 0.95
+    # Rule finding kept as-is, not modified by LLM verdict.
+    assert documents.written[0].rule_version == "rules-0.2.0"
     assert result.counts == {"category": {"spelling": 1}, "origin": {"rule": 1}}
     assert ("rules", 35, "job.applying_rules") in progress
 
@@ -1830,27 +1831,9 @@ def test_lightweight_messages_include_custom_prompt() -> None:
     assert messages[1]["content"] == "Nội dung"
 
 
-def test_classifier_lightweight_mode_reduces_output_tokens() -> None:
-    """When review_mode=lightweight, output tokens are capped to free input space."""
-    manifest = {
-        "model_id": "test",
-        "version": "1",
-        "context_size": 4096,
-        "review_mode": "lightweight",
-    }
-    runtime = Runtime('[{"s":"x","r":"y"}]')
-    classifier = LlamaCppClassifier(
-        Path("/fake"), manifest, lambda *_: runtime
-    )
-    # With 4096 context, lightweight caps output at max(256, 4096//4) = 1024
-    assert classifier._review_output_tokens == 1024
-    assert classifier._lightweight_mode is True
-    # document_tokens auto-expanded: max(500, 4096 - 1024 - 256) = 2816
-    assert classifier._review_budget.document_tokens == 2816
 
-
-def test_classifier_fallback_without_lightweight_flag() -> None:
-    """Without review_mode=lightweight, the old format is used."""
+def test_classifier_budget_uses_full_input_window() -> None:
+    """Output tokens use the tiered limit; document_tokens use the full input window."""
     manifest = {
         "model_id": "test",
         "version": "1",
@@ -1860,54 +1843,8 @@ def test_classifier_fallback_without_lightweight_flag() -> None:
     classifier = LlamaCppClassifier(
         Path("/fake"), manifest, lambda *_: runtime
     )
-    assert classifier._lightweight_mode is False
     # Default output tokens: min(2048, 4096 - 256 - 64) = 2048
     assert classifier._review_output_tokens == 2048
-    # document_tokens: manifest default 1200 (not auto-expanded)
-    assert classifier._review_budget.document_tokens == 1200
+    # document_tokens: configured default 700 (clamped by document_limit at runtime)
+    assert classifier._review_budget.document_tokens == 700
 
-
-def test_classifier_lightweight_review_uses_compact_schema() -> None:
-    """In lightweight mode, the classifier sends compact messages and parses compact output."""
-    from soatvan.models.review import LIGHTWEIGHT_REVIEW_SCHEMA
-
-    manifest = {
-        "model_id": "test",
-        "version": "1",
-        "context_size": 4096,
-        "review_mode": "lightweight",
-    }
-    response = '[{"s":"địnhh","r":"định"}]'
-    runtime = Runtime(response)
-    classifier = LlamaCppClassifier(
-        Path("/fake"), manifest, lambda *_: runtime
-    )
-
-    blocks = (Block("p0", "quyết địnhh số 123"),)
-    result = classifier.review(blocks, (), "", Token())
-    assert len(runtime.calls) == 1
-    call = runtime.calls[0]
-    # Verify compact schema was used
-    assert call["response_format"]["schema"] is LIGHTWEIGHT_REVIEW_SCHEMA
-    # Verify system message uses lightweight prompt
-    system_msg = call["messages"][0]["content"]
-    assert "Trả JSON array" in system_msg
-    # Verify discoveries were parsed
-    assert len(result.discoveries) == 1
-    assert result.discoveries[0].source_text == "địnhh"
-    assert result.discoveries[0].suggestion == "định"
-
-
-def test_parse_lightweight_with_segment_offset() -> None:
-    """Segment source_start offset is correctly applied to discovery positions."""
-    from soatvan.models.review import parse_lightweight_content
-
-    seg = ReviewSegment("b@100:150", "b", 0, 100, "quyết địnhh số", "paragraph")
-    chunk = ReviewChunk("c1", (seg,), (), (), "")
-    content = '[{"s":"địnhh","r":"định"}]'
-    result = parse_lightweight_content(content, chunk)
-    assert result is not None
-    _, discoveries = result
-    assert len(discoveries) == 1
-    assert discoveries[0].start == 106  # 100 + 6
-    assert discoveries[0].end == 111  # 100 + 6 + 5
