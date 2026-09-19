@@ -54,6 +54,9 @@ try {
 
     Push-Location $engineDir
     try {
+        if (Test-Path "build\soatvan-engine") {
+            Remove-Item -LiteralPath "build\soatvan-engine" -Recurse -Force -ErrorAction SilentlyContinue
+        }
         Invoke-Checked "uv" @("run", "pyinstaller", "--noconfirm", "--clean", "soatvan-engine.spec")
     }
     finally {
