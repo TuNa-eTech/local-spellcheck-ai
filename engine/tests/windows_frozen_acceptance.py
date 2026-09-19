@@ -5,7 +5,9 @@ import hashlib
 import json
 import os
 import queue
+import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -97,6 +99,8 @@ def main() -> int:
         long_folder = root / "Tài liệu kiểm thử có khoảng trắng"
         while len(str(long_folder)) < 270:
             long_folder /= "đường-dẫn-rất-dài-0123456789"
+        if sys.platform == "win32" and not str(long_folder).startswith("\\\\?\\"):
+            long_folder = Path(f"\\\\?\\{long_folder.resolve()}")
         long_folder.mkdir(parents=True)
         source = long_folder / "nguồn kiểm thử.docx"
         output = long_folder / "kết quả tạm.docx"
@@ -191,6 +195,8 @@ def main() -> int:
         process.stdin.close()
         assert process.wait(timeout=10) == 0
         stderr_handle.close()
+        if sys.platform == "win32":
+            shutil.rmtree("\\\\?\\" + str((root / "Tài liệu kiểm thử có khoảng trắng").resolve()), ignore_errors=True)
     return 0
 
 
