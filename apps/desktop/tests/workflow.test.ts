@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { APP_VERSION } from "../src/version";
-import type { AiConfigState, AiTestConnectionResult, CustomRule, DocumentInfo, JobResult, ModelStatus, OutputConfig, OutputMode, ProgressEvent, Seq2SeqConfig } from "../src/contracts";
+import type { AiConfigState, AiTestConnectionResult, CustomRule, DocumentInfo, JobResult, ModelStatus, OutputConfig, OutputMode, ProgressEvent, PromptBudget, Seq2SeqConfig } from "../src/contracts";
 
 const documentInfo: DocumentInfo = {
   path: "C:\\Tài liệu\\nguồn.docx",
@@ -64,6 +64,7 @@ async function loadApp(options?: {
   seq2seqConfigGet?: () => Promise<Seq2SeqConfig>;
   seq2seqConfigUpdate?: (modelDir?: string, isEnabled?: boolean) => Promise<Seq2SeqConfig>;
   chooseSeq2SeqModelDir?: () => Promise<string | null>;
+  reviewPromptBudget?: (customPrompt: string) => Promise<PromptBudget>;
   outputConfigGet?: () => Promise<OutputConfig>;
   outputConfigUpdate?: (mode?: OutputMode, backupOriginal?: boolean) => Promise<OutputConfig>;
 }) {
@@ -120,6 +121,11 @@ async function loadApp(options?: {
     aiConfigUpdate: vi.fn(options?.aiConfigUpdate ?? (() => Promise.resolve({ updated: true }))),
     aiConfigSetActive: vi.fn(options?.aiConfigSetActive ?? ((provider: string) => Promise.resolve({ active_provider: provider }))),
     aiConfigTestConnection: vi.fn(options?.aiConfigTestConnection ?? ((params: any) => Promise.resolve({ ok: true, provider: params.provider, model: params.modelName || "gpt-4o-mini" }))),
+    reviewPromptBudget: vi.fn(options?.reviewPromptBudget ?? ((customPrompt: string) => {
+      const custom = Math.ceil(new TextEncoder().encode(customPrompt).length / 3);
+      const ceiling = 5614;
+      return Promise.resolve({ context_tokens: 8192, input_tokens: 5888, base_prompt_tokens: 210, custom_prompt_tokens: custom, document_tokens_available: Math.max(0, ceiling - custom), fits: custom <= ceiling, exact: true });
+    })),
     seq2seqConfigGet: vi.fn(options?.seq2seqConfigGet ?? (() => Promise.resolve({ model_dir: "", is_configured: false, is_valid: false, is_enabled: true }))),
     seq2seqConfigUpdate: vi.fn(options?.seq2seqConfigUpdate ?? ((dir?: string, isEnabled?: boolean) => Promise.resolve({ model_dir: dir ?? "", is_configured: Boolean(dir), is_valid: false, is_enabled: isEnabled ?? true }))),
     chooseSeq2SeqModelDir: vi.fn(options?.chooseSeq2SeqModelDir ?? (() => Promise.resolve(null))),
@@ -761,8 +767,8 @@ describe("four-step desktop workflow", () => {
     expect(warning?.textContent).toContain("Prompt khá dài (2.500 ký tự)");
   });
 
-  it("shows amber warning at review step when selected prompts exceed recommended length", async () => {
-    await loadApp({
+  it("reports the review step's prompt cost in tokens of the active model", async () => {
+    const api = await loadApp({
       modelStatus: () => Promise.resolve(signedReadyModel),
       customRuleList: () => Promise.resolve([
         customRule("rule-1", "a".repeat(1500), undefined, "Quy tắc 1", true),
@@ -772,11 +778,45 @@ describe("four-step desktop workflow", () => {
 
     await chooseDocument();
     await vi.waitFor(() => expect(document.querySelector(".prompt-picker")).not.toBeNull());
+    await vi.waitFor(() => expect(document.querySelector("#prompt-budget-notice")).not.toBeNull());
 
-    const warning = document.querySelector("#prompt-picker-warning");
-    expect(warning).not.toBeNull();
-    expect(warning?.textContent).toContain("Lưu ý về AI cục bộ");
-    expect(warning?.textContent).toContain("3.000 ký tự");
+    // Both prompts joined with "\n\n" — the separator the engine also sees.
+    expect(api.reviewPromptBudget).toHaveBeenCalledWith(
+      `${"a".repeat(1500)}\n\n${"b".repeat(1500)}`,
+    );
+    const notice = document.querySelector("#prompt-budget-notice");
+    expect(notice?.textContent).toContain("token");
+    expect(document.querySelector<HTMLButtonElement>("#start")?.disabled).toBe(false);
+  });
+
+  it("blocks Start when the selected prompts leave no room for document text", async () => {
+    // The failure this replaces: the job was accepted, ran, and died with
+    // CUSTOM_PROMPT_CONTEXT_EXCEEDED after the user had already picked a file.
+    await loadApp({
+      modelStatus: () => Promise.resolve(signedReadyModel),
+      customRuleList: () => Promise.resolve([
+        customRule("rule-1", "Quy tắc rất dài.", undefined, "Quy tắc 1", true),
+      ]),
+      reviewPromptBudget: () => Promise.resolve({
+        context_tokens: 8192,
+        input_tokens: 5888,
+        base_prompt_tokens: 210,
+        custom_prompt_tokens: 6000,
+        document_tokens_available: 0,
+        fits: false,
+        exact: true,
+      }),
+    });
+
+    await chooseDocument();
+    await vi.waitFor(() => expect(document.querySelector("#prompt-budget-notice")).not.toBeNull());
+
+    const notice = document.querySelector("#prompt-budget-notice");
+    expect(notice?.textContent).toContain("vượt quá ngữ cảnh của model");
+    expect(notice?.textContent).toContain("6.000");
+    await vi.waitFor(() =>
+      expect(document.querySelector<HTMLButtonElement>("#start")?.disabled).toBe(true),
+    );
   });
 
   it("keeps the local model usable after a Settings visit reports it as merely installed", async () => {
@@ -1641,6 +1681,23 @@ describe("four-step desktop workflow", () => {
     await vi.waitFor(() => expect(document.querySelector("#seq2seq-status-title")?.textContent).toBe("✓ Đang bật — Tự động chạy rà soát chính tả trước LLM"));
     expect(document.querySelector(".toggle-label")?.textContent).toBe("Bật");
     expect(document.body.textContent).toContain("Đã bật mô hình chính tả Seq2Seq.");
+  });
+
+  it("names the missing config.json when the picked seq2seq folder is rejected", async () => {
+    // The Rust picker rejects the folder before the config is ever saved, so
+    // the generic "thử lại" message used to send users back to the same folder.
+    await loadApp({
+      chooseSeq2SeqModelDir: () => Promise.reject("SEQ2SEQ_DIR_INVALID"),
+    });
+    document.querySelector<HTMLButtonElement>("#settings")!.click();
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-settings-section="seq2seq"]')?.disabled).toBe(false));
+    document.querySelector<HTMLButtonElement>('[data-settings-section="seq2seq"]')!.click();
+    await vi.waitFor(() => expect(document.querySelector("#seq2seq-choose-dir")).not.toBeNull());
+
+    document.querySelector<HTMLButtonElement>("#seq2seq-choose-dir")!.click();
+
+    await vi.waitFor(() => expect(document.body.textContent).toContain("thiếu config.json"));
+    expect(document.body.textContent).not.toContain("Không thể chọn thư mục. Hãy thử lại.");
   });
 
   it("disables seq2seq toggle when model directory is invalid", async () => {

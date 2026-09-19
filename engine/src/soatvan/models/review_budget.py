@@ -1,8 +1,24 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 MIN_REVIEW_DOCUMENT_TOKENS = 64
+LLM_ONLY_2K_MAX_TOKENS = 768
+LLM_ONLY_4K_MAX_TOKENS = 2048
+REVIEW_SAFETY_TOKENS = 256
+CHAT_FALLBACK_OVERHEAD_TOKENS = 32
+
+
+def estimate_tokens(text: str) -> int:
+    """Approximate a token count without a tokenizer.
+
+    Used when the real llama.cpp tokenizer is out of reach — either the runtime
+    declined to count, or the model is not loaded at all and we still owe the UI
+    a budget answer. Deliberately coarse and on the generous side for
+    Vietnamese, so a prompt the UI calls "fits" is not one the planner rejects.
+    """
+    return max(1, (len(text.encode("utf-8")) + 2) // 3)
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,3 +66,95 @@ class ReviewBudget:
         ):
             raise ValueError("MODEL_REVIEW_CONTEXT_TOO_SMALL")
         return min(self.document_tokens, self.input_tokens - fixed_request_tokens)
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewRuntimeBudget:
+    """Everything the review path derives from a manifest, before any load."""
+
+    budget: ReviewBudget
+    lightweight: bool
+    review_output_tokens: int
+    filter_output_tokens: int
+
+    @property
+    def context_tokens(self) -> int:
+        return self.budget.context_tokens
+
+
+def review_budget_from_manifest(manifest: dict[str, Any]) -> ReviewRuntimeBudget:
+    """Derive the review token budget from a model manifest.
+
+    Pure arithmetic over manifest values — no runtime, no GGUF, no tokenizer.
+    That is what lets ``review.prompt_budget`` answer for a model that is merely
+    installed, and it keeps one derivation behind both that answer and the
+    planner that enforces it.
+    """
+    lightweight = manifest.get("review_mode") == "lightweight"
+    context_tokens = int(manifest.get("context_size", 2048))
+    filter_output_tokens = int(manifest.get("max_tokens", 512))
+
+    review_output_limit = (
+        LLM_ONLY_4K_MAX_TOKENS if context_tokens >= 4096 else LLM_ONLY_2K_MAX_TOKENS
+    )
+    review_output_tokens = max(
+        32,
+        min(
+            review_output_limit,
+            context_tokens - REVIEW_SAFETY_TOKENS - MIN_REVIEW_DOCUMENT_TOKENS,
+        ),
+    )
+    # Lightweight mode: error list output is much smaller than full JSON,
+    # so cap output tokens to free more space for document text input.
+    if lightweight:
+        review_output_tokens = min(review_output_tokens, max(256, context_tokens // 4))
+
+    response_tokens = max(filter_output_tokens, review_output_tokens)
+    configured_doc_tokens = int(manifest.get("review_chunk_tokens", 1200))
+    # Lightweight mode: the prompt is much shorter, so we can fit more
+    # document text per chunk.  Use input_tokens as the effective ceiling
+    # instead of the manifest cap that was tuned for the heavy JSON format.
+    if lightweight:
+        lightweight_input = context_tokens - response_tokens - REVIEW_SAFETY_TOKENS
+        configured_doc_tokens = max(configured_doc_tokens, lightweight_input)
+
+    return ReviewRuntimeBudget(
+        budget=ReviewBudget(
+            context_tokens=context_tokens,
+            response_tokens=response_tokens,
+            safety_tokens=REVIEW_SAFETY_TOKENS,
+            document_tokens=configured_doc_tokens,
+        ),
+        lightweight=lightweight,
+        review_output_tokens=review_output_tokens,
+        filter_output_tokens=filter_output_tokens,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentBudget:
+    """How much document text survives the fixed prompt cost of one request.
+
+    Carries the numbers instead of raising on them, so the pre-flight check and
+    the planner read the same arithmetic. The planner still fails closed — it
+    raises on ``error_code``.
+    """
+
+    base_limit: int
+    base_fixed_tokens: int
+    custom_limit: int
+    custom_fixed_tokens: int
+    has_custom_prompt: bool
+
+    @property
+    def limit(self) -> int:
+        return self.custom_limit if self.has_custom_prompt else self.base_limit
+
+    @property
+    def error_code(self) -> str | None:
+        if self.base_limit < MIN_REVIEW_DOCUMENT_TOKENS:
+            # The stock prompt alone overflows: the custom prompt is not to blame.
+            return "MODEL_REVIEW_CONTEXT_TOO_SMALL"
+        if self.has_custom_prompt and self.custom_limit < MIN_REVIEW_DOCUMENT_TOKENS:
+            return "CUSTOM_PROMPT_CONTEXT_EXCEEDED"
+        return None

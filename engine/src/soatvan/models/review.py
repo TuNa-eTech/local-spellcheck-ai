@@ -4,16 +4,21 @@ import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 from soatvan.checking.domain import Block
 from soatvan.checking.localization import canonicalize_llm_edit, localize_llm_edits
 from soatvan.models.review_budget import (
-    MIN_REVIEW_DOCUMENT_TOKENS,
+    CHAT_FALLBACK_OVERHEAD_TOKENS,
+    DocumentBudget,
     ReviewBudget,
+    estimate_tokens,
+    review_budget_from_manifest,
 )
 from soatvan.workflow.ports import (
     ClassifierVerdict,
     DiscoveryProposal,
+    PromptBudget,
     ReviewCandidate,
 )
 
@@ -906,31 +911,97 @@ def _document_tokens(
     return sum(count_tokens(item.text) for item in segments)
 
 
+def measure_document_budget(
+    block_id: str,
+    block_kind: str,
+    custom_prompt: str,
+    budget: ReviewBudget,
+    count_request_tokens: Callable[[ReviewChunk], int],
+) -> DocumentBudget:
+    """Measure the fixed prompt cost of a request and what it leaves for text.
+
+    Returns the numbers rather than raising, so ``review.prompt_budget`` can
+    show a user the same figures the planner is about to enforce. Callers that
+    plan a job must still honour ``DocumentBudget.error_code``.
+    """
+    probe = ReviewSegment(f"{block_id}@0:0", block_id, 0, 0, "", block_kind)
+    base_fixed = count_request_tokens(ReviewChunk("budget-probe", (probe,), (), (), ""))
+    base_limit = budget.document_limit(base_fixed)
+    if not custom_prompt:
+        return DocumentBudget(
+            base_limit=base_limit,
+            base_fixed_tokens=base_fixed,
+            custom_limit=base_limit,
+            custom_fixed_tokens=base_fixed,
+            has_custom_prompt=False,
+        )
+    custom_chunk = ReviewChunk("budget-probe", (probe,), (), (), custom_prompt)
+    custom_fixed = count_request_tokens(custom_chunk)
+    return DocumentBudget(
+        base_limit=base_limit,
+        base_fixed_tokens=base_fixed,
+        custom_limit=budget.document_limit(custom_fixed),
+        custom_fixed_tokens=custom_fixed,
+        has_custom_prompt=True,
+    )
+
+
+def prompt_budget_from(
+    budget: ReviewBudget,
+    custom_prompt: str,
+    count_request_tokens: Callable[[ReviewChunk], int],
+    *,
+    exact: bool,
+) -> PromptBudget:
+    """Turn measured budget numbers into the answer the UI renders."""
+    measured = measure_document_budget(
+        "budget-probe", "paragraph", custom_prompt, budget, count_request_tokens
+    )
+    return PromptBudget(
+        context_tokens=budget.context_tokens,
+        input_tokens=budget.input_tokens,
+        base_prompt_tokens=measured.base_fixed_tokens,
+        custom_prompt_tokens=measured.custom_fixed_tokens - measured.base_fixed_tokens,
+        document_tokens_available=max(0, measured.limit),
+        fits=measured.error_code is None,
+        exact=exact,
+    )
+
+
+def estimate_prompt_budget(manifest: dict[str, Any], custom_prompt: str) -> PromptBudget:
+    """Answer the budget question for a model that is installed but not loaded.
+
+    Same arithmetic and same message shapes as the loaded path; only the token
+    counter differs, so the UI can show figures before paying for a model load.
+    """
+    derived = review_budget_from_manifest(manifest)
+
+    def count_request_tokens(chunk: ReviewChunk) -> int:
+        messages = (
+            lightweight_review_messages(chunk) if derived.lightweight else review_messages(chunk)
+        )
+        return (
+            sum(estimate_tokens(message["content"]) for message in messages)
+            + CHAT_FALLBACK_OVERHEAD_TOKENS
+        )
+
+    return prompt_budget_from(
+        derived.budget, custom_prompt, count_request_tokens, exact=False
+    )
+
+
 def _effective_document_budget(
     block: Block,
     custom_prompt: str,
     budget: ReviewBudget,
     count_request_tokens: Callable[[ReviewChunk], int],
 ) -> int:
-    probe = ReviewSegment(
-        f"{block.id}@0:0",
-        block.id,
-        0,
-        0,
-        "",
-        block.kind,
+    measured = measure_document_budget(
+        block.id, block.kind, custom_prompt, budget, count_request_tokens
     )
-    base_chunk = ReviewChunk("budget-probe", (probe,), (), (), "")
-    base_limit = budget.document_limit(count_request_tokens(base_chunk))
-    if base_limit < MIN_REVIEW_DOCUMENT_TOKENS:
-        raise ValueError("MODEL_REVIEW_CONTEXT_TOO_SMALL")
-    if not custom_prompt:
-        return base_limit
-    custom_chunk = ReviewChunk("budget-probe", (probe,), (), (), custom_prompt)
-    custom_limit = budget.document_limit(count_request_tokens(custom_chunk))
-    if custom_limit < MIN_REVIEW_DOCUMENT_TOKENS:
-        raise ValueError("CUSTOM_PROMPT_CONTEXT_EXCEEDED")
-    return custom_limit
+    if measured.error_code:
+        raise ValueError(measured.error_code)
+    return measured.limit
 
 
 def _request_context_error(

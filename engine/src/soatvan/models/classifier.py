@@ -16,6 +16,7 @@ from soatvan.workflow.ports import (
     ClassifierVerdict,
     DiscoveryProposal,
     FullReviewResult,
+    PromptBudget,
     ReviewCandidate,
 )
 
@@ -29,16 +30,21 @@ from .review import (
     parse_lightweight_content,
     parse_review_content,
     plan_review_chunks,
+    prompt_budget_from,
     review_messages,
     split_llm_only_chunk,
 )
-from .review_budget import MIN_REVIEW_DOCUMENT_TOKENS, ReviewBudget
+from .review_budget import (
+    CHAT_FALLBACK_OVERHEAD_TOKENS,
+    REVIEW_SAFETY_TOKENS,
+    estimate_tokens,
+    review_budget_from_manifest,
+)
 
-LLM_ONLY_2K_MAX_TOKENS = 768
-LLM_ONLY_4K_MAX_TOKENS = 2048
 LLM_ONLY_MAX_SPLIT_DEPTH = 2
-REVIEW_SAFETY_TOKENS = 256
-CHAT_FALLBACK_OVERHEAD_TOKENS = 32
+#: Never shrink a context below this — under it the review prompt itself no
+#: longer leaves room for document text.
+MIN_RUNTIME_CONTEXT_TOKENS = 2048
 
 
 class ModelRuntimeUnavailable(RuntimeError):
@@ -181,6 +187,9 @@ class _NativeLlamaRuntime:
             + CHAT_FALLBACK_OVERHEAD_TOKENS
         )
 
+    def context_size(self) -> int:
+        return int(self._runtime.n_ctx())
+
     def reset_after_abort(self) -> None:
         self._runtime.reset()
 
@@ -267,8 +276,29 @@ def _default_runtime_factory(model_path: Path, context_size: int, seed: int) -> 
                 return cast(CompletionRuntime, _NativeLlamaRuntime(runtime, llama))
             except Exception as fallback_error:
                 print(f"[soatvan-engine] _default_runtime_factory: CPU fallback also FAILED: {type(fallback_error).__name__}: {fallback_error}", file=sys.stderr)
-                pass
+        # A larger context buys prompt headroom but doubles the KV cache, which
+        # a tight machine may refuse to allocate. Shrinking beats losing the
+        # model outright; the classifier re-reads the context it actually got.
+        if context_size > MIN_RUNTIME_CONTEXT_TOKENS:
+            shrunk = max(MIN_RUNTIME_CONTEXT_TOKENS, context_size // 2)
+            try:
+                print(f"[soatvan-engine] _default_runtime_factory: retrying with context_size={shrunk}...", file=sys.stderr)
+                return _default_runtime_factory(model_path, shrunk, seed)
+            except Exception as shrink_error:
+                print(f"[soatvan-engine] _default_runtime_factory: context fallback also FAILED: {type(shrink_error).__name__}: {shrink_error}", file=sys.stderr)
         raise ModelLoadFailed("MODEL_LOAD_FAILED") from error
+
+
+def _runtime_context_size(runtime: object) -> int | None:
+    """Ask a runtime for the context window it actually holds, if it can say."""
+    reader = getattr(runtime, "context_size", None)
+    if not callable(reader):
+        return None
+    try:
+        value = reader()
+    except Exception:
+        return None
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
 
 
 def _preferred_gpu_layers(module: Any) -> int:
@@ -306,54 +336,39 @@ class LlamaCppClassifier:
         manifest: dict[str, Any],
         runtime_factory: RuntimeFactory = _default_runtime_factory,
     ) -> None:
-        self._lightweight_mode = manifest.get("review_mode") == "lightweight"
         self._version = f"model-{manifest['model_id']}@{manifest['version']}"
         self._minimum_confidence = float(manifest.get("minimum_confidence", 0.5))
         self._batch_size = int(manifest.get("batch_size", 8))
-        self._filter_output_tokens = int(manifest.get("max_tokens", 512))
+        self._timeout_seconds = int(manifest.get("timeout_seconds", 300))
+        self._seed = int(manifest.get("seed", 42))
+        # One derivation, shared with the pre-flight check that runs before a
+        # model is even loaded — see review_budget.review_budget_from_manifest.
+        derived = review_budget_from_manifest(manifest)
+        self._lightweight_mode = derived.lightweight
+        self._filter_output_tokens = derived.filter_output_tokens
+        self._review_output_tokens = derived.review_output_tokens
+        self._context_size = derived.context_tokens
+        self._review_budget = derived.budget
         self._review_candidate_limit = max(
             1, min(self._batch_size, self._filter_output_tokens // 80)
         )
-        self._timeout_seconds = int(manifest.get("timeout_seconds", 300))
-        self._seed = int(manifest.get("seed", 42))
-        self._context_size = int(manifest.get("context_size", 2048))
-        review_output_limit = (
-            LLM_ONLY_4K_MAX_TOKENS if self._context_size >= 4096 else LLM_ONLY_2K_MAX_TOKENS
-        )
-        self._review_output_tokens = max(
-            32,
-            min(
-                review_output_limit,
-                self._context_size - REVIEW_SAFETY_TOKENS - MIN_REVIEW_DOCUMENT_TOKENS,
-            ),
-        )
-        # Lightweight mode: error list output is much smaller than full JSON,
-        # so cap output tokens to free more space for document text input.
-        if self._lightweight_mode:
-            self._review_output_tokens = min(
-                self._review_output_tokens,
-                max(256, self._context_size // 4),
-            )
-        response_tokens = max(
-            self._filter_output_tokens,
-            self._review_output_tokens,
-        )
-        configured_doc_tokens = int(manifest.get("review_chunk_tokens", 1200))
-        # Lightweight mode: the prompt is much shorter, so we can fit more
-        # document text per chunk.  Use input_tokens as the effective ceiling
-        # instead of the manifest cap that was tuned for the heavy JSON format.
-        if self._lightweight_mode:
-            lightweight_input = (
-                self._context_size - response_tokens - REVIEW_SAFETY_TOKENS
-            )
-            configured_doc_tokens = max(configured_doc_tokens, lightweight_input)
-        self._review_budget = ReviewBudget(
-            context_tokens=self._context_size,
-            response_tokens=response_tokens,
-            safety_tokens=REVIEW_SAFETY_TOKENS,
-            document_tokens=configured_doc_tokens,
-        )
         self._runtime = runtime_factory(model_path, self._context_size, self._seed)
+        # The factory may have shrunk the context to get the model loaded at
+        # all. Budgeting against the manifest's number would then overflow the
+        # real window on every request, so re-derive from what we actually got.
+        actual_context = _runtime_context_size(self._runtime)
+        if actual_context is not None and actual_context != self._context_size:
+            sys.stderr.write(
+                f"[soatvan-engine] LlamaCppClassifier: runtime context is {actual_context}, "
+                f"not the manifest's {self._context_size}; re-deriving the review budget\n"
+            )
+            sys.stderr.flush()
+            derived = review_budget_from_manifest({**manifest, "context_size": actual_context})
+            self._lightweight_mode = derived.lightweight
+            self._filter_output_tokens = derived.filter_output_tokens
+            self._review_output_tokens = derived.review_output_tokens
+            self._context_size = derived.context_tokens
+            self._review_budget = derived.budget
         self._lock = threading.Lock()
 
     @property
@@ -644,7 +659,7 @@ class LlamaCppClassifier:
                     return count
             except (TypeError, ValueError):
                 pass
-        return max(1, (len(value.encode("utf-8")) + 2) // 3)
+        return estimate_tokens(value)
 
     def _count_chat_tokens(self, messages: list[dict[str, str]]) -> int:
         counter = getattr(self._runtime, "count_chat_tokens", None)
@@ -664,6 +679,16 @@ class LlamaCppClassifier:
         if self._lightweight_mode:
             return self._count_chat_tokens(lightweight_review_messages(chunk))
         return self._count_chat_tokens(review_messages(chunk))
+
+    def prompt_budget(self, custom_prompt: str) -> PromptBudget:
+        # Counted with the model's own tokenizer, against the very budget
+        # plan_review_chunks will enforce — the pre-flight cannot drift from it.
+        return prompt_budget_from(
+            self._review_budget,
+            custom_prompt,
+            self._count_review_request_tokens,
+            exact=True,
+        )
 
     def _ensure_classification_request_fits(
         self,

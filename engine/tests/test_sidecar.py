@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import logging
 import os
@@ -16,6 +17,7 @@ from soatvan.entrypoints.sidecar import (
     Sidecar,
     _boolean_param,
     _custom_prompt,
+    _force_utf8_stderr,
     _ignored_words,
     _log_dev_exception,
     configure_logging,
@@ -145,6 +147,30 @@ def test_handled_exception_details_are_always_logged_with_traceback(
     assert "code=MODEL_FULL_REVIEW_FAILED type=ValueError" in record.getMessage()
     assert record.exc_info is not None
     assert "ValueError: MODEL_FULL_REVIEW_FAILED" in caplog.text
+
+
+def test_stderr_is_pinned_to_utf8_so_vietnamese_diagnostics_survive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The frozen Windows build ignores PYTHONIOENCODING and lands on cp1252,
+    # which mangles 'Á' into a raw 0xC1 byte the Rust host then reads as U+FFFD.
+    raw = io.BytesIO()
+    monkeypatch.setattr(sys, "stderr", io.TextIOWrapper(raw, encoding="cp1252"))
+    vietnamese = "GEMMA – HỆ THỐNG KIỂM TRA CHÍNH TẢ"
+
+    _force_utf8_stderr()
+    sys.stderr.write(vietnamese)
+    sys.stderr.flush()
+
+    assert raw.getvalue().decode("utf-8") == vietnamese
+
+
+def test_forcing_utf8_stderr_tolerates_a_stream_without_reconfigure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # capsys and a pythonw null stderr are not TextIOWrapper; this must not raise.
+    monkeypatch.setattr(sys, "stderr", io.StringIO())
+    _force_utf8_stderr()
 
 
 def test_configure_logging_is_idempotent_and_writes_to_stderr(
@@ -501,6 +527,41 @@ def test_idle_release_is_skipped_while_another_job_is_running(
     engine._release_model_if_idle()
 
     assert releases == 0
+
+
+def test_prompt_budget_answers_from_the_manifest_without_loading_a_model(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The prompt editor queries this per keystroke; it must not load a GGUF."""
+    monkeypatch.setenv("SOATVAN_DATA_DIR", str(tmp_path))
+    engine = Sidecar()
+    manifest = {"context_size": 8192, "review_mode": "lightweight", "max_tokens": 512}
+    monkeypatch.setattr(engine.models, "active_manifest", lambda: manifest)
+    # status() is what verifies and loads; the budget path must never reach it.
+    monkeypatch.setattr(
+        engine.models, "status", lambda **_: pytest.fail("budget query activated the model")
+    )
+
+    budget = engine.dispatch("review.prompt_budget", {"custom_prompt": "Quy tắc riêng."})
+
+    assert budget["exact"] is False
+    assert budget["fits"] is True
+    assert budget["input_tokens"] == 5888
+    assert budget["custom_prompt_tokens"] > 0
+
+    overflowing = engine.dispatch(
+        "review.prompt_budget", {"custom_prompt": "Quy tắc riêng rất dài. " * 2000}
+    )
+    assert overflowing["fits"] is False
+
+
+def test_prompt_budget_without_an_installed_model_reports_a_known_code(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("SOATVAN_DATA_DIR", str(tmp_path))
+    engine = Sidecar()
+    with pytest.raises(ValueError, match="MODEL_CLASSIFIER_NOT_READY"):
+        engine.dispatch("review.prompt_budget", {"custom_prompt": "x"})
 
 
 def test_model_status_reports_the_gpu_verdict_and_reset_clears_it(

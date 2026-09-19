@@ -10,7 +10,7 @@
       "properties": {
         "v": {"const": 1},
         "id": {"type": "string", "minLength": 1},
-        "method": {"enum": ["engine.hello", "document.inspect", "job.start", "job.cancel", "custom_rule.list", "custom_rule.upsert", "custom_rule.delete", "model.status", "model.import", "model.cancel", "model.remove", "gpu.reset_guard", "ai_config.get", "ai_config.update", "ai_config.set_active", "ai_config.test_connection", "seq2seq_config.get", "seq2seq_config.update", "output_config.get", "output_config.update"]},
+        "method": {"enum": ["engine.hello", "document.inspect", "job.start", "job.cancel", "custom_rule.list", "custom_rule.upsert", "custom_rule.delete", "model.status", "review.prompt_budget", "model.import", "model.cancel", "model.remove", "gpu.reset_guard", "ai_config.get", "ai_config.update", "ai_config.set_active", "ai_config.test_connection", "seq2seq_config.get", "seq2seq_config.update", "output_config.get", "output_config.update"]},
         "params": {"type": "object"}
       },
       "allOf": [

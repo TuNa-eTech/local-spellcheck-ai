@@ -176,6 +176,19 @@ struct SidecarJobParams<'a> {
     ignored_words: &'a [String],
 }
 
+/// Every field must be listed here: serde silently drops anything the struct
+/// does not name on the way from the engine to the webview.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct PromptBudget {
+    context_tokens: u64,
+    input_tokens: u64,
+    base_prompt_tokens: u64,
+    custom_prompt_tokens: u64,
+    document_tokens_available: u64,
+    fits: bool,
+    exact: bool,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct Seq2SeqConfig {
     model_dir: String,
@@ -704,6 +717,22 @@ async fn ai_config_test_connection(
         .engine
         .call("ai_config.test_connection", params, Duration::from_secs(30))?;
     Ok(serde_json::from_value(value)?)
+}
+
+/// Pre-flight for the prompt editor and the review step: how much of the
+/// model's input window a custom prompt eats, and whether any room is left for
+/// document text. Never activates a model.
+#[tauri::command]
+async fn review_prompt_budget(
+    custom_prompt: String,
+    state: State<'_, AppState>,
+) -> AppResult<PromptBudget> {
+    let result = state.engine.call(
+        "review.prompt_budget",
+        json!({ "custom_prompt": custom_prompt }),
+        Duration::from_secs(30),
+    )?;
+    Ok(serde_json::from_value(result)?)
 }
 
 #[tauri::command]
@@ -1582,6 +1611,7 @@ pub fn run() {
             output_config_get,
             output_config_update,
             model_status,
+            review_prompt_budget,
             model_deactivate,
             gpu_reset_guard,
             model_import,

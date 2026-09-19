@@ -38,6 +38,7 @@ class FakeLlama:
         self._system_info = system_info
         self._gpu_load_error = gpu_load_error
         self.requested_gpu_layers: list[int] = []
+        self.requested_context_sizes: list[int] = []
 
     def llama_supports_gpu_offload(self) -> bool:
         return self._supports_offload
@@ -47,6 +48,7 @@ class FakeLlama:
 
     def Llama(self, **kwargs: Any) -> Any:  # noqa: N802 - mirrors the native name
         self.requested_gpu_layers.append(int(kwargs["n_gpu_layers"]))
+        self.requested_context_sizes.append(int(kwargs["n_ctx"]))
         if kwargs["n_gpu_layers"] != 0 and self._gpu_load_error is not None:
             raise self._gpu_load_error
         return object()
@@ -243,6 +245,7 @@ def test_runtime_factory_reports_a_load_failure_that_cpu_cannot_rescue(
     class Broken(FakeLlama):
         def Llama(self, **kwargs: Any) -> Any:  # noqa: N802 - mirrors the native name
             self.requested_gpu_layers.append(int(kwargs["n_gpu_layers"]))
+            self.requested_context_sizes.append(int(kwargs["n_ctx"]))
             raise RuntimeError("model file is corrupt")
 
     llama = Broken()
@@ -250,4 +253,7 @@ def test_runtime_factory_reports_a_load_failure_that_cpu_cannot_rescue(
 
     with pytest.raises(ModelLoadFailed):
         _default_runtime_factory(tmp_path / "model.gguf", 4096, 0)
-    assert llama.requested_gpu_layers == [-1, 0]
+    # GPU, then CPU, then one CPU retry at half the context — the crash guard
+    # has already ruled out offload by the time the context is shrunk.
+    assert llama.requested_gpu_layers == [-1, 0, 0]
+    assert llama.requested_context_sizes == [4096, 4096, 2048]

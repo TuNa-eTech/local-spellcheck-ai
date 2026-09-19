@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from soatvan.checking.domain import Block, Finding
 
@@ -114,6 +114,31 @@ class ContextClassifier(Protocol):
     ) -> tuple[ClassifierVerdict, ...]: ...
 
 
+@dataclass(frozen=True, slots=True)
+class PromptBudget:
+    """What a custom prompt costs against a reviewer's input window.
+
+    Answers the question the UI has to ask before a job starts: does this
+    prompt leave room for any document text at all? ``exact`` is False when the
+    figures come from an estimate rather than the model's own tokenizer.
+    """
+
+    context_tokens: int
+    input_tokens: int
+    base_prompt_tokens: int
+    custom_prompt_tokens: int
+    document_tokens_available: int
+    fits: bool
+    exact: bool
+
+
+@runtime_checkable
+class PromptBudgetReporter(Protocol):
+    """A reviewer that can price a custom prompt before a job is planned."""
+
+    def prompt_budget(self, custom_prompt: str) -> PromptBudget: ...
+
+
 class FullTextReviewer(Protocol):
     @property
     def version(self) -> str: ...
@@ -129,6 +154,10 @@ class FullTextReviewer(Protocol):
         cancellation: CancellationToken,
         progress: Callable[[int, int], None] | None = None,
     ) -> FullReviewResult: ...
+
+    def prompt_budget(self, custom_prompt: str) -> PromptBudget:
+        """Report what ``custom_prompt`` leaves for document text."""
+        ...
 
 
 class ClassifierProvider(Protocol):

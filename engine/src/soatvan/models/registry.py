@@ -161,6 +161,26 @@ class ModelRegistry:
     def classifier(self) -> ContextClassifier | None:
         return self._classifier if self.status().get("state") == "ready" else None
 
+    def loaded_classifier(self) -> ContextClassifier | None:
+        """Return the classifier only if it is already resident.
+
+        Unlike `classifier()` this never verifies, loads or activates anything,
+        so a keystroke-rate budget query cannot trigger a multi-second SHA-256
+        pass and a GGUF load.
+        """
+        return self._classifier
+
+    def active_manifest(self) -> dict[str, Any] | None:
+        """Read the active manifest without verifying or loading the package."""
+        active = self._root / "active" / "manifest.json"
+        if not active.is_file():
+            return None
+        try:
+            manifest = json.loads(active.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return manifest if isinstance(manifest, dict) else None
+
     def supports_full_review(self) -> bool:
         status = self.status()
         capabilities = status.get("capabilities")

@@ -12,7 +12,11 @@ use std::{
     time::Duration,
 };
 
-const LOCAL_GEMMA_REVIEW_CONTEXT_TOKENS: u64 = 4096;
+/// At 4096 the input window left only ~2.7k tokens for a custom prompt, which
+/// a realistic house style guide overruns before any document text fits. 8192
+/// roughly doubles that headroom; the engine falls back to a smaller context if
+/// the machine cannot allocate the larger KV cache.
+const LOCAL_GEMMA_REVIEW_CONTEXT_TOKENS: u64 = 8192;
 const LOCAL_REVIEW_TIMEOUT_SECONDS: u64 = 600;
 pub(crate) const MAX_MODEL_TIMEOUT_SECONDS: u64 = 900;
 const _: () = assert!(LOCAL_REVIEW_TIMEOUT_SECONDS <= MAX_MODEL_TIMEOUT_SECONDS);
@@ -1083,7 +1087,7 @@ mod tests {
         assert_eq!(manifest.model_id, "gemma-4-e2b");
         assert_eq!(manifest.version, "local");
         assert_eq!(manifest.trust, ModelTrust::LocalUnverified);
-        assert_eq!(manifest.context_size, Some(4096));
+        assert_eq!(manifest.context_size, Some(8192));
         assert_eq!(manifest.timeout_seconds, Some(600));
         assert!(manifest.capabilities.candidate_filter);
         assert!(manifest.capabilities.full_review);
@@ -1153,7 +1157,8 @@ mod tests {
             serde_json::from_slice(&fs::read(root.join("active/manifest.json")).unwrap()).unwrap();
         assert_eq!(migrated.trust, ModelTrust::LocalUnverified);
         assert!(migrated.capabilities.full_review);
-        assert_eq!(migrated.context_size, Some(4096));
+        // The migration lifts an older install's 4096 to the current default.
+        assert_eq!(migrated.context_size, Some(8192));
         assert_eq!(migrated.review_chunk_tokens, Some(500));
         assert_eq!(migrated.review_mode.as_deref(), Some("lightweight"));
         assert_eq!(migrated.timeout_seconds, Some(600));

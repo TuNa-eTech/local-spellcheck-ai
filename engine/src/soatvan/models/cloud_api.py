@@ -26,12 +26,14 @@ from soatvan.models.review import (
     LLM_ONLY_REVIEW_SYSTEM_PROMPT,
     REVIEW_SYSTEM_PROMPT,
 )
+from soatvan.models.review_budget import estimate_tokens
 from soatvan.workflow.ports import (
     CancellationToken,
     ClassificationCandidate,
     ClassifierVerdict,
     DiscoveryProposal,
     FullReviewResult,
+    PromptBudget,
     ReviewCandidate,
 )
 
@@ -118,6 +120,23 @@ class CloudAiReviewer:
     # ------------------------------------------------------------------
     # Full-text review
     # ------------------------------------------------------------------
+
+    def prompt_budget(self, custom_prompt: str) -> PromptBudget:
+        """Cloud context windows dwarf any prompt the editor can hold.
+
+        The provider enforces its own limits server-side and we do not ship its
+        tokenizer, so report an estimate and never block on it — the local
+        4K/8K window is the only one a custom prompt can realistically fill.
+        """
+        return PromptBudget(
+            context_tokens=0,
+            input_tokens=0,
+            base_prompt_tokens=estimate_tokens(REVIEW_SYSTEM_PROMPT),
+            custom_prompt_tokens=estimate_tokens(custom_prompt) if custom_prompt else 0,
+            document_tokens_available=0,
+            fits=True,
+            exact=False,
+        )
 
     def review(
         self,

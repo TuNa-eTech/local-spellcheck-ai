@@ -108,6 +108,18 @@ export interface AiTestConnectionResult {
   message?: string;
 }
 
+/** What a custom prompt costs against the active model's input window. */
+export interface PromptBudget {
+  context_tokens: number;
+  input_tokens: number;
+  base_prompt_tokens: number;
+  custom_prompt_tokens: number;
+  document_tokens_available: number;
+  fits: boolean;
+  /** False when counted by estimate rather than the model's own tokenizer. */
+  exact: boolean;
+}
+
 export interface Seq2SeqConfig {
   model_dir: string;
   is_configured: boolean;

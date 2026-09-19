@@ -15,6 +15,7 @@ import type {
   OutputMode,
   Preset,
   ProgressEvent,
+  PromptBudget,
   RuleOptions,
   Seq2SeqConfig,
 } from "./contracts";
@@ -146,6 +147,13 @@ export const api = {
       baseUrl: params.baseUrl ?? params.base_url,
       modelName: params.modelName ?? params.model_name,
     });
+  },
+  async reviewPromptBudget(customPrompt: string): Promise<PromptBudget> {
+    if (!isTauri()) {
+      const custom = Math.ceil(new TextEncoder().encode(customPrompt).length / 3);
+      return { context_tokens: 8192, input_tokens: 5888, base_prompt_tokens: 210, custom_prompt_tokens: custom, document_tokens_available: Math.max(0, 5678 - custom), fits: custom < 5614, exact: false };
+    }
+    return invoke("review_prompt_budget", { customPrompt });
   },
   async seq2seqConfigGet(): Promise<Seq2SeqConfig> {
     if (!isTauri()) return { model_dir: "", is_configured: false, is_valid: false, is_enabled: true, runtime_available: true, is_ready: false };

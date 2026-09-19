@@ -35,14 +35,34 @@ from soatvan.models.gpu import (
     local_data_dir,
     offload_mode,
 )
+from soatvan.models.review import estimate_prompt_budget
 from soatvan.models.seq2seq_speller import is_transformers_available
 from soatvan.workflow import ProcessDocument, ProcessRequest
-from soatvan.workflow.ports import ContextClassifier
+from soatvan.workflow.ports import ContextClassifier, PromptBudgetReporter
 from soatvan.workflow.process import MAX_CUSTOM_PROMPT_LENGTH
 
 MAX_FRAME = 1024 * 1024
 EMIT_LOCK = threading.Lock()
 LOGGER = logging.getLogger("soatvan.sidecar")
+
+
+def _force_utf8_stderr() -> None:
+    """Pin stderr to UTF-8 so Vietnamese diagnostics survive the trip to the host.
+
+    The host sets ``PYTHONIOENCODING=utf-8``, but the frozen PyInstaller build
+    ignores it: stderr then falls back to the Windows ANSI code page. cp1252
+    encodes 'Á' as a raw 0xC1 byte and backslash-escapes 'Ệ' to ``\\u1ec6``; the
+    Rust side reads the stream as UTF-8, so the raw byte becomes U+FFFD and the
+    log turns into ``GEMMA ? H\\u1ec6 TH\\u1ed0NG``. Reconfiguring here does not
+    depend on the environment. stdout is untouched — ``emit`` already encodes
+    the NDJSON frames itself.
+    """
+    reconfigure = getattr(sys.stderr, "reconfigure", None)
+    if not callable(reconfigure):
+        # pytest's capsys and a pythonw-style null stderr have no reconfigure().
+        return
+    with contextlib.suppress(AttributeError, ValueError, OSError):
+        reconfigure(encoding="utf-8", errors="backslashreplace")
 
 
 def configure_logging() -> None:
@@ -55,6 +75,7 @@ def configure_logging() -> None:
     root = logging.getLogger()
     if any(getattr(handler, "_soatvan", False) for handler in root.handlers):
         return
+    _force_utf8_stderr()
     verbose = os.environ.get("SOATVAN_DEV_LOG") == "1"
     handler = logging.StreamHandler(sys.stderr)
     # No timestamp: the desktop host timestamps every captured stderr line, and a
@@ -102,6 +123,7 @@ PUBLIC_METHODS = frozenset(
         "custom_rule.upsert",
         "custom_rule.delete",
         "model.status",
+        "review.prompt_budget",
         "model.import",
         "model.cancel",
         "model.remove",
@@ -228,6 +250,7 @@ class Sidecar:
             "custom_rule.upsert": self.custom_rule_upsert,
             "custom_rule.delete": self.custom_rule_delete,
             "model.status": self.model_status,
+            "review.prompt_budget": self.review_prompt_budget,
             "model.remove": self.model_remove,
             "gpu.reset_guard": self.gpu_reset_guard,
             "ai_config.get": self.ai_config_get,
@@ -470,6 +493,27 @@ class Sidecar:
         if decision is not None:
             status["gpu"] = decision
         return status
+
+    def review_prompt_budget(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Report what a custom prompt leaves for document text, before a job runs.
+
+        The planner fails closed on an oversized prompt, which used to be the
+        first time anyone saw the number. This answers the same question up
+        front, off the same arithmetic, and never loads a model to do it.
+        """
+        custom_prompt = _custom_prompt(params.get("custom_prompt", ""))
+        active_ai = self.ai_config.get_active_config()
+        if active_ai is not None and active_ai.provider in {"openai", "gemini"}:
+            if not active_ai.api_key:
+                raise ValueError("API_KEY_REQUIRED")
+            return asdict(CloudAiReviewer(active_ai).prompt_budget(custom_prompt))
+        loaded = self.models.loaded_classifier()
+        if isinstance(loaded, PromptBudgetReporter):
+            return asdict(loaded.prompt_budget(custom_prompt))
+        manifest = self.models.active_manifest()
+        if manifest is None:
+            raise ValueError("MODEL_CLASSIFIER_NOT_READY")
+        return asdict(estimate_prompt_budget(manifest, custom_prompt))
 
     def model_remove(self, _: dict[str, Any]) -> dict[str, Any]:
         self.models.deactivate()

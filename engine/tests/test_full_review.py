@@ -1018,6 +1018,91 @@ def test_custom_prompt_overflow_fails_before_document_splitting_or_inference(
     assert runtime.calls == []
 
 
+def test_prompt_budget_verdict_matches_what_the_planner_enforces(tmp_path: Path) -> None:
+    """The pre-flight must not disagree with the planner it is warning about.
+
+    A UI that says "fits" for a prompt the planner then rejects reproduces the
+    original bug behind a friendlier label, so pin the two together.
+    """
+    manifest = {
+        "model_id": "test",
+        "version": "1",
+        "context_size": 2048,
+        "review_chunk_tokens": 500,
+    }
+    blocks = (Block("document:p0", "x"),)
+
+    # input_tokens here is 2048 - 768 response - 256 safety = 1024, so a fixed
+    # cost above 960 leaves less than the 64-token floor for document text.
+    for base_tokens, custom_tokens, expected_fits in (
+        (400, 900, True),
+        (400, 1000, False),
+    ):
+        runtime = PromptOverflowRuntime(base_tokens=base_tokens, custom_tokens=custom_tokens)
+        classifier = LlamaCppClassifier(
+            tmp_path / "model.gguf", manifest, lambda *_, _r=runtime: _r
+        )
+
+        budget = classifier.prompt_budget("rule")
+        assert budget.fits is expected_fits
+        assert budget.exact is True
+        assert budget.input_tokens == 1024
+        assert budget.custom_prompt_tokens == custom_tokens - base_tokens
+
+        if expected_fits:
+            # Reaching document tokenization proves the planner cleared the same
+            # budget gate the pre-flight just approved.
+            with pytest.raises(AssertionError, match="document tokenization should not run"):
+                classifier.review(blocks, (), "rule", Token())
+        else:
+            with pytest.raises(ValueError, match="CUSTOM_PROMPT_CONTEXT_EXCEEDED"):
+                classifier.review(blocks, (), "rule", Token())
+
+
+def test_budget_follows_the_context_the_runtime_actually_loaded(tmp_path: Path) -> None:
+    """A shrunk context must shrink the budget, or every request overflows it."""
+
+    class ShrunkRuntime(Runtime):
+        def context_size(self) -> int:
+            return 4096
+
+    classifier = LlamaCppClassifier(
+        tmp_path / "model.gguf",
+        {
+            "model_id": "test",
+            "version": "1",
+            "context_size": 8192,
+            "review_mode": "lightweight",
+        },
+        lambda *_: ShrunkRuntime('{"discoveries":[]}'),
+    )
+
+    budget = classifier.prompt_budget("")
+    assert budget.context_tokens == 4096
+    assert budget.input_tokens == 2816
+
+
+def test_prompt_budget_is_estimated_without_loading_the_model() -> None:
+    from soatvan.models.review import estimate_prompt_budget
+
+    manifest = {"context_size": 8192, "review_mode": "lightweight", "max_tokens": 512}
+
+    empty = estimate_prompt_budget(manifest, "")
+    assert empty.exact is False
+    assert empty.fits is True
+    assert empty.context_tokens == 8192
+    # 8192 - 2048 response - 256 safety; the figure the UI shows as the ceiling.
+    assert empty.input_tokens == 5888
+    assert empty.custom_prompt_tokens == 0
+
+    modest = estimate_prompt_budget(manifest, "Dùng thuật ngữ “khách hàng”.")
+    assert modest.fits is True
+    assert modest.custom_prompt_tokens > 0
+    assert modest.document_tokens_available < empty.document_tokens_available
+
+    assert estimate_prompt_budget(manifest, "Quy tắc riêng. " * 2000).fits is False
+
+
 def test_base_review_prompt_overflow_keeps_model_context_error(tmp_path: Path) -> None:
     runtime = PromptOverflowRuntime(base_tokens=1000, custom_tokens=1000)
     classifier = LlamaCppClassifier(

@@ -12,6 +12,7 @@ import type {
   OutputConfig,
   OutputMode,
   Preset,
+  PromptBudget,
   RuleOptions,
   Seq2SeqConfig,
   Step,
@@ -153,6 +154,10 @@ const state: {
   cancelPending: boolean;
   result: JobResult | null;
   model: ModelStatus;
+  /** Budget for the prompt being edited in Settings; null until first answer. */
+  promptDraftBudget: PromptBudget | null;
+  /** Budget for the prompts ticked at the review step. */
+  selectedPromptBudget: PromptBudget | null;
   aiConfig: AiConfigState;
   selectedProviderTab: ProviderTab;
   cloudDrafts: Record<string, { apiKey: string; baseUrl: string; modelName: string }>;
@@ -198,6 +203,8 @@ const state: {
   includeRuleFindings: true,
   result: null,
   model: { state: "not_installed" },
+  promptDraftBudget: null,
+  selectedPromptBudget: null,
   aiConfig: {
     active_provider: "local",
     configs: [defaultAiConfigs.openai, defaultAiConfigs.gemini],
@@ -234,6 +241,107 @@ const state: {
 };
 
 const customRulePromptLimit = 100000;
+
+function formatTokens(value: number): string {
+  return Math.max(0, Math.round(value)).toLocaleString("vi-VN");
+}
+
+/** Tokens the prompt may use before no room is left for document text. */
+function promptTokenCeiling(budget: PromptBudget): number {
+  return Math.max(0, budget.input_tokens - budget.base_prompt_tokens - 64);
+}
+
+// One renderer for the prompt editor, the review step and anywhere else that
+// needs to say how much of the window a prompt eats. The old code hard-coded
+// "> 2000 ký tự" and "~2.048 - 4.096 token" in three places, none of which
+// matched the model actually loaded.
+/** True when the ticked prompts cannot leave room for any document text. */
+function promptBudgetBlocksStart(): boolean {
+  return state.selectedPromptBudget !== null && !state.selectedPromptBudget.fits;
+}
+
+function promptDraftWarningHtml(): string {
+  const draftLength = [...state.customRuleDraft].length;
+  if (draftLength === 0) return "";
+  const measured = promptBudgetNotice(state.promptDraftBudget, "editor");
+  if (measured) return measured;
+  // No model to measure against (none installed, or a cloud provider is
+  // active) — say what is generically true rather than invent a token figure.
+  if (draftLength > 2000) {
+    return `<p class="settings-message settings-message--warning" id="custom-rule-warning" role="status">⚠️ <strong>Prompt khá dài (${draftLength.toLocaleString("vi-VN")} ký tự):</strong> Prompt chi tiết giúp AI hiểu rõ ngữ cảnh hơn. Tuy nhiên, nếu dùng AI cục bộ (offline), prompt quá dài có thể vượt quá bộ nhớ ngữ cảnh. Với AI Cloud, prompt dài sẽ tiêu tốn thêm token và thời gian phản hồi.</p>`;
+  }
+  return "";
+}
+
+/** Update the editor's warning in place, without a full re-render on keystroke. */
+function paintPromptDraftWarning(control: Element | null): void {
+  const host = control ?? document.querySelector("#custom-rule-prompt")?.closest(".control");
+  if (!host) return;
+  host.querySelector("#custom-rule-warning")?.remove();
+  host.querySelector("#prompt-budget-notice")?.remove();
+  const html = promptDraftWarningHtml();
+  if (!html) return;
+  const holder = document.createElement("div");
+  holder.innerHTML = html;
+  const node = holder.firstElementChild;
+  if (node) host.appendChild(node);
+}
+
+let promptBudgetTimer: number | undefined;
+
+/** Debounced so a keystroke does not fire an IPC round-trip each time. */
+async function refreshPromptDraftBudget(): Promise<void> {
+  window.clearTimeout(promptBudgetTimer);
+  promptBudgetTimer = window.setTimeout(() => {
+    const draft = state.customRuleDraft;
+    void api.reviewPromptBudget(draft).then(
+      budget => {
+        // A slow answer for an older draft must not overwrite a newer one.
+        if (draft !== state.customRuleDraft) return;
+        state.promptDraftBudget = budget;
+        paintPromptDraftWarning(null);
+      },
+      () => {
+        // No model installed yet, or a provider without a budget to report.
+        state.promptDraftBudget = null;
+        paintPromptDraftWarning(null);
+      },
+    );
+  }, 300);
+}
+
+/** Measure the prompts ticked for this run, exactly as the engine will see them. */
+async function refreshSelectedPromptBudget(): Promise<void> {
+  const compiled = compiledCustomPrompt();
+  if (!compiled || isCloudActive()) {
+    state.selectedPromptBudget = null;
+    return;
+  }
+  try {
+    state.selectedPromptBudget = await api.reviewPromptBudget(compiled);
+  } catch {
+    state.selectedPromptBudget = null;
+  }
+}
+
+function promptBudgetNotice(budget: PromptBudget | null, context: "editor" | "review"): string {
+  if (!budget || budget.context_tokens === 0) return "";
+  const used = budget.custom_prompt_tokens;
+  const ceiling = promptTokenCeiling(budget);
+  if (ceiling === 0) return "";
+  const figures = `${formatTokens(used)} / ${formatTokens(ceiling)} token${budget.exact ? "" : " (ước tính)"}`;
+  if (!budget.fits) {
+    const overBy = formatTokens(used - ceiling);
+    const action = context === "editor"
+      ? "Hãy rút gọn prompt này."
+      : "Hãy bỏ bớt prompt đã chọn, rút gọn nội dung, hoặc chuyển sang AI Cloud trong Cài đặt.";
+    return `<p class="settings-message settings-message--error prompt-budget-notice" id="prompt-budget-notice" role="alert">⚠️ <strong>Prompt vượt quá ngữ cảnh của model (${figures}, thừa ${overBy} token).</strong> Model sẽ không còn chỗ cho nội dung tài liệu nên không thể rà soát. ${action}</p>`;
+  }
+  if (used > ceiling * 0.75) {
+    return `<p class="settings-message settings-message--warning prompt-budget-notice" id="prompt-budget-notice" role="status">⚠️ <strong>Prompt đang dùng ${figures}</strong> trong ngữ cảnh của model. Còn khoảng ${formatTokens(budget.document_tokens_available)} token cho nội dung tài liệu mỗi lượt; prompt càng dài thì mỗi lượt rà soát càng ít chữ.</p>`;
+  }
+  return `<p class="field__helper prompt-budget-notice" id="prompt-budget-notice">Prompt đang dùng ${figures} trong ngữ cảnh của model.</p>`;
+}
 const customRuleTitleLimit = 80;
 const genericProcessingError = "Không xử lý được tệp. Hãy kiểm tra tệp rồi thử lại; tệp gốc chưa bị thay đổi.";
 const processingErrorMessages: Record<string, string> = {
@@ -258,15 +366,31 @@ function modelStatusReason(model: ModelStatus): string {
   return model.code ? (modelStatusMessages[model.code] ?? "") : "";
 }
 
-function processingErrorMessage(error: unknown): string {
-  const code = typeof error === "string"
+// Tauri serialises AppError as a bare code string, but a thrown Error or an
+// object with `code` reaches here too depending on where the call failed.
+function errorCode(error: unknown): string {
+  return typeof error === "string"
     ? error
     : error instanceof Error
       ? error.message
       : typeof error === "object" && error !== null && "code" in error && typeof error.code === "string"
         ? error.code
         : "";
-  return processingErrorMessages[code] ?? genericProcessingError;
+}
+
+function processingErrorMessage(error: unknown): string {
+  return processingErrorMessages[errorCode(error)] ?? genericProcessingError;
+}
+
+// Settings actions swallowed their error code and blamed the folder picker, so
+// a directory rejected for missing config.json read as "thử lại" — and the user
+// kept picking the same folder.
+const settingsErrorMessages: Record<string, string> = {
+  SEQ2SEQ_DIR_INVALID: "Thư mục đã chọn không chứa model hợp lệ (thiếu config.json). Hãy chọn thư mục có tệp config.json của model vn-spell-correction-small.",
+};
+
+function settingsErrorMessage(error: unknown, fallback: string): string {
+  return settingsErrorMessages[errorCode(error)] ?? fallback;
 }
 
 function loadModelPreference(): boolean { try { return localStorage.getItem("soatvan.use-model.v1") !== "false"; } catch { return true; } }
@@ -426,10 +550,14 @@ function customRuleSelectionHtml(): string {
   const totalSelectedLength = selectedRules.reduce((total, rule) => total + [...rule.prompt].length, 0);
   let lengthWarningHtml = "";
   if (applies && selectedRules.length > 0) {
-    if (!cloud && totalSelectedLength > 2000) {
-      lengthWarningHtml = `<p class="settings-message settings-message--warning prompt-picker-warning" id="prompt-picker-warning" role="status">⚠️ <strong>Lưu ý về AI cục bộ:</strong> Bạn đang chọn ${selectedRules.length} prompt (tổng ${totalSelectedLength.toLocaleString("vi-VN")} ký tự). Model offline có bộ nhớ ngữ cảnh giới hạn (~2.048 - 4.096 token); nếu prompt quá dài có thể bị quá tải và không xử lý được. Hãy cân nhắc chỉ chọn các prompt cần thiết hoặc chuyển sang dùng AI Cloud trong Cài đặt.</p>`;
-    } else if (cloud && totalSelectedLength > 5000) {
-      lengthWarningHtml = `<p class="settings-message settings-message--warning prompt-picker-warning" id="prompt-picker-warning" role="status">ℹ️ <strong>Lưu ý về AI Cloud:</strong> Bạn đang chọn ${selectedRules.length} prompt (tổng ${totalSelectedLength.toLocaleString("vi-VN")} ký tự). Toàn bộ nội dung sẽ được gửi kèm cho Cloud AI; thời gian rà soát và chi phí token có thể tăng tương ứng.</p>`;
+    if (cloud) {
+      if (totalSelectedLength > 5000) {
+        lengthWarningHtml = `<p class="settings-message settings-message--warning prompt-picker-warning" id="prompt-picker-warning" role="status">ℹ️ <strong>Lưu ý về AI Cloud:</strong> Bạn đang chọn ${selectedRules.length} prompt (tổng ${totalSelectedLength.toLocaleString("vi-VN")} ký tự). Toàn bộ nội dung sẽ được gửi kèm cho Cloud AI; thời gian rà soát và chi phí token có thể tăng tương ứng.</p>`;
+      }
+    } else {
+      // Measured against the model that is actually loaded, not a guessed
+      // character count — an oversized prompt is what stopped jobs outright.
+      lengthWarningHtml = promptBudgetNotice(state.selectedPromptBudget, "review");
     }
   }
 
@@ -480,7 +608,7 @@ function render(preferredFocus?: string): void {
     </nav>
     <main class="workflow-shell">
       ${state.step === "file" ? `<section class="workflow-card workflow-card--file"><div class="section-copy"><h1>Chọn tệp Word cần kiểm tra</h1><p>${state.outputConfig.mode === "in_place" ? `Ứng dụng sẽ ghi chú trực tiếp lên tệp gốc${state.outputConfig.backup_original ? " (có tự động sao lưu .bak)" : ""}.` : "Ứng dụng tạo một bản kết quả mới và luôn giữ nguyên tệp gốc."}</p></div><button class="drop-zone" id="choose"><strong>Chọn hoặc kéo thả tệp .docx</strong><span>Nhấn Ctrl+O để mở nhanh</span></button>${errorHtml()}</section>` : ""}
-      ${state.step === "rules" && doc ? `<section class="workflow-card"><div class="workflow-context"><button class="back-button" id="back">← Chọn tệp khác</button><div class="file-chip"><strong>${escape(doc.name)}</strong><span>${documentMetadata(doc)}</span></div></div><div class="workflow-lead"><div class="section-copy"><div class="ai-provider-badge" id="workflow-ai-badge"><span class="badge-dot ${isCloudActive() ? "badge-dot--cloud" : "badge-dot--local"}"></span><span>${escape(activeAiLabel())}</span></div><h1>Chuẩn bị rà soát</h1><p>${reviewModeDescription()}</p></div><div class="workflow-actions workflow-actions--lead"><button class="button button--primary" id="start">Bắt đầu xử lý</button></div></div>${customRuleSelectionHtml()}${errorHtml()}</section>` : ""}
+      ${state.step === "rules" && doc ? `<section class="workflow-card"><div class="workflow-context"><button class="back-button" id="back">← Chọn tệp khác</button><div class="file-chip"><strong>${escape(doc.name)}</strong><span>${documentMetadata(doc)}</span></div></div><div class="workflow-lead"><div class="section-copy"><div class="ai-provider-badge" id="workflow-ai-badge"><span class="badge-dot ${isCloudActive() ? "badge-dot--cloud" : "badge-dot--local"}"></span><span>${escape(activeAiLabel())}</span></div><h1>Chuẩn bị rà soát</h1><p>${reviewModeDescription()}</p></div><div class="workflow-actions workflow-actions--lead"><button class="button button--primary" id="start" ${promptBudgetBlocksStart() ? 'disabled title="Prompt riêng vượt quá ngữ cảnh của model"' : ""}>Bắt đầu xử lý</button></div></div>${customRuleSelectionHtml()}${errorHtml()}</section>` : ""}
       ${state.step === "processing" ? `<section class="workflow-card processing-panel"><div class="processing-status"><span class="spinner" aria-hidden="true"></span><div class="section-copy"><h1>${progressTitle()}</h1><p class="progress-subtitle">${progressSubtitle()}</p></div></div><div class="progress-row"><div class="progress" role="progressbar" aria-label="Tiến độ xử lý" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${state.progress}"><span style="--progress-scale:${state.progress / 100}"></span></div><strong class="progress-value">${state.progress}%</strong></div><p class="sr-only progress-announcement" aria-live="polite" aria-atomic="true">${progressTitle()} ${state.progress}%</p><div class="workflow-actions"><button class="button button--secondary" id="cancel" ${state.jobStarting || state.cancelPending ? "disabled" : ""} ${state.jobStarting || state.cancelPending ? 'aria-busy="true"' : ""}>${state.jobStarting ? "Đang chuẩn bị…" : state.cancelPending ? "Đang dừng…" : "Dừng xử lý"}</button></div>${errorHtml()}</section>` : ""}
       ${(state.step === "result" || state.step === "no-findings") ? resultHtml() : ""}
     </main>` : settingsHtml()}
@@ -806,10 +934,7 @@ function settingsContent(section: SettingsSection): { body: string; footer: stri
   if (section === "prompts") {
     const editing = state.customRules.find(rule => rule.id === state.editingCustomRuleId);
     const draftLength = [...state.customRuleDraft].length;
-    const isLongPrompt = draftLength > 2000;
-    const promptWarningHtml = isLongPrompt
-      ? `<p class="settings-message settings-message--warning" id="custom-rule-warning" role="status">⚠️ <strong>Prompt khá dài (${draftLength.toLocaleString("vi-VN")} ký tự):</strong> Prompt chi tiết giúp AI hiểu rõ ngữ cảnh hơn. Tuy nhiên, nếu dùng AI cục bộ (offline), prompt quá dài có thể vượt quá bộ nhớ ngữ cảnh. Với AI Cloud, prompt dài sẽ tiêu tốn thêm token và thời gian phản hồi.</p>`
-      : "";
+    const promptWarningHtml = promptDraftWarningHtml();
     const controlsLocked = state.customRulePending || state.settingsLoading;
     const saveDisabled = controlsLocked;
     const promptList = state.customRules.length
@@ -1149,6 +1274,7 @@ function bind(): void {
       ? [...new Set([...state.selectedRuleIds, id])]
       : state.selectedRuleIds.filter(item => item !== id);
     render(`[data-select-rule="${id}"]`);
+    void refreshSelectedPromptBudget().then(() => render(`[data-select-rule="${id}"]`));
   }));
   document.querySelector<HTMLInputElement>("#custom-rule-title")?.addEventListener("input", event => {
     state.customRuleTitleDraft = (event.target as HTMLInputElement).value;
@@ -1178,21 +1304,8 @@ function bind(): void {
     if (counter) {
       counter.textContent = draftLength > 0 ? `${draftLength.toLocaleString("vi-VN")} ký tự` : "";
     }
-    const isLong = draftLength > 2000;
-    const existingWarning = document.querySelector("#custom-rule-warning");
-    if (isLong && !existingWarning) {
-      const warning = document.createElement("p");
-      warning.className = "settings-message settings-message--warning";
-      warning.id = "custom-rule-warning";
-      warning.setAttribute("role", "status");
-      warning.innerHTML = `⚠️ <strong>Prompt khá dài (${draftLength.toLocaleString("vi-VN")} ký tự):</strong> Prompt chi tiết giúp AI hiểu rõ ngữ cảnh hơn. Tuy nhiên, nếu dùng AI cục bộ (offline), prompt quá dài có thể vượt quá bộ nhớ ngữ cảnh. Với AI Cloud, prompt dài sẽ tiêu tốn thêm token và thời gian phản hồi.`;
-      const controlParent = (event.target as HTMLTextAreaElement).closest(".control");
-      controlParent?.appendChild(warning);
-    } else if (isLong && existingWarning) {
-      existingWarning.innerHTML = `⚠️ <strong>Prompt khá dài (${draftLength.toLocaleString("vi-VN")} ký tự):</strong> Prompt chi tiết giúp AI hiểu rõ ngữ cảnh hơn. Tuy nhiên, nếu dùng AI cục bộ (offline), prompt quá dài có thể vượt quá bộ nhớ ngữ cảnh. Với AI Cloud, prompt dài sẽ tiêu tốn thêm token và thời gian phản hồi.`;
-    } else if (!isLong && existingWarning) {
-      existingWarning.remove();
-    }
+    paintPromptDraftWarning((event.target as HTMLTextAreaElement).closest(".control"));
+    void refreshPromptDraftBudget();
     updateCustomRuleSaveControl();
   });
   document.querySelector<HTMLFormElement>("#custom-rule-form")?.addEventListener("submit", event => void saveCustomRule(event));
@@ -1359,8 +1472,8 @@ async function chooseSeq2SeqModelDir(): Promise<void> {
     } else {
       state.settingsMessage = { tone: 'status', text: 'Đã lưu đường dẫn model seq2seq.' };
     }
-  } catch {
-    state.settingsMessage = { tone: 'error', text: 'Không thể chọn thư mục. Hãy thử lại.' };
+  } catch (error) {
+    state.settingsMessage = { tone: 'error', text: settingsErrorMessage(error, 'Không thể chọn thư mục. Hãy thử lại.') };
   } finally {
     state.seq2seqSaving = false;
     render('#seq2seq-choose-dir');
@@ -1443,6 +1556,9 @@ function useDocument(document: DocumentInfo): void {
   settingsRequestSequence += 1;
   Object.assign(state, { document, step: "rules", result: null, jobId: "", jobStarting: false, cancelPending: false, outputActionPending: null, progress: 0, progressStage: "", error: "", settingsLoading: false });
   render();
+  // Measure the ticked prompts against the active model before the user can
+  // press Start, so an oversized prompt is caught here and not mid-job.
+  void refreshSelectedPromptBudget().then(() => render());
 }
 async function choose(): Promise<void> {
   if (!isWorkflowView() || state.step === "processing") return;
