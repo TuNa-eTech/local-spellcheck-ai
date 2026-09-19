@@ -236,7 +236,7 @@ $package = Get-LockedPackage -LockPath $lockPath -Name "llama-cpp-python"
 $architectureTag = ($architectures -replace '[^0-9a-zA-Z]', '')
 $cacheKey = "llama-cpp-python-$($package.Version)-$pythonTag-cu$nvccVersion-sm$architectureTag"
 $wheelDir = Join-Path $wheelCacheRoot $cacheKey
-$wheel = Get-ChildItem -LiteralPath $wheelDir -Filter "*$pythonTag*.whl" -File -ErrorAction SilentlyContinue |
+$wheel = Get-ChildItem -LiteralPath $wheelDir -Filter "*.whl" -File -ErrorAction SilentlyContinue |
     Select-Object -First 1
 
 if ($wheel) {
@@ -303,10 +303,10 @@ else {
             $env:CMAKE_GENERATOR = $previousGenerator
         }
         Write-Step "Bien dich xong sau $([int]((Get-Date) - $started).TotalMinutes) phut"
-        $wheel = Get-ChildItem -LiteralPath $wheelDir -Filter "*$pythonTag*.whl" -File |
+        $wheel = Get-ChildItem -LiteralPath $wheelDir -Filter "*.whl" -File |
             Select-Object -First 1
         if (-not $wheel) {
-            throw "uv build khong tao ra wheel $pythonTag nao trong $wheelDir."
+            throw "uv build khong tao ra wheel nao trong $wheelDir."
         }
     }
     finally {
