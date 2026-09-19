@@ -1,0 +1,74 @@
+﻿name: build-portable
+
+on:
+  workflow_dispatch:
+    inputs:
+      cuda:
+        description: "Build with CUDA support (CUDA + CPU fallback)"
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "24"
+  PYTHON_VERSION: "3.12"
+  SOATVAN_CUDA_ARCHS: "75-real;86-real;89-real;120-real;120-virtual"
+
+jobs:
+  build-portable-windows:
+    name: Build Windows x64 Portable
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: engine/uv.lock
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@1.98.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: desktop
+          workspaces: apps/desktop/src-tauri -> target
+
+      - name: Install CUDA Toolkit
+        if: ${{ inputs.cuda }}
+        uses: Jimver/cuda-toolkit@v0.2.36
+        with:
+          cuda: "12.8.1"
+          method: network
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
+
+      - name: Cache CUDA llama.cpp wheel
+        if: ${{ inputs.cuda }}
+        uses: actions/cache@v4
+        with:
+          path: dist/wheels
+          key: ${{ runner.os }}-llama-cuda-${{ hashFiles('engine/uv.lock') }}
+
+      - name: Build Portable Package
+        timeout-minutes: 90
+        env:
+          SOATVAN_CUDA: ${{ inputs.cuda && 'on' || 'off' }}
+          SOATVAN_REQUIRE_CUDA: ${{ inputs.cuda && '1' || '0' }}
+        run: npm run build:portable
+
+      - name: Upload Portable Zip Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SoatVan-Windows-x64-Portable
+          path: dist/*-Portable.zip
+          if-no-files-found: error
+          retention-days: 14

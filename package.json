@@ -6,6 +6,8 @@
     "build": "npm --prefix apps/desktop run build",
     "build:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1",
     "build:portable": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-portable.ps1",
+    "build:portable:cuda": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"& { $env:SOATVAN_CUDA='on'; $env:SOATVAN_REQUIRE_CUDA='1'; & ./scripts/build-portable.ps1 }\"",
+    "setup:cuda": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-local-cuda.ps1",
     "build:macos": "bash scripts/build-macos.sh",
     "tauri": "npm --prefix apps/desktop run tauri --",
     "test:engine": "uv run --project engine pytest",
