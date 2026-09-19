@@ -27,6 +27,12 @@ from soatvan.models import (
     runtime_available,
     test_ai_connection,
 )
+from soatvan.models.gpu import (
+    OffloadGuard,
+    backend_report,
+    local_data_dir,
+    offload_mode,
+)
 from soatvan.models.seq2seq_speller import is_transformers_available
 from soatvan.workflow import ProcessDocument, ProcessRequest
 from soatvan.workflow.ports import ContextClassifier
@@ -162,13 +168,7 @@ class DynamicClassifierProvider:
 class Sidecar:
     def __init__(self, local_data: Path | None = None) -> None:
         if local_data is None:
-            configured_data = os.environ.get("SOATVAN_DATA_DIR")
-            local_data = (
-                Path(configured_data)
-                if configured_data
-                else Path(os.environ.get("LOCALAPPDATA", Path.home() / ".local" / "share"))
-                / "SoatVan"
-            )
+            local_data = local_data_dir()
         self.documents = DocxPackage()
         self.dictionary = SqliteDictionaryRepository(local_data / "dictionary.db")
         self.custom_rules = SqliteCustomRuleRepository(local_data / "preferences.db")
@@ -768,7 +768,35 @@ def _log_dev_exception(context: str, error: Exception, code: str) -> None:
     )
 
 
+def gpu_report() -> int:
+    """``soatvan-engine --gpu-report``: what the bundled llama.cpp can see.
+
+    The Windows build asserts on this (a release must report a CUDA backend),
+    and it is the first thing to ask for when a user's RTX machine feels as
+    slow as a CPU-only one.
+    """
+    report: dict[str, Any] = {
+        "engine_version": __version__,
+        "offload_mode": offload_mode(),
+    }
+    try:
+        import importlib
+
+        llama = importlib.import_module("llama_cpp")
+    except Exception as error:  # a GPU build missing a runtime DLL fails here
+        report["runtime_available"] = False
+        report["error"] = f"{type(error).__name__}: {error}"
+    else:
+        report["runtime_available"] = True
+        report.update(backend_report(llama))
+    report["blocked_reason"] = OffloadGuard(local_data_dir()).blocked_reason()
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0
+
+
 def main() -> None:
+    if "--gpu-report" in sys.argv[1:]:
+        raise SystemExit(gpu_report())
     configure_logging()
     LOGGER.info("engine %s starting (protocol %s)", __version__, PROTOCOL_VERSION)
     sidecar = Sidecar()

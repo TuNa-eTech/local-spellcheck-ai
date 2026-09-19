@@ -47,6 +47,11 @@ try {
     Write-Host "`n[1/5] Dong bo dependency va build Python engine..." -ForegroundColor Yellow
     Invoke-Checked "uv" @("sync", "--project", "engine", "--extra", "dev", "--extra", "model", "--extra", "seq2seq", "--locked")
 
+    # `uv sync` chi bien dich llama.cpp cho CPU. Buoc nay cai de len ban CUDA va
+    # goi kem CUDA runtime, nho do ban Portable chay duoc GPU tren may co RTX ma
+    # khong can cai CUDA Toolkit. Khong co Toolkit luc build thi giu ban CPU.
+    & (Join-Path $PSScriptRoot "build-llama-cuda.ps1")
+
     Push-Location $engineDir
     try {
         Invoke-Checked "uv" @("run", "pyinstaller", "--noconfirm", "--clean", "soatvan-engine.spec")
@@ -71,6 +76,11 @@ try {
         "--engine", $engineExecutable,
         "--artifacts", $acceptanceDir
     )
+    # Ban phat hanh phai bao cao backend CUDA; ban build may khong co Toolkit thi
+    # chi in ra bao cao de doi chieu.
+    if ($env:SOATVAN_REQUIRE_CUDA -eq "1") {
+        $acceptanceArgs += "--expect-cuda"
+    }
     # Neu co model seq2seq that, kiem tra luon ca duong torch/transformers/
     # sentencepiece trong ban dong goi (bang khong thi buoc nay bo qua seq2seq).
     if (-not [string]::IsNullOrWhiteSpace($env:SOATVAN_SEQ2SEQ_MODEL_DIR)) {
@@ -117,6 +127,14 @@ try {
     # 6. Nen Zip
     Write-Host "`n[5/5] Nen file zip Portable..." -ForegroundColor Yellow
     $desktopVersion = (Get-Content -LiteralPath (Join-Path $desktopDir "package.json") -Raw | ConvertFrom-Json).version
+    # CUDA runtime lam thu muc Portable nang them ~650 MB; Compress-Archive
+    # khong tao duoc zip lon hon 2 GB nen canh bao truoc khi nen.
+    $portableBytes = (Get-ChildItem -LiteralPath $portableDir -Recurse -File |
+        Measure-Object -Property Length -Sum).Sum
+    Write-Host ("Ban Portable truoc khi nen: {0:N0} MB" -f [math]::Round($portableBytes / 1MB))
+    if ($portableBytes -gt 3GB) {
+        Write-Warning "Thu muc Portable rat lon — neu Compress-Archive that bai (gioi han 2 GB), dung SOATVAN_CUDA=off hoac nen bang 7-Zip."
+    }
     $portableZip = Join-Path $distDir "SoatVan-v$desktopVersion-Windows-x64-Portable.zip"
     if (Test-Path -LiteralPath $portableZip) {
         Remove-Item -LiteralPath $portableZip -Force

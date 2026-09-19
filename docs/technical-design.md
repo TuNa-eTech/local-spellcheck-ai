@@ -405,7 +405,7 @@ Mốc “50 trang” phải gắn với corpus cố định và machine profile 
 
 ### 11.1. Runtime
 
-`ContextClassifier` và `FullTextReviewer` che giấu cùng runtime. Adapter hỏi backend `llama.cpp` về khả năng GPU offload: nếu có thì offload toàn bộ layer, nếu khởi tạo thất bại thì fallback CPU. Runtime/model được tái sử dụng giữa các batch/chunk, không load lại cho từng lời gọi và không chạy nhiều chunk song song.
+`ContextClassifier` và `FullTextReviewer` che giấu cùng runtime. Adapter hỏi backend `llama.cpp` về khả năng GPU offload: nếu có thì offload toàn bộ layer, nếu khởi tạo thất bại thì fallback CPU. Bản Windows build llama.cpp với backend CUDA và đóng gói kèm CUDA runtime, nên máy có card NVIDIA offload thẳng lên GPU còn máy không có thiết bị nào thì `llama_supports_gpu_offload()` trả false và engine chạy CPU. Vì một lần nạp lên GPU có thể abort cả tiến trình (không bắt được bằng `except`), marker `gpu-offload.json` trong thư mục dữ liệu được ghi trước khi nạp: lần chạy sau đọc thấy marker chưa đóng thì chuyển hẳn sang CPU cho tới khi `SOATVAN_GPU_OFFLOAD=force`. Runtime/model được tái sử dụng giữa các batch/chunk, không load lại cho từng lời gọi và không chạy nhiều chunk song song.
 
 Không gọi `from_pretrained` hoặc API tự tải trong Python engine. Python chỉ nhận đường dẫn model đã được Rust/model registry xác minh. Model cụ thể, quantization, context size và RAM tối thiểu chỉ được chốt sau PoC trên 20 file.
 

@@ -155,8 +155,14 @@ else {
 
 Push-Location $repoRoot
 try {
-    Write-Host "[1/6] Dong bo dependency Python"
+    Write-Host "[1/7] Dong bo dependency Python"
     Invoke-Checked "uv" @("sync", "--project", "engine", "--extra", "dev", "--extra", "model", "--extra", "seq2seq", "--locked")
+
+    # `uv sync` bien dich llama-cpp-python tu sdist voi CMake mac dinh (chi CPU).
+    # Buoc nay cai de len ban CUDA de may co card RTX dung duoc GPU; khong co
+    # CUDA Toolkit thi giu nguyen ban CPU (dat SOATVAN_REQUIRE_CUDA=1 de bat buoc).
+    Write-Host "[2/7] Bat backend CUDA cho llama.cpp"
+    & (Join-Path $PSScriptRoot "build-llama-cuda.ps1")
 
     if ($env:SOATVAN_PYINSTALLER_CACHE_HIT -eq "true") {
         $engineBuildDir = Join-Path $engineDir "build\soatvan-engine"
@@ -167,7 +173,7 @@ try {
         }
     }
 
-    Write-Host "[2/6] Build Python sidecar onedir"
+    Write-Host "[3/7] Build Python sidecar onedir"
     Push-Location $engineDir
     try {
         Invoke-Checked "uv" @("run", "pyinstaller", "--noconfirm", "--clean", "soatvan-engine.spec")
@@ -181,7 +187,21 @@ try {
         throw "PyInstaller khong tao executable $engineExecutable."
     }
 
-    Write-Host "[3/6] Tai certificate ky code tu secret hoac tao self-signed fallback"
+    # Hoi chinh engine da dong goi xem no thay backend nao — bat duoc ngay truong
+    # hop wheel CUDA co nhung DLL runtime khong duoc goi vao ban phat hanh.
+    $gpuReport = (& $engineExecutable "--gpu-report") -join "`n"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Engine dong goi khong chay duoc (--gpu-report exit $LASTEXITCODE): $gpuReport"
+    }
+    Write-Host "[gpu] $gpuReport"
+    if ($gpuReport -notmatch '"runtime_available":\s*true') {
+        throw "Engine dong goi khong load duoc llama.cpp: $gpuReport"
+    }
+    if ($env:SOATVAN_REQUIRE_CUDA -eq "1" -and $gpuReport -notmatch '"CUDA"') {
+        throw "Engine dong goi khong bao cao backend CUDA."
+    }
+
+    Write-Host "[4/7] Tai certificate ky code tu secret hoac tao self-signed fallback"
     $signingPfxPath = $env:SOATVAN_WINDOWS_CERT_PFX
     if ([string]::IsNullOrWhiteSpace($signingPfxPath) -and -not [string]::IsNullOrWhiteSpace($env:SOATVAN_WINDOWS_CERT_PFX_BASE64)) {
         try {
@@ -363,7 +383,7 @@ try {
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText($personalSigningConfigPath, $personalSigningConfig, $utf8NoBom)
 
-    Write-Host "[4/6] Dong bo sidecar va dependency frontend"
+    Write-Host "[5/7] Dong bo sidecar va dependency frontend"
     New-Item -ItemType Directory -Force -Path $engineResourceDir | Out-Null
     Get-ChildItem -Force -LiteralPath $engineResourceDir |
         Where-Object { $_.Name -ne "README.txt" } |
@@ -373,7 +393,7 @@ try {
         Invoke-Checked "npm" @("--prefix", "apps/desktop", "ci")
     }
 
-    Write-Host "[5/6] Build va ky Tauri NSIS installer"
+    Write-Host "[6/7] Build va ky Tauri NSIS installer"
     Invoke-Checked "npx" @(
         "--prefix", "apps/desktop", "tauri",
         "build", "--bundles", "nsis", "--config", $personalSigningConfigPath
@@ -394,7 +414,7 @@ try {
     )
     [System.IO.File]::WriteAllBytes($publicCertificatePath, $publicCertificateBytes)
 
-    Write-Host "[6/6] Dong goi ban Portable va cap nhat dist"
+    Write-Host "[7/7] Dong goi ban Portable va cap nhat dist"
     $portableDir = Join-Path $repoRoot "dist\SoatVan-Portable"
     if (Test-Path -LiteralPath $portableDir) { Remove-Item -LiteralPath $portableDir -Recurse -Force }
     New-Item -ItemType Directory -Force -Path $portableDir | Out-Null
@@ -414,6 +434,14 @@ try {
 
     $desktopVersion = (Get-Content -LiteralPath (Join-Path $repoRoot "apps\desktop\package.json") `
         -Raw | ConvertFrom-Json).version
+    # CUDA runtime lam thu muc Portable nang them ~650 MB; Compress-Archive
+    # khong tao duoc zip lon hon 2 GB nen canh bao truoc khi nen.
+    $portableBytes = (Get-ChildItem -LiteralPath $portableDir -Recurse -File |
+        Measure-Object -Property Length -Sum).Sum
+    Write-Host ("Ban Portable truoc khi nen: {0:N0} MB" -f [math]::Round($portableBytes / 1MB))
+    if ($portableBytes -gt 3GB) {
+        Write-Warning "Thu muc Portable rat lon — neu Compress-Archive that bai (gioi han 2 GB), dung SOATVAN_CUDA=off hoac nen bang 7-Zip."
+    }
     $portableZip = Join-Path $repoRoot "dist\SoatVan-v$desktopVersion-Windows-x64-Portable.zip"
     if (Test-Path -LiteralPath $portableZip) { Remove-Item -LiteralPath $portableZip -Force }
     Compress-Archive -Path (Join-Path $portableDir "*") -DestinationPath $portableZip -CompressionLevel Optimal

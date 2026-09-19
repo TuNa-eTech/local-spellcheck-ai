@@ -17,6 +17,7 @@ Không copy sidecar đã build giữa Windows, macOS, arm64 và x86_64.
 - Rust 1.98.0 qua `rustup`; repository đã pin phiên bản bằng `rust-toolchain.toml`.
 - `uv` và Python 3.12 do `uv` quản lý.
 - Dependency hệ thống của Tauri 2 cho nền tảng đang build.
+- Chỉ khi build Windows có tăng tốc GPU: CUDA Toolkit 12.8 trở lên (`nvcc`) và Visual Studio Build Tools với workload C++ (`Microsoft.VisualStudio.Component.VC.Tools.x86.x64`). Thiếu hai thứ này, script build vẫn chạy nhưng cho ra bản chỉ dùng CPU.
 
 Chạy script từ bất kỳ thư mục nào trong shell đều được; script tự xác định repository root. Dependency Python được cài từ `engine/uv.lock`, dependency frontend được cài bằng `npm ci` từ lockfile.
 
@@ -48,6 +49,16 @@ apps/desktop/src-tauri/target/release/bundle/nsis/*.exe
 
 Installer dùng WebView2 `offlineInstaller`, vì vậy kích thước lớn hơn nhưng không cần tải WebView2 trong lúc cài đặt.
 
+### Backend CUDA cho llama.cpp
+
+Bước `[2/7]` của script gọi `scripts/build-llama-cuda.ps1`: tải đúng sdist `llama-cpp-python` đã khoá trong `engine/uv.lock` (kiểm SHA-256), build lại bằng `-DGGML_CUDA=on` qua Ninja + MSVC, cài đè lên bản CPU mà `uv sync` vừa dựng, rồi copy `cudart64_*.dll`, `cublas64_*.dll`, `cublasLt64_*.dll` vào `llama_cpp/lib` để PyInstaller gói kèm.
+
+Script dừng build nếu wheel vừa cài không báo cáo backend CUDA, và `engine/soatvan-engine.spec` dừng build nếu có `ggml-cuda.dll` mà thiếu CUDA runtime — hai lỗi này nếu lọt sẽ làm engine không load được llama.cpp trên máy người dùng.
+
+Wheel được cache tại `dist/wheels/<version>-<python tag>-cu<toolkit>-sm<archs>/`; xoá thư mục này để build lại từ đầu. Các biến `SOATVAN_CUDA`, `SOATVAN_REQUIRE_CUDA`, `SOATVAN_CUDA_ARCHS`, `SOATVAN_LLAMA_CMAKE_ARGS` được mô tả trong [README](../README.md#tăng-tốc-bằng-gpu-nvidia-cuda).
+
+Lưu ý: chạy lại `uv sync --project engine ... --locked` sau bước này sẽ cài lại bản CPU từ registry. Chạy lại `scripts/build-llama-cuda.ps1` (dùng wheel cache, gần như tức thì) để khôi phục.
+
 ### Windows acceptance
 
 Không chạy hoặc mô phỏng Windows acceptance trên macOS. Workflow `.github/workflows/ci.yml` chạy toàn bộ phần phụ thuộc Windows trên `windows-latest`:
@@ -58,6 +69,7 @@ Không chạy hoặc mô phỏng Windows acceptance trên macOS. Workflow `.gith
 - validate output bằng Microsoft Open XML SDK;
 - build/cài NSIS với manifest `asInvoker`;
 - launch app đã cài, xác nhận sidecar được bundle, không có established TCP connection và không còn process sau khi host bị kill;
+- kiểm tra gói cài đặt có đủ `ggml-cuda.dll` cùng CUDA runtime khi build ở chế độ CUDA;
 - scan installer bằng Microsoft Defender.
 
 Script kiểm tra package có thể gọi lại trên Windows runner:

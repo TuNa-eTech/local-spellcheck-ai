@@ -106,6 +106,42 @@ CI Windows build PyInstaller `onedir`, copy toàn bộ onedir vào Tauri resourc
 
 Ứng dụng không có đường tải model qua mạng. Model chỉ được đưa vào máy bằng lệnh nhập gói: `.svmodel` đã ký được kiểm manifest, size, SHA-256 và chữ ký Ed25519 trước khi đổi active directory atomically, còn `.gguf` nhập trực tiếp được đánh dấu `local_unverified`. Xác minh chữ ký gói ký số cần biến compile-time `SOATVAN_MODEL_PUBLIC_KEY` (Ed25519 public key base64); không có biến này, nhập gói ký số fail-closed với `MODEL_NOT_CONFIGURED`.
 
+## Tăng tốc bằng GPU NVIDIA (CUDA)
+
+Bản Windows (cả installer lẫn portable) đóng gói llama.cpp build sẵn backend CUDA cùng CUDA runtime (`cudart64_*.dll`, `cublas64_*.dll`, `cublasLt64_*.dll`), nên máy có card RTX chạy GPU ngay mà **không cần cài CUDA Toolkit**. Chỉ cần driver NVIDIA đủ mới (CUDA 12.8 yêu cầu driver ≥ 570). Khi không tìm thấy thiết bị NVIDIA — hoặc driver quá cũ — llama.cpp không đăng ký thiết bị CUDA nào và engine tự chạy CPU; không có bước nào phải thao tác thủ công.
+
+Kiểm tra máy người dùng đang chạy gì:
+
+```powershell
+.\engine\soatvan-engine.exe --gpu-report
+```
+
+`backends` chứa `CUDA` nghĩa là bản build có backend GPU; `supports_offload: true` nghĩa là máy này thật sự có thiết bị dùng được và engine sẽ offload toàn bộ layer (`n_gpu_layers=-1`).
+
+| Biến môi trường | Tác dụng |
+| --- | --- |
+| `SOATVAN_GPU_OFFLOAD=off` | Ép chạy CPU kể cả khi có GPU |
+| `SOATVAN_GPU_OFFLOAD=force` | Bỏ khoá an toàn và thử lại GPU sau một lần nạp hỏng |
+
+Nếu một lần nạp model lên GPU làm chết tiến trình engine (driver lỗi, hết VRAM), engine ghi nhận và các lần sau tự chạy CPU thay vì chết lặp lại; `--gpu-report` hiển thị lý do ở `blocked_reason`.
+
+Model chính tả seq2seq vẫn chạy CPU: bản PyTorch CUDA cho Windows nặng ~2,5 GB nên không đóng gói kèm. Mô hình này nhỏ, phần nặng là LLM và phần đó đã dùng GPU.
+
+### Build lại phần CUDA
+
+`uv sync` biên dịch llama-cpp-python từ sdist bằng CMake mặc định (chỉ CPU), nên `scripts/build-llama-cuda.ps1` build lại đúng phiên bản đã khoá trong `engine/uv.lock` với `-DGGML_CUDA=on` rồi cài đè. Hai script build Windows tự gọi script này.
+
+Yêu cầu trên máy build: CUDA Toolkit (nvcc) 12.8+ và Visual Studio Build Tools (workload C++). Lần đầu mất 15–40 phút; wheel được cache tại `dist/wheels/` theo phiên bản + Python tag + kiến trúc nên các lần sau gần như tức thì.
+
+| Biến môi trường | Mặc định | Tác dụng |
+| --- | --- | --- |
+| `SOATVAN_CUDA` | `auto` | `auto` bỏ qua khi máy build không có nvcc; `on` bắt buộc CUDA; `off` giữ bản CPU |
+| `SOATVAN_REQUIRE_CUDA=1` | — | Build fail nếu không tạo được backend CUDA (dùng cho release) |
+| `SOATVAN_CUDA_ARCHS` | `75-real;86-real;89-real;120-real;120-virtual` | Kiến trúc CUDA: RTX 20/30/40/50 + PTX dự phòng. Kiến trúc nvcc không hỗ trợ sẽ tự bị loại |
+| `SOATVAN_LLAMA_CMAKE_ARGS` | — | Thay toàn bộ `CMAKE_ARGS` (ví dụ dùng `-DGGML_VULKAN=on` thay CUDA) |
+
+CUDA runtime làm bản portable nặng thêm khoảng 650 MB trước khi nén (`cublasLt64_*.dll` chiếm phần lớn). Dùng `SOATVAN_CUDA=off` nếu cần bản gọn chỉ chạy CPU.
+
 ## Trạng thái milestone
 
 - M0: source layout, protocol, persistent sidecar, crash/error boundary, safe DOCX ZIP validation, PyInstaller `onedir`, advanced golden DOCX và Windows Job Object đã được tự động hoá trong workflow `verify`.

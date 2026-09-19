@@ -19,6 +19,7 @@ from soatvan.workflow.ports import (
     ReviewCandidate,
 )
 
+from .gpu import OffloadGuard, backend_report, local_data_dir, offload_allowed
 from .review import (
     LIGHTWEIGHT_REVIEW_SCHEMA,
     LLM_ONLY_REVIEW_SCHEMA,
@@ -139,7 +140,9 @@ def runtime_available() -> bool:
     try:
         import_module("llama_cpp")
         return True
-    except ImportError:
+    except Exception:
+        # A GPU build whose runtime DLLs are missing raises RuntimeError here;
+        # either way there is no local runtime to advertise.
         return False
 
 
@@ -221,19 +224,42 @@ def _default_runtime_factory(model_path: Path, context_size: int, seed: int) -> 
     try:
         llama = import_module("llama_cpp")
         print("[soatvan-engine] _default_runtime_factory: llama_cpp imported OK", file=sys.stderr)
-    except ImportError as error:
-        print(f"[soatvan-engine] _default_runtime_factory: llama_cpp NOT installed: {error}", file=sys.stderr)
-        raise ModelRuntimeUnavailable("llama-cpp-python is not installed") from error
-    gpu_layers = _preferred_gpu_layers(llama)
-    print(f"[soatvan-engine] _default_runtime_factory: gpu_layers={gpu_layers}", file=sys.stderr)
+    except Exception as error:
+        # Not just ImportError: llama_cpp raises RuntimeError/OSError when the
+        # native library is present but cannot be loaded — a GPU build missing
+        # one of its runtime DLLs lands here, and it must read as "no local
+        # runtime" rather than crash the job.
+        print(f"[soatvan-engine] _default_runtime_factory: llama_cpp unusable: {type(error).__name__}: {error}", file=sys.stderr)
+        raise ModelRuntimeUnavailable("llama-cpp-python is not usable") from error
+    report = backend_report(llama)
+    print(
+        f"[soatvan-engine] _default_runtime_factory: llama.cpp backends={report['backends']}, "
+        f"supports_offload={report['supports_offload']}",
+        file=sys.stderr,
+    )
+    guard = OffloadGuard(local_data_dir())
+    allowed, offload_reason = offload_allowed(guard, report)
+    gpu_layers = _preferred_gpu_layers(llama) if allowed else 0
+    print(
+        f"[soatvan-engine] _default_runtime_factory: gpu_layers={gpu_layers} ({offload_reason})",
+        file=sys.stderr,
+    )
     try:
         print(f"[soatvan-engine] _default_runtime_factory: loading model (gpu_layers={gpu_layers})...", file=sys.stderr)
+        if gpu_layers != 0:
+            # Marker on disk for the whole native load: a GPU load that aborts
+            # the process leaves it behind, and the next run reads it and stays
+            # on CPU instead of crashing again.
+            guard.begin()
         runtime = _create_llama_runtime(llama, model_path, context_size, seed, gpu_layers)
+        if gpu_layers != 0:
+            guard.succeeded()
         print("[soatvan-engine] _default_runtime_factory: model loaded OK", file=sys.stderr)
         return cast(CompletionRuntime, _NativeLlamaRuntime(runtime, llama))
     except Exception as error:
         print(f"[soatvan-engine] _default_runtime_factory: FAILED with gpu_layers={gpu_layers}: {type(error).__name__}: {error}", file=sys.stderr)
         if gpu_layers != 0:
+            guard.failed(f"{type(error).__name__}: {error}")
             try:
                 print("[soatvan-engine] _default_runtime_factory: retrying with gpu_layers=0...", file=sys.stderr)
                 runtime = _create_llama_runtime(llama, model_path, context_size, seed, 0)

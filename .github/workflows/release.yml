@@ -15,6 +15,9 @@ permissions:
 env:
   NODE_VERSION: "24"
   PYTHON_VERSION: "3.12"
+  # SASS cho RTX 20/30/40 (75/86/89) + Blackwell (120), kem PTX cua 120 de card
+  # moi hon van chay duoc. Doi day nay thi cache wheel CUDA tu dong mat hieu luc.
+  SOATVAN_CUDA_ARCHS: "75-real;86-real;89-real;120-real;120-virtual"
 
 jobs:
   verify:
@@ -107,6 +110,25 @@ jobs:
           shared-key: desktop
           workspaces: apps/desktop/src-tauri -> target
 
+      # llama-cpp-python chi co sdist tren PyPI, nen backend GPU phai duoc bien
+      # dich o day; khong co Toolkit thi ban phat hanh se la CPU-only.
+      - name: Install CUDA Toolkit
+        uses: Jimver/cuda-toolkit@v0.2.36
+        with:
+          cuda: "12.8.1"
+          method: network
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
+
+      # Bien dich llama.cpp + CUDA mat 15-40 phut, nen wheel duoc cache theo
+      # phien ban khoa trong uv.lock va danh sach kien truc.
+      - name: Cache CUDA llama.cpp wheel
+        uses: actions/cache@v4
+        with:
+          path: dist/wheels
+          # Workflow file nam trong key vi SOATVAN_CUDA_ARCHS duoc dinh nghia o
+          # day — doi kien truc la cache tu dong mat hieu luc.
+          key: ${{ runner.os }}-llama-cuda-${{ hashFiles('engine/uv.lock', '.github/workflows/release.yml') }}
+
       - name: Cache Tauri Windows bundler tools
         uses: actions/cache@v4
         with:
@@ -116,9 +138,11 @@ jobs:
             ${{ runner.os }}-tauri-bundler-
 
       - name: Build NSIS installer
-        timeout-minutes: 45
+        timeout-minutes: 120
         run: npm run build:windows
         env:
+          SOATVAN_CUDA: "on"
+          SOATVAN_REQUIRE_CUDA: "1"
           SOATVAN_PYINSTALLER_CACHE_HIT: ${{ steps.pyinstaller-cache.outputs.cache-hit }}
           SOATVAN_MODEL_PUBLIC_KEY: ${{ vars.SOATVAN_MODEL_PUBLIC_KEY }}
           SOATVAN_WINDOWS_CERT_PFX_BASE64: ${{ secrets.SOATVAN_WINDOWS_CERT_PFX_BASE64 }}
@@ -127,11 +151,13 @@ jobs:
       - name: Run Windows M0/M1 acceptance and M2 capability probe
         timeout-minutes: 20
         shell: pwsh
+        env:
+          SOATVAN_REQUIRE_CUDA: "1"
         run: |
           New-Item -ItemType Directory -Force artifacts/windows-acceptance | Out-Null
           uv run --project engine python engine/tests/windows_frozen_acceptance.py `
             --engine engine/dist/soatvan-engine/soatvan-engine.exe `
-            --artifacts artifacts/windows-acceptance
+            --artifacts artifacts/windows-acceptance --expect-cuda
           $env:SOATVAN_ACCEPTANCE_OUTPUT = "artifacts/windows-acceptance/golden-output.docx"
           uv run --project engine pytest engine/tests/test_docx.py::test_golden_package_preserves_unsupported_parts_and_existing_annotations
           $documents = Get-ChildItem artifacts/windows-acceptance/*.docx

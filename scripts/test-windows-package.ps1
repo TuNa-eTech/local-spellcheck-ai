@@ -110,6 +110,25 @@ try {
         throw "Expected one packaged sidecar, found $($packagedEngines.Count)"
     }
     Write-Host "[acceptance] Packaged sidecar: $($packagedEngines[0].FullName)"
+
+    # Ban CUDA phai mang theo ca backend lan CUDA runtime: thieu mot DLL la
+    # llama.cpp khong load duoc, ca duong AI local chet chu khong chi mat GPU.
+    $engineLibDir = Join-Path $packagedEngines[0].Directory.FullName "_internal\llama_cpp\lib"
+    if (Test-Path -LiteralPath (Join-Path $engineLibDir "ggml-cuda.dll") -PathType Leaf) {
+        foreach ($pattern in @("cudart64_*.dll", "cublas64_*.dll", "cublasLt64_*.dll")) {
+            $present = @(Get-ChildItem -LiteralPath $engineLibDir -Filter $pattern -File -ErrorAction SilentlyContinue)
+            if ($present.Count -eq 0) {
+                throw "CUDA backend duoc dong goi nhung thieu $pattern trong $engineLibDir"
+            }
+        }
+        Write-Host "[acceptance] CUDA backend + runtime da co trong goi cai dat"
+    }
+    elseif ($env:SOATVAN_REQUIRE_CUDA -eq "1") {
+        throw "Goi cai dat khong co ggml-cuda.dll trong $engineLibDir"
+    }
+    else {
+        Write-Host "[acceptance] Goi cai dat la ban CPU (khong co ggml-cuda.dll)"
+    }
     Write-Host "[acceptance] Probe packaged sidecar under standard-user credential"
     '{"v":1,"id":"acceptance-hello","method":"engine.hello","params":{}}' |
         Set-Content -LiteralPath $probeInput -Encoding utf8NoBOM

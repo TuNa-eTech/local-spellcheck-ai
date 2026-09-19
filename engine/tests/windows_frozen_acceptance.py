@@ -75,6 +75,13 @@ def main() -> int:
     parser.add_argument("--engine", type=Path, required=True)
     parser.add_argument("--artifacts", type=Path, required=True)
     parser.add_argument(
+        "--expect-cuda",
+        action="store_true",
+        help="Fail unless the packaged engine reports a CUDA backend. A release "
+        "build must ship one; whether a *device* is found depends on the "
+        "machine, so only the compiled-in backend is asserted here.",
+    )
+    parser.add_argument(
         "--seq2seq-model-dir",
         type=Path,
         default=None,
@@ -83,6 +90,7 @@ def main() -> int:
     )
     args = parser.parse_args()
     args.artifacts.mkdir(parents=True, exist_ok=True)
+    _verify_gpu_backend(args.engine, args.artifacts, args.expect_cuda)
     stderr_log = args.artifacts / "frozen-sidecar-stderr.log"
     with tempfile.TemporaryDirectory(prefix="soatvan-windows-") as temporary:
         root = Path(temporary)
@@ -184,6 +192,33 @@ def main() -> int:
         assert process.wait(timeout=10) == 0
         stderr_handle.close()
     return 0
+
+
+def _verify_gpu_backend(engine: Path, artifacts: Path, expect_cuda: bool) -> None:
+    """Ask the packaged engine which llama.cpp backends it carries.
+
+    Catches the two ways a GPU release goes wrong silently: a wheel that was
+    compiled without CUDA after all, and a CUDA wheel whose runtime DLLs never
+    made it into the bundle (the engine then cannot load llama.cpp at all).
+    """
+    completed = subprocess.run(
+        [str(engine), "--gpu-report"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    (artifacts / "gpu-report.json").write_text(completed.stdout or "", encoding="utf-8")
+    if completed.returncode != 0:
+        raise SystemExit(
+            f"--gpu-report failed ({completed.returncode}): {completed.stderr[-2000:]}"
+        )
+    report = json.loads(completed.stdout)
+    print(f"[gpu] {json.dumps(report, ensure_ascii=False)}")
+    if not report.get("runtime_available"):
+        raise SystemExit(f"packaged engine cannot load llama.cpp: {report.get('error')}")
+    if expect_cuda and "CUDA" not in report.get("backends", []):
+        raise SystemExit(f"packaged engine reports no CUDA backend: {report}")
 
 
 def _verify_seq2seq(
