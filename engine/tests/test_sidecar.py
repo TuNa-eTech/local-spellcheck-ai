@@ -22,6 +22,7 @@ from soatvan.entrypoints.sidecar import (
     safe_message,
     validate_request,
 )
+from soatvan.models.gpu import OffloadGuard, offload_allowed
 from soatvan.workflow import ProcessResult
 
 
@@ -500,3 +501,27 @@ def test_idle_release_is_skipped_while_another_job_is_running(
     engine._release_model_if_idle()
 
     assert releases == 0
+
+
+def test_model_status_reports_the_gpu_verdict_and_reset_clears_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The UI learns why it is on the CPU without paying to import llama_cpp."""
+    monkeypatch.setenv("SOATVAN_DATA_DIR", str(tmp_path))
+    engine = Sidecar()
+
+    # Nothing has tried to load yet: no verdict to report.
+    assert "gpu" not in engine.dispatch("model.status", {"activate": False})
+
+    guard = OffloadGuard(tmp_path, "0.2.0:abcdef123456")
+    guard.failed("CUDA error: out of memory")
+    offload_allowed(guard, {"supports_offload": True, "backends": ["CUDA"]})
+
+    reported = engine.dispatch("model.status", {"activate": False})["gpu"]
+    assert reported["offload"] is False
+    assert reported["blocked"] is True
+    assert "out of memory" in reported["reason"]
+
+    assert engine.dispatch("gpu.reset_guard", {}) == {"reset": True}
+    assert "gpu" not in engine.dispatch("model.status", {"activate": False})
+    assert guard.blocked_reason() is None

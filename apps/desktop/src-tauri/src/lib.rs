@@ -825,6 +825,16 @@ async fn model_deactivate(state: State<'_, AppState>) -> AppResult<ModelStatus> 
     deactivate_model(&state.engine)?;
     Ok(state.model.lock().expect("model poisoned").status())
 }
+
+/// Forget a recorded GPU verdict. Without this the only escape from the crash
+/// guard is an environment variable, which no user is going to find.
+#[tauri::command]
+async fn gpu_reset_guard(state: State<'_, AppState>) -> AppResult<ModelStatus> {
+    state
+        .engine
+        .call("gpu.reset_guard", json!({}), Duration::from_secs(10))?;
+    engine_model_status(&state.engine, false)
+}
 #[tauri::command]
 async fn model_import(
     app: AppHandle,
@@ -1437,6 +1447,34 @@ fn finalize_output_or_cleanup(
     }
 }
 
+/// Catch a portable folder that was upgraded by extracting over the old one.
+///
+/// That merges rather than replaces: orphaned files from the previous build stay
+/// behind, and a running old copy keeps `SoatVan.exe` locked so the extract
+/// skips it — leaving a new engine beside an old executable. `VERSION.txt` is
+/// written by `scripts/build-portable.ps1`; installer builds have none and are
+/// silently skipped.
+fn warn_on_stale_portable_layout() {
+    let Some(stamp) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("VERSION.txt")))
+    else {
+        return;
+    };
+    let Ok(contents) = fs::read_to_string(&stamp) else {
+        return;
+    };
+    let bundled = contents.trim();
+    let running = env!("CARGO_PKG_VERSION");
+    if bundled != running {
+        log::warn!(
+            target: "host",
+            "portable layout mismatch: VERSION.txt says {bundled} but this executable is {running}. \
+             The folder was likely upgraded in place; extract the new release into an empty folder."
+        );
+    }
+}
+
 fn install_panic_hook() {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -1459,6 +1497,19 @@ fn install_panic_hook() {
 pub fn run() {
     install_panic_hook();
     let app = tauri::Builder::default()
+        // Registered first, before `setup` runs the activation recovery. Two
+        // copies of the app — the usual shape of a portable upgrade, where the
+        // old folder is kept — share one data directory, and the newcomer's
+        // recovery deletes the `staging-*` directory the other one is extracting
+        // a model into.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            log::info!("second instance blocked; focusing the existing window");
+            if let Some(window) = app.webview_windows().values().next() {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(
             tauri_plugin_log::Builder::new()
                 // `targets` replaces the plugin defaults; `target` would append and
@@ -1486,6 +1537,7 @@ pub fn run() {
                 env!("CARGO_PKG_VERSION"),
                 log_dir.display()
             );
+            warn_on_stale_portable_layout();
             let model_root = data_root.join("models");
             let model = ModelProvisioner::new(model_root);
             if let Err(error) = model.recover_interrupted_activation() {
@@ -1531,6 +1583,7 @@ pub fn run() {
             output_config_update,
             model_status,
             model_deactivate,
+            gpu_reset_guard,
             model_import,
             model_cancel,
             model_remove

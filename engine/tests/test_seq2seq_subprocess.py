@@ -111,3 +111,43 @@ def test_worker_exceeding_the_deadline_is_killed(
             _Stub(tmp_path), [Block("document:p0", "sát nhập")], frozenset(), _NoCancellation()
         )
     assert spawned and spawned[0].poll() is not None
+
+
+def test_default_model_dir_prefers_the_portable_bundle_then_the_state_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A portable release ships <root>/SoatVan.exe beside <root>/engine/…exe.
+
+    The old candidate list had no exe-relative entry at all, and its
+    "%LOCALAPPDATA%/SoatVan" guess could never match the host's real data
+    directory (%LOCALAPPDATA%/vn.soatvan.desktop).
+    """
+    from soatvan.workflow import seq2seq_provider
+
+    state_dir = tmp_path / "vn.soatvan.desktop"
+    in_state = state_dir / "models" / "vn-spell-correction-small"
+    in_state.mkdir(parents=True)
+    (in_state / "config.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("SOATVAN_DATA_DIR", str(state_dir))
+    monkeypatch.setattr(seq2seq_provider, "bundle_root", lambda: None)
+
+    assert seq2seq_provider.find_default_model_dir() == in_state
+
+    portable = tmp_path / "SoatVan-Portable"
+    in_bundle = portable / "models" / "vn-spell-correction-small"
+    in_bundle.mkdir(parents=True)
+    (in_bundle / "config.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(seq2seq_provider, "bundle_root", lambda: portable)
+
+    assert seq2seq_provider.find_default_model_dir() == in_bundle
+
+
+def test_bundle_root_is_none_unless_frozen(monkeypatch: pytest.MonkeyPatch) -> None:
+    from soatvan import paths
+
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    assert paths.bundle_root() is None
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", "/opt/SoatVan/engine/soatvan-engine")
+    assert paths.bundle_root() == Path("/opt/SoatVan")

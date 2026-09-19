@@ -7,7 +7,12 @@ import pytest
 from jsonschema import Draft202012Validator, ValidationError
 
 from soatvan.checking import Block, Preset, RuleEngine
-from soatvan.entrypoints.sidecar import PUBLIC_EVENTS, PUBLIC_METHODS
+from soatvan.entrypoints.sidecar import (
+    HOST_OWNED_METHODS,
+    PUBLIC_EVENTS,
+    PUBLIC_METHODS,
+    Sidecar,
+)
 
 CONTRACTS = Path(__file__).parents[2] / "contracts"
 
@@ -28,6 +33,13 @@ def test_ipc_schema_and_engine_publish_the_same_methods_and_events() -> None:
     events = frozenset(variants[2]["properties"]["event"]["enum"])
     assert request_methods == PUBLIC_METHODS
     assert events == PUBLIC_EVENTS
+
+
+def test_declared_methods_match_what_the_sidecar_actually_dispatches(tmp_path: Path) -> None:
+    """The contract drifted from `dispatch` once already — seq2seq and output
+    config shipped without ever reaching the schema. Compare the real map."""
+    served = frozenset(Sidecar(tmp_path).handlers())
+    assert served | HOST_OWNED_METHODS == PUBLIC_METHODS
 
 
 def test_protocol_examples_validate_and_unknown_fields_fail() -> None:

@@ -103,7 +103,11 @@ class ModelRegistry:
                 license_stat.st_mtime_ns,
                 active.stat().st_mtime_ns,
             )
-            if activate and self._cache_key == key and self._classifier is not None:
+            # A loaded runtime reads as "ready" whether or not the caller asked to
+            # activate. `activate=False` is a peek — the Settings screen issues one
+            # on every visit — and it must never be the thing that unloads the
+            # model out from under a session that is about to review a document.
+            if self._cache_key == key and self._classifier is not None:
                 print("[soatvan-engine] ModelRegistry.status: cache hit → ready", file=sys.stderr)
                 return _status("ready", manifest)
             if self._verified_key != key:
@@ -121,7 +125,9 @@ class ModelRegistry:
                 print("[soatvan-engine] ModelRegistry.status: SHA256 verified OK", file=sys.stderr)
                 self._verified_key = key
             if not activate:
-                self._close_runtime()
+                # Nothing is loaded (the cache-hit branch above did not fire), so
+                # the package is verified but idle. Freeing the runtime is the job
+                # of `deactivate()` / `release_runtime()`, never of a status read.
                 print("[soatvan-engine] ModelRegistry.status: activate=False → installed", file=sys.stderr)
                 return _status("installed", manifest)
             with self._runtime_lock:

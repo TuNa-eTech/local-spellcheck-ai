@@ -124,6 +124,12 @@ try {
     New-Item -ItemType Directory -Force -Path $portableEngineDir | Out-Null
     Copy-Item -Path (Join-Path $engineDistDir "*") -Destination $portableEngineDir -Recurse -Force
 
+    # Giai nen ban moi DE LEN thu muc cu la merge chu khong phai replace: file mo
+    # coi cua ban cu o lai, va neu ban cu dang chay thi Windows khoa SoatVan.exe
+    # nen exe bi bo qua. Dau moc nay cho app tu phat hien va ghi canh bao vao log.
+    $stampVersion = (Get-Content -LiteralPath (Join-Path $desktopDir "package.json") -Raw | ConvertFrom-Json).version
+    Set-Content -LiteralPath (Join-Path $portableDir "VERSION.txt") -Value $stampVersion -NoNewline -Encoding UTF8
+
     # 6. Nen Zip
     Write-Host "`n[5/5] Nen file zip Portable..." -ForegroundColor Yellow
     $desktopVersion = (Get-Content -LiteralPath (Join-Path $desktopDir "package.json") -Raw | ConvertFrom-Json).version

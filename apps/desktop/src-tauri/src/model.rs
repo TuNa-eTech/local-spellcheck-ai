@@ -60,6 +60,20 @@ pub struct ModelStatus {
     pub release_approved: bool,
     #[serde(default)]
     pub capabilities: ModelCapabilities,
+    /// Why the last local load did or did not use the GPU. The host only relays
+    /// it; without this field serde would drop it on the way to the webview.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu: Option<GpuStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GpuStatus {
+    #[serde(default)]
+    pub offload: bool,
+    #[serde(default)]
+    pub blocked: bool,
+    #[serde(default)]
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -103,6 +117,13 @@ struct Manifest {
     quality_gate: Option<QualityGate>,
     #[serde(skip_serializing_if = "Option::is_none")]
     signature: Option<String>,
+}
+
+/// Which one-shot migrations have run, and for which app version.
+#[derive(Debug, Default, Deserialize, Serialize)]
+struct Migrations {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    local_review_defaults: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -149,7 +170,28 @@ impl ModelProvisioner {
         Ok(())
     }
 
+    /// Where the once-per-version migrations record themselves.
+    ///
+    /// Deliberately beside the manifest rather than inside it: the manifest
+    /// schema is `additionalProperties: false`, and the release signature covers
+    /// every field except `signature` itself, so an extra key there would
+    /// invalidate every signed package.
+    fn migrations_path(&self) -> PathBuf {
+        self.root.join("migrations.json")
+    }
+
     fn migrate_local_experimental_review_defaults(&self) -> AppResult<()> {
+        let mut migrations: Migrations = fs::read_to_string(self.migrations_path())
+            .ok()
+            .and_then(|value| serde_json::from_str(&value).ok())
+            .unwrap_or_default();
+        if migrations.local_review_defaults.as_deref() == Some(env!("CARGO_PKG_VERSION")) {
+            // Already run for this build. Re-running every launch rewrote the
+            // manifest — which invalidates the engine's integrity cache and costs
+            // a full multi-GB re-hash — and clamped back any value the user had
+            // deliberately raised.
+            return Ok(());
+        }
         let manifest_path = self.root.join("active/manifest.json");
         if !manifest_path.is_file() {
             return Ok(());
@@ -200,8 +242,23 @@ impl ModelProvisioner {
             changed = true;
         }
         if changed {
+            log::info!(
+                "migrated local review defaults for {} to {}: chunk={:?} mode={:?} timeout={:?} context={:?} full_review={}",
+                manifest.model_id,
+                env!("CARGO_PKG_VERSION"),
+                manifest.review_chunk_tokens,
+                manifest.review_mode,
+                manifest.timeout_seconds,
+                manifest.context_size,
+                manifest.capabilities.full_review,
+            );
             fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)?;
         }
+        migrations.local_review_defaults = Some(env!("CARGO_PKG_VERSION").to_string());
+        fs::write(
+            self.migrations_path(),
+            serde_json::to_vec_pretty(&migrations)?,
+        )?;
         Ok(())
     }
     pub fn has_pending_activation(&self) -> bool {
@@ -218,6 +275,7 @@ impl ModelProvisioner {
                 trust: None,
                 release_approved: false,
                 capabilities: ModelCapabilities::default(),
+                gpu: None,
             };
         }
         match fs::read_to_string(manifest)
@@ -239,6 +297,7 @@ impl ModelProvisioner {
                 trust: None,
                 release_approved: false,
                 capabilities: ModelCapabilities::default(),
+                gpu: None,
             },
             Some(_) => ModelStatus {
                 state: "invalid".into(),
@@ -248,6 +307,7 @@ impl ModelProvisioner {
                 trust: None,
                 release_approved: false,
                 capabilities: ModelCapabilities::default(),
+                gpu: None,
             },
         }
     }
@@ -662,6 +722,7 @@ fn status_for_manifest(state: &str, manifest: Manifest) -> ModelStatus {
         trust: Some(manifest.trust),
         release_approved,
         capabilities: manifest.capabilities,
+        gpu: None,
     }
 }
 
@@ -1098,5 +1159,81 @@ mod tests {
         assert_eq!(migrated.timeout_seconds, Some(600));
         assert!(migrated.quality_gate.is_none());
         assert!(migrated.signature.is_none());
+    }
+
+    #[test]
+    fn startup_recovery_migrates_review_defaults_only_once_per_version() {
+        let folder = tempfile::tempdir().unwrap();
+        let root = folder.path().join("models");
+        fs::create_dir_all(root.join("active")).unwrap();
+        let mut manifest = manifest_for(b"model");
+        manifest.model_id = "gemma-4-e2b".into();
+        manifest.trust = ModelTrust::LocalUnverified;
+        manifest.capabilities.full_review = false;
+        manifest.quality_gate = None;
+        manifest.signature = None;
+        let manifest_path = root.join("active/manifest.json");
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let provisioner = ModelProvisioner::new(root.clone());
+        provisioner.recover_interrupted_activation().unwrap();
+        let after_first = fs::read(&manifest_path).unwrap();
+
+        // A value the user deliberately raised must survive every later launch,
+        // and the manifest must not be rewritten (that would force the engine to
+        // re-hash several GB on the next status check).
+        let mut tuned: Manifest = serde_json::from_slice(&after_first).unwrap();
+        tuned.review_chunk_tokens = Some(1200);
+        fs::write(&manifest_path, serde_json::to_vec_pretty(&tuned).unwrap()).unwrap();
+        let before_second = fs::read(&manifest_path).unwrap();
+
+        provisioner.recover_interrupted_activation().unwrap();
+
+        assert_eq!(fs::read(&manifest_path).unwrap(), before_second);
+        let unchanged: Manifest =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        assert_eq!(unchanged.review_chunk_tokens, Some(1200));
+
+        let record: Migrations =
+            serde_json::from_slice(&fs::read(root.join("migrations.json")).unwrap()).unwrap();
+        assert_eq!(
+            record.local_review_defaults.as_deref(),
+            Some(env!("CARGO_PKG_VERSION"))
+        );
+    }
+
+    #[test]
+    fn a_newer_app_version_runs_the_review_defaults_migration_again() {
+        let folder = tempfile::tempdir().unwrap();
+        let root = folder.path().join("models");
+        fs::create_dir_all(root.join("active")).unwrap();
+        let mut manifest = manifest_for(b"model");
+        manifest.model_id = "gemma-4-e2b".into();
+        manifest.trust = ModelTrust::LocalUnverified;
+        manifest.capabilities.full_review = false;
+        manifest.quality_gate = None;
+        manifest.signature = None;
+        fs::write(
+            root.join("active/manifest.json"),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            root.join("migrations.json"),
+            br#"{"local_review_defaults":"0.0.1"}"#,
+        )
+        .unwrap();
+
+        ModelProvisioner::new(root.clone())
+            .recover_interrupted_activation()
+            .unwrap();
+
+        let migrated: Manifest =
+            serde_json::from_slice(&fs::read(root.join("active/manifest.json")).unwrap()).unwrap();
+        assert!(migrated.capabilities.full_review);
     }
 }

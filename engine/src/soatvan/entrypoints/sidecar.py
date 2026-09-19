@@ -6,6 +6,7 @@ import logging
 import os
 import sys
 import threading
+from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,7 @@ from soatvan.models import (
 from soatvan.models.gpu import (
     OffloadGuard,
     backend_report,
+    build_id,
     local_data_dir,
     offload_mode,
 )
@@ -103,12 +105,20 @@ PUBLIC_METHODS = frozenset(
         "model.import",
         "model.cancel",
         "model.remove",
+        "gpu.reset_guard",
         "ai_config.get",
         "ai_config.update",
         "ai_config.set_active",
         "ai_config.test_connection",
+        "seq2seq_config.get",
+        "seq2seq_config.update",
+        "output_config.get",
+        "output_config.update",
     }
 )
+#: Provisioning lives in the Rust host, so the sidecar declares these in the
+#: contract but refuses them at dispatch.
+HOST_OWNED_METHODS = frozenset({"model.import", "model.cancel"})
 PUBLIC_EVENTS = frozenset(
     {
         "job.progress",
@@ -199,7 +209,17 @@ class Sidecar:
         self._idle_timer: threading.Timer | None = None
 
     def dispatch(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
-        handlers = {
+        handlers = self.handlers()
+        if method in HOST_OWNED_METHODS:
+            raise ValueError("MODEL_PROVISIONING_OWNED_BY_HOST")
+        if method not in handlers:
+            raise ValueError("METHOD_NOT_FOUND")
+        return handlers[method](params)
+
+    def handlers(self) -> dict[str, Callable[[dict[str, Any]], dict[str, Any]]]:
+        """Every method this sidecar answers. `PUBLIC_METHODS` must match its keys
+        plus the two the Rust host owns, and `test_contracts` enforces that."""
+        return {
             "engine.hello": self.hello,
             "document.inspect": self.inspect,
             "job.start": self.start_job,
@@ -209,6 +229,7 @@ class Sidecar:
             "custom_rule.delete": self.custom_rule_delete,
             "model.status": self.model_status,
             "model.remove": self.model_remove,
+            "gpu.reset_guard": self.gpu_reset_guard,
             "ai_config.get": self.ai_config_get,
             "ai_config.update": self.ai_config_update,
             "ai_config.set_active": self.ai_config_set_active,
@@ -218,11 +239,6 @@ class Sidecar:
             "output_config.get": self.output_config_get,
             "output_config.update": self.output_config_update,
         }
-        if method in {"model.import", "model.cancel"}:
-            raise ValueError("MODEL_PROVISIONING_OWNED_BY_HOST")
-        if method not in handlers:
-            raise ValueError("METHOD_NOT_FOUND")
-        return handlers[method](params)
 
     def hello(self, _: dict[str, Any]) -> dict[str, Any]:
         capabilities = ["rules", "custom_rules", "docx_annotations", "ai_config"]
@@ -447,11 +463,22 @@ class Sidecar:
         activate = params.get("activate", True)
         if not isinstance(activate, bool):
             raise ValueError("INVALID_PARAMS")
-        return self.models.status(activate=activate)
+        status = self.models.status(activate=activate)
+        # The verdict is read back from the guard's marker rather than recomputed,
+        # so a plain status check never has to import llama_cpp.
+        decision = OffloadGuard(local_data_dir()).last_decision()
+        if decision is not None:
+            status["gpu"] = decision
+        return status
 
     def model_remove(self, _: dict[str, Any]) -> dict[str, Any]:
         self.models.deactivate()
         return {"deactivated": True}
+
+    def gpu_reset_guard(self, _: dict[str, Any]) -> dict[str, Any]:
+        """Forget a GPU verdict so the next load tries the device again."""
+        OffloadGuard(local_data_dir()).clear()
+        return {"reset": True}
 
     def ai_config_get(self, _: dict[str, Any]) -> dict[str, Any]:
         active = self.ai_config.get_active_config()
@@ -789,7 +816,10 @@ def gpu_report() -> int:
     else:
         report["runtime_available"] = True
         report.update(backend_report(llama))
-    report["blocked_reason"] = OffloadGuard(local_data_dir()).blocked_reason()
+        report["build_id"] = build_id(report)
+    guard = OffloadGuard(local_data_dir(), str(report.get("build_id", "")))
+    report["blocked_reason"] = guard.blocked_reason()
+    report["last_decision"] = guard.last_decision()
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0
 

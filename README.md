@@ -47,6 +47,16 @@ npm run tauri -- dev
 
 Trong browser-only mode (`npm run dev` hoặc mở trực tiếp `http://localhost:1420`), UI dùng dữ liệu demo. Khi chạy `npm run tauri -- dev`, hãy thao tác trong cửa sổ desktop **SoatVan-itowf** do Tauri tự mở, không mở URL Vite trong trình duyệt. Cửa sổ Tauri dùng Rust host để khởi động Python sidecar thường trú bằng `uv` và handshake protocol v1.
 
+## Cập nhật bản Portable
+
+Giải nén bản mới vào **một thư mục trống**, đừng giải nén đè lên thư mục cũ.
+
+Giải nén đè là *merge* chứ không phải *replace*: file mồ côi của bản trước ở lại trong `engine\_internal\` và có thể được nạp thay cho file mới. Nếu bản cũ vẫn đang chạy, Windows khoá `SoatVan.exe` nên bước giải nén bỏ qua đúng file đó, để lại engine mới bên cạnh exe cũ. Ứng dụng tự phát hiện tình huống này (đối chiếu `VERSION.txt`) và ghi cảnh báo vào nhật ký sự cố.
+
+Không mất dữ liệu khi đổi thư mục: model, API key, prompt riêng và mọi cấu hình nằm ở `%LOCALAPPDATA%\vn.soatvan.desktop`, không nằm trong thư mục portable. Xoá thư mục cũ sau khi bản mới chạy được.
+
+Ngoại lệ duy nhất là model seq2seq: nếu bạn từng trỏ thủ công vào một thư mục nằm *bên trong* bản portable cũ, hãy trỏ lại trong Cài đặt, hoặc đặt nó ở `%LOCALAPPDATA%\vn.soatvan.desktop\models\vn-spell-correction-small` để mọi bản sau tự tìm thấy.
+
 ## Nhật ký sự cố (logs)
 
 Mọi bản build — kể cả portable/release — đều ghi một file log xoay vòng để đọc khi hỗ trợ người dùng và sửa lỗi:

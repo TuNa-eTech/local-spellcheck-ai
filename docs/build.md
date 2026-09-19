@@ -206,6 +206,8 @@ Khi tất cả job thành công, pipeline tạo `SHA256SUMS.txt`, sinh release n
 
 Artifact Windows được self-sign và đính kèm public `.cer`; artifact macOS được ad-hoc sign. Cả hai chỉ dành cho sử dụng cá nhân, không nên phân phối công khai.
 
+Bản Portable `.zip` kèm `VERSION.txt` ở thư mục gốc. Người dùng phải giải nén vào thư mục trống — giải nén đè lên bản cũ là merge chứ không phải replace, để lại file mồ côi trong `engine\_internal\`, và nếu bản cũ đang chạy thì `SoatVan.exe` bị khoá nên không được thay. Lúc khởi động, host đối chiếu `VERSION.txt` với `CARGO_PKG_VERSION` và ghi `log::warn!` khi lệch.
+
 ## Dữ liệu tạm khi build
 
 PyInstaller tạo `engine/build` và `engine/dist`. Script đồng bộ bản `onedir` vào `apps/desktop/src-tauri/resources/engine`; các nội dung sinh ra này đã được `.gitignore` loại trừ. File `README.txt` trong thư mục resource được giữ lại làm placeholder của source tree.

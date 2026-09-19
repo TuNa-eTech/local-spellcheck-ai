@@ -74,6 +74,14 @@ export interface ModelStatus {
   trust?: "release_signed" | "local_unverified";
   release_approved?: boolean;
   capabilities?: ModelCapabilities;
+  gpu?: GpuStatus;
+}
+
+/** Why the last local model load did or did not use the GPU. */
+export interface GpuStatus {
+  offload: boolean;
+  blocked: boolean;
+  reason: string;
 }
 
 export interface AiConfigEntry {

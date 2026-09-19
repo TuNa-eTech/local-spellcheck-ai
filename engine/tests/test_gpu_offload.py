@@ -5,12 +5,14 @@ from typing import Any
 
 import pytest
 
+from soatvan import __version__ as engine_version
 from soatvan.models import classifier as classifier_module
 from soatvan.models.classifier import ModelLoadFailed, _default_runtime_factory
 from soatvan.models.gpu import (
     OffloadGuard,
     backend_names,
     backend_report,
+    build_id,
     local_data_dir,
     offload_allowed,
     offload_mode,
@@ -103,34 +105,79 @@ def test_offload_mode_falls_back_to_auto_for_unknown_values(
     assert offload_mode() == "auto"
 
 
-def test_guard_treats_an_unfinished_load_as_a_crash(state_dir: Path) -> None:
-    guard = OffloadGuard(state_dir)
+CUDA_BUILD = build_id(backend_report(FakeLlama()))
+
+
+def test_guard_needs_two_unfinished_loads_before_it_blocks(state_dir: Path) -> None:
+    guard = OffloadGuard(state_dir, CUDA_BUILD)
     assert guard.blocked_reason() is None
 
+    # One marker left behind is ambiguous: closing the window mid-load kills the
+    # sidecar and leaves exactly this trace, so the GPU still gets a second try.
     guard.begin()
-    # A second process reading the same marker: the first one never came back.
-    assert "crashed" in (OffloadGuard(state_dir).blocked_reason() or "")
+    assert OffloadGuard(state_dir, CUDA_BUILD).blocked_reason() is None
 
+    OffloadGuard(state_dir, CUDA_BUILD).begin()
+    assert "crashed" in (OffloadGuard(state_dir, CUDA_BUILD).blocked_reason() or "")
+
+    # Getting through a load clears the tally.
     guard.succeeded()
-    assert OffloadGuard(state_dir).blocked_reason() is None
+    assert OffloadGuard(state_dir, CUDA_BUILD).blocked_reason() is None
+    guard.begin()
+    assert OffloadGuard(state_dir, CUDA_BUILD).blocked_reason() is None
 
+    # A caught failure is unambiguous and blocks on the first one.
     guard.failed("CUDA error: out of memory")
-    assert OffloadGuard(state_dir).blocked_reason() == "CUDA error: out of memory"
+    assert OffloadGuard(state_dir, CUDA_BUILD).blocked_reason() == "CUDA error: out of memory"
 
     guard.clear()
-    assert OffloadGuard(state_dir).blocked_reason() is None
+    assert OffloadGuard(state_dir, CUDA_BUILD).blocked_reason() is None
+
+
+def test_guard_ignores_a_marker_written_by_another_build(state_dir: Path) -> None:
+    """A new portable release must not inherit the old one's verdict."""
+    OffloadGuard(state_dir, "0.1.0:deadbeefcafe").failed("CUDA error: out of memory")
+    assert OffloadGuard(state_dir, CUDA_BUILD).blocked_reason() is None
+    # …and the build that did write it still honours it.
+    assert OffloadGuard(state_dir, "0.1.0:deadbeefcafe").blocked_reason() is not None
+
+
+def test_build_id_changes_with_the_native_library(state_dir: Path) -> None:
+    cuda = build_id(backend_report(FakeLlama()))
+    cpu = build_id(backend_report(FakeLlama(system_info="CPU : AVX2 = 1 | ")))
+    assert cuda != cpu
+    assert cuda.startswith(f"{engine_version}:")
 
 
 def test_guard_ignores_a_corrupt_marker(state_dir: Path) -> None:
     (state_dir / "gpu-offload.json").write_text("{not json", encoding="utf-8")
-    assert OffloadGuard(state_dir).blocked_reason() is None
+    assert OffloadGuard(state_dir, CUDA_BUILD).blocked_reason() is None
+
+
+def test_guard_records_the_last_decision_for_the_ui(state_dir: Path) -> None:
+    guard = OffloadGuard(state_dir, CUDA_BUILD)
+    assert guard.last_decision() is None
+
+    offload_allowed(guard, backend_report(FakeLlama()))
+    decision = guard.last_decision()
+    assert decision is not None
+    assert decision["offload"] is True
+    assert decision["blocked"] is False
+
+    guard.failed("CUDA error: out of memory")
+    offload_allowed(guard, backend_report(FakeLlama()))
+    blocked = OffloadGuard(state_dir).last_decision()
+    assert blocked is not None
+    assert blocked["offload"] is False
+    assert blocked["blocked"] is True
+    assert "out of memory" in blocked["reason"]
 
 
 def test_offload_is_refused_when_blocked_and_retried_only_on_force(
     state_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    guard = OffloadGuard(state_dir)
     report = backend_report(FakeLlama())
+    guard = OffloadGuard(state_dir, build_id(report))
     assert offload_allowed(guard, report)[0] is True
 
     guard.failed("CUDA error: out of memory")
@@ -148,7 +195,7 @@ def test_offload_is_refused_when_blocked_and_retried_only_on_force(
 def test_offload_is_refused_without_a_device_or_when_switched_off(
     state_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    guard = OffloadGuard(state_dir)
+    guard = OffloadGuard(state_dir, CUDA_BUILD)
     cpu_only = backend_report(
         FakeLlama(supports_offload=False, system_info="CPU : AVX2 = 1 | ")
     )
@@ -171,7 +218,7 @@ def test_runtime_factory_offloads_every_layer_when_a_gpu_is_present(
     _default_runtime_factory(tmp_path / "model.gguf", 4096, 0)
 
     assert llama.requested_gpu_layers == [-1]
-    assert OffloadGuard(state_dir).blocked_reason() is None
+    assert OffloadGuard(state_dir, CUDA_BUILD).blocked_reason() is None
 
 
 def test_runtime_factory_falls_back_to_cpu_and_remembers_the_failure(

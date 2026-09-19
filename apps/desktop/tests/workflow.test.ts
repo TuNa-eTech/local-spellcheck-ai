@@ -53,8 +53,9 @@ async function loadApp(options?: {
   customRuleList?: () => Promise<CustomRule[]>;
   customRuleUpsert?: (id: string | null, title: string, prompt: string, isDefault: boolean) => Promise<CustomRule>;
   customRuleDelete?: (id: string) => Promise<boolean>;
-  modelStatus?: () => Promise<ModelStatus>;
+  modelStatus?: (activate?: boolean) => Promise<ModelStatus>;
   modelImport?: () => Promise<ModelStatus | null>;
+  gpuResetGuard?: () => Promise<ModelStatus>;
   modelCancel?: () => Promise<boolean>;
   aiConfigGet?: () => Promise<AiConfigState>;
   aiConfigUpdate?: (params: any) => Promise<{ updated: boolean }>;
@@ -108,6 +109,7 @@ async function loadApp(options?: {
     modelImport: vi.fn(options?.modelImport ?? (() => Promise.resolve(null))),
     modelCancel: vi.fn(options?.modelCancel ?? (() => Promise.resolve(true))),
     modelRemove: vi.fn(() => Promise.resolve({ state: "not_installed" as const })),
+    gpuResetGuard: vi.fn(options?.gpuResetGuard ?? (() => Promise.resolve(signedReadyModel))),
     aiConfigGet: vi.fn(options?.aiConfigGet ?? (() => Promise.resolve({
       active_provider: "local",
       configs: [
@@ -775,6 +777,76 @@ describe("four-step desktop workflow", () => {
     expect(warning).not.toBeNull();
     expect(warning?.textContent).toContain("Lưu ý về AI cục bộ");
     expect(warning?.textContent).toContain("3.000 ký tự");
+  });
+
+  it("keeps the local model usable after a Settings visit reports it as merely installed", async () => {
+    // Opening Settings issues modelStatus(false). The engine answers "installed"
+    // whenever llama.cpp is not currently loaded — which must not read as
+    // "no AI", or the next job silently falls back to the rule engine.
+    let peeked = false;
+    await loadApp({
+      modelStatus: (activate?: boolean) => {
+        if (activate === false) peeked = true;
+        return Promise.resolve(activate === false
+          ? { ...signedReadyModel, state: "installed" as const }
+          : signedReadyModel);
+      },
+      customRuleList: () => Promise.resolve([customRule("rule-1", "Thuật ngữ riêng.", undefined, "Quy tắc 1", true)]),
+    });
+
+    await chooseDocument();
+    expect(document.body.textContent).toContain("AI sẽ dùng prompt tiếng Việt mặc định");
+
+    document.querySelector<HTMLButtonElement>("#settings")!.click();
+    await vi.waitFor(() => expect(peeked).toBe(true));
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>("#new-custom-rule")?.disabled).toBe(false));
+
+    document.querySelector<HTMLButtonElement>("#review-nav")!.click();
+    await vi.waitFor(() => expect(document.querySelector("#start")).not.toBeNull());
+
+    expect(document.body.textContent).toContain("AI sẽ dùng prompt tiếng Việt mặc định");
+    expect(document.body.textContent).not.toContain("Bộ quy tắc kiểm tra cơ bản sẽ được áp dụng");
+    expect(document.body.textContent).not.toContain("cần AI rà soát (GGUF)");
+    const checkbox = document.querySelector<HTMLInputElement>('[data-select-rule="rule-1"]')!;
+    expect(checkbox.disabled).toBe(false);
+  });
+
+  it("names the reason a model is unusable instead of calling it missing", async () => {
+    await loadApp({
+      modelStatus: () => Promise.resolve({
+        state: "invalid" as const,
+        code: "MODEL_PROTOCOL_INCOMPATIBLE",
+      }),
+    });
+
+    document.querySelector<HTMLButtonElement>("#settings")!.click();
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')?.disabled).toBe(false));
+    document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')!.click();
+    await vi.waitFor(() => expect(document.querySelector("#settings-models")).not.toBeNull());
+
+    expect(document.body.textContent).toContain("Gói model được tạo cho phiên bản engine khác");
+    expect(document.body.textContent).not.toContain("Chưa nạp file model");
+  });
+
+  it("offers a way back to the GPU when the crash guard has parked the app on the CPU", async () => {
+    const api = await loadApp({
+      modelStatus: () => Promise.resolve({
+        ...signedReadyModel,
+        gpu: { offload: false, blocked: true, reason: "blocked by the crash guard (CUDA error: out of memory)" },
+      }),
+      gpuResetGuard: () => Promise.resolve({ ...signedReadyModel, gpu: { offload: true, blocked: false, reason: "GPU offload available" } }),
+    });
+
+    document.querySelector<HTMLButtonElement>("#settings")!.click();
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')?.disabled).toBe(false));
+    document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')!.click();
+    await vi.waitFor(() => expect(document.querySelector("#gpu-offload-notice")).not.toBeNull());
+    expect(document.querySelector("#gpu-offload-notice")?.textContent).toContain("out of memory");
+
+    document.querySelector<HTMLButtonElement>("#gpu-reset-guard")!.click();
+    await vi.waitFor(() => expect(api.gpuResetGuard).toHaveBeenCalled());
+    await vi.waitFor(() => expect(document.querySelector("#gpu-offload-notice")).toBeNull());
+    expect(document.body.textContent).toContain("Đã bỏ khoá GPU");
   });
 
   it("refuses to save a prompt without a title", async () => {

@@ -14,27 +14,39 @@ the crash guard below.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import time
 from pathlib import Path
 from typing import Any
 
+from soatvan import __version__
+from soatvan.paths import DATA_DIR_ENV, local_data_dir
+
 OFFLOAD_ENV = "SOATVAN_GPU_OFFLOAD"
-DATA_DIR_ENV = "SOATVAN_DATA_DIR"
 GUARD_FILENAME = "gpu-offload.json"
 
+__all__ = [
+    "DATA_DIR_ENV",
+    "OffloadGuard",
+    "backend_names",
+    "backend_report",
+    "build_id",
+    "local_data_dir",
+    "offload_allowed",
+    "offload_mode",
+]
+
+#: Bump when the marker's shape changes; older records are ignored, not migrated.
+GUARD_SCHEMA_VERSION = 2
+#: How many *inferred* crashes (a marker left at "loading") it takes to stop
+#: trying the GPU. One is not enough: killing the app mid-load leaves the same
+#: trace as a driver crash, and the sidecar is in a job object that dies with
+#: the window.
+CRASH_LIMIT = 2
+
 _MODES = ("auto", "off", "force")
-
-
-def local_data_dir() -> Path:
-    """The per-user state directory the sidecar keeps its databases in."""
-    configured = os.environ.get(DATA_DIR_ENV)
-    if configured:
-        return Path(configured)
-    base = os.environ.get("LOCALAPPDATA")
-    root = Path(base) if base else Path.home() / ".local" / "share"
-    return root / "SoatVan"
 
 
 def offload_mode() -> str:
@@ -74,6 +86,19 @@ def backend_report(module: Any) -> dict[str, Any]:
     }
 
 
+def build_id(report: dict[str, Any]) -> str:
+    """Identify the binary this decision was made about.
+
+    A crash marker is only meaningful for the build that wrote it. Downloading a
+    newer portable release — the whole point of which may be a fixed CUDA
+    runtime — must not inherit the old build's verdict. The engine version plus
+    a digest of llama.cpp's own system-info string covers both halves: a Python
+    release and a swapped native library.
+    """
+    digest = hashlib.sha256(str(report.get("system_info", "")).encode("utf-8")).hexdigest()
+    return f"{__version__}:{digest[:12]}"
+
+
 def backend_names(system_info: str) -> list[str]:
     """Pull the backend names out of ``llama_print_system_info``.
 
@@ -99,29 +124,47 @@ class OffloadGuard:
     every document the user opens. ``SOATVAN_GPU_OFFLOAD=force`` clears it.
     """
 
-    def __init__(self, state_dir: Path) -> None:
+    def __init__(self, state_dir: Path, build: str = "") -> None:
         self._path = state_dir / GUARD_FILENAME
+        self._build = build
 
     def blocked_reason(self) -> str | None:
         """Why offload is blocked, or None when the GPU may be tried."""
-        state = self._read()
+        state = self._own_record()
         status = state.get("status")
-        if status == "loading":
-            # Written before a load that never reported back: the process died.
-            return "crashed while loading the model onto the GPU"
         if status == "blocked":
+            # A caught exception: a definite answer, trusted the first time.
             reason = state.get("reason")
             return str(reason) if reason else "a previous GPU load failed"
+        if status == "loading" and self._observed_crashes(state) >= CRASH_LIMIT:
+            # Written before a load that never reported back. One of these can
+            # just mean the user closed the window, so it takes CRASH_LIMIT.
+            return "crashed while loading the model onto the GPU"
         return None
 
     def begin(self) -> None:
-        self._write("loading", "")
+        self._write("loading", "", self._observed_crashes(self._own_record()))
 
     def succeeded(self) -> None:
-        self._write("ok", "")
+        self._write("ok", "", 0)
 
     def failed(self, reason: str) -> None:
-        self._write("blocked", reason)
+        self._write("blocked", reason, self._crashes(self._own_record()))
+
+    def record_decision(self, offload: bool, reason: str) -> None:
+        """Remember the verdict so `model.status` can report it without llama.cpp."""
+        self._merge({
+            "last_decision": {
+                "offload": offload,
+                "blocked": not offload and self.blocked_reason() is not None,
+                "reason": reason,
+            }
+        })
+
+    def last_decision(self) -> dict[str, Any] | None:
+        """The most recent verdict, whichever build made it, or None if never run."""
+        decision = self._read().get("last_decision")
+        return decision if isinstance(decision, dict) else None
 
     def clear(self) -> None:
         with contextlib.suppress(OSError):
@@ -134,8 +177,42 @@ class OffloadGuard:
             return {}
         return parsed if isinstance(parsed, dict) else {}
 
-    def _write(self, status: str, reason: str) -> None:
-        payload = {"status": status, "reason": reason, "at": time.time()}
+    def _own_record(self) -> dict[str, Any]:
+        """The marker, but only when this build wrote it."""
+        state = self._read()
+        if state.get("v") != GUARD_SCHEMA_VERSION or state.get("build") != self._build:
+            return {}
+        return state
+
+    @staticmethod
+    def _crashes(state: dict[str, Any]) -> int:
+        try:
+            return max(0, int(state.get("crashes", 0)))
+        except (TypeError, ValueError):
+            return 0
+
+    def _observed_crashes(self, state: dict[str, Any]) -> int:
+        """The tally including the record in hand.
+
+        A marker still sitting at "loading" is itself an attempt that never
+        reported back, and it has not been counted yet — the run that would have
+        counted it is the one asking now.
+        """
+        crashes = self._crashes(state)
+        return crashes + 1 if state.get("status") == "loading" else crashes
+
+    def _write(self, status: str, reason: str, crashes: int) -> None:
+        self._merge({
+            "v": GUARD_SCHEMA_VERSION,
+            "build": self._build,
+            "status": status,
+            "reason": reason,
+            "crashes": crashes,
+            "at": time.time(),
+        })
+
+    def _merge(self, fields: dict[str, Any]) -> None:
+        payload = {**self._read(), **fields}
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             self._path.write_text(json.dumps(payload), encoding="utf-8")
@@ -147,6 +224,12 @@ class OffloadGuard:
 
 def offload_allowed(guard: OffloadGuard, report: dict[str, Any]) -> tuple[bool, str]:
     """Decide whether this run may offload, with the reason for the log."""
+    allowed, reason = _offload_verdict(guard, report)
+    guard.record_decision(allowed, reason)
+    return allowed, reason
+
+
+def _offload_verdict(guard: OffloadGuard, report: dict[str, Any]) -> tuple[bool, str]:
     mode = offload_mode()
     if mode == "off":
         return False, f"{OFFLOAD_ENV}=off"

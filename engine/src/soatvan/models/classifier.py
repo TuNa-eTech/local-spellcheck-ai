@@ -19,7 +19,7 @@ from soatvan.workflow.ports import (
     ReviewCandidate,
 )
 
-from .gpu import OffloadGuard, backend_report, local_data_dir, offload_allowed
+from .gpu import OffloadGuard, backend_report, build_id, local_data_dir, offload_allowed
 from .review import (
     LIGHTWEIGHT_REVIEW_SCHEMA,
     LLM_ONLY_REVIEW_SCHEMA,
@@ -237,7 +237,7 @@ def _default_runtime_factory(model_path: Path, context_size: int, seed: int) -> 
         f"supports_offload={report['supports_offload']}",
         file=sys.stderr,
     )
-    guard = OffloadGuard(local_data_dir())
+    guard = OffloadGuard(local_data_dir(), build_id(report))
     allowed, offload_reason = offload_allowed(guard, report)
     gpu_layers = _preferred_gpu_layers(llama) if allowed else 0
     print(

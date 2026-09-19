@@ -64,6 +64,7 @@ export const api = {
   modelImport(): Promise<ModelStatus | null> { return invoke("model_import"); },
   modelCancel(): Promise<boolean> { return invoke("model_cancel"); },
   modelRemove(modelId?: string): Promise<ModelStatus> { return invoke("model_remove", { modelId }); },
+  gpuResetGuard(): Promise<ModelStatus> { return isTauri() ? invoke("gpu_reset_guard") : Promise.resolve({ state: "not_installed" }); },
   aiConfigGet(): Promise<AiConfigState> {
     if (!isTauri()) {
       return Promise.resolve({

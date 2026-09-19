@@ -140,6 +140,31 @@ def update_uv_lock(dry_run: bool = False) -> None:
     subprocess.run(["uv", "lock", "--project", "engine"], cwd=REPO_ROOT, check=True)
 
 
+def verify_engine_protocol() -> bool:
+    """The Rust handshake hardcodes the protocol number the Python engine reports.
+
+    They live in different languages and nothing else compares them, so bumping
+    one alone ships an app that refuses to start (AppError::EngineProtocol).
+    """
+    python_src = (REPO_ROOT / "engine/src/soatvan/__init__.py").read_text(encoding="utf-8")
+    rust_src = (REPO_ROOT / "apps/desktop/src-tauri/src/sidecar.rs").read_text(encoding="utf-8")
+    python_match = re.search(r"^PROTOCOL_VERSION\s*=\s*(\d+)", python_src, re.MULTILINE)
+    rust_match = re.search(r"ENGINE_PROTOCOL_VERSION:\s*u8\s*=\s*(\d+)", rust_src)
+    if not python_match or not rust_match:
+        print("Could not read the engine protocol version from both sides.", file=sys.stderr)
+        return False
+    if python_match.group(1) != rust_match.group(1):
+        print(
+            "Engine protocol mismatch: "
+            f"Python PROTOCOL_VERSION={python_match.group(1)}, "
+            f"Rust ENGINE_PROTOCOL_VERSION={rust_match.group(1)}.",
+            file=sys.stderr,
+        )
+        return False
+    print(f"Verified: engine protocol {python_match.group(1)} agrees on both sides.")
+    return True
+
+
 def verify_version(new_version: str) -> bool:
     check_script = REPO_ROOT / "scripts" / "check-release-version.py"
     result = subprocess.run(
@@ -248,6 +273,9 @@ def main() -> int:
 
     # 6. uv.lock
     update_uv_lock(dry_run=args.dry_run)
+
+    if not verify_engine_protocol():
+        return 1
 
     if not args.dry_run:
         if not verify_version(target_ver):

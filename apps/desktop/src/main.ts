@@ -242,6 +242,22 @@ const processingErrorMessages: Record<string, string> = {
   OUTPUT_FILE_LOCKED: "Tệp Word đang được mở bởi ứng dụng khác (như Microsoft Word). Vui lòng lưu và đóng tệp Word trước khi rà soát trực tiếp.",
 };
 
+// Without these, every broken model reads as "chưa nạp file model" — identical
+// to never having imported one — and the reason only exists in the log file.
+const modelStatusMessages: Record<string, string> = {
+  MODEL_PROTOCOL_INCOMPATIBLE: "Gói model được tạo cho phiên bản engine khác. Hãy nhập lại gói model tương thích với bản ứng dụng này.",
+  MODEL_INTEGRITY_FAILED: "Tệp model không khớp với thông tin đã đăng ký (có thể bị hỏng, bị cắt cụt hoặc bị phần mềm diệt virus cách ly). Hãy nhập lại gói model.",
+  MODEL_MANIFEST_INVALID: "Thông tin mô tả gói model không hợp lệ. Hãy nhập lại gói model.",
+  MODEL_SIGNATURE_INVALID: "Chữ ký phát hành của gói model không hợp lệ. Hãy tải lại gói model từ nguồn chính thức.",
+  MODEL_QUALITY_GATE_REQUIRED: "Gói model chưa đạt kiểm định chất lượng nên chưa được phép dùng để rà soát.",
+  MODEL_RUNTIME_UNAVAILABLE: "Không khởi động được llama.cpp trên máy này. Hãy xem Nhật ký sự cố để biết thư viện nào bị thiếu.",
+  MODEL_LOAD_FAILED: "Không nạp được model vào bộ nhớ. Máy có thể không đủ RAM/VRAM, hoặc tệp model không dùng được.",
+  API_KEY_REQUIRED: "Chưa có API Key cho nguồn AI đang chọn.",
+};
+function modelStatusReason(model: ModelStatus): string {
+  return model.code ? (modelStatusMessages[model.code] ?? "") : "";
+}
+
 function processingErrorMessage(error: unknown): string {
   const code = typeof error === "string"
     ? error
@@ -292,15 +308,26 @@ function activeAiLabel(): string {
   return "AI Cục bộ";
 }
 
-function modelCanFilter(model: ModelStatus): boolean { return model.state === "ready" && model.capabilities?.candidate_filter === true; }
+// "installed" and "ready" differ only by whether llama.cpp currently sits in
+// memory — the package is verified on disk either way, and the engine loads it
+// lazily at job.start (DynamicClassifierProvider.classifier()). Demanding
+// "ready" here used to downgrade a job to the rule engine whenever the runtime
+// had been released, e.g. after the idle timer or a visit to Settings.
+function modelCanFilter(model: ModelStatus): boolean {
+  return (model.state === "ready" || model.state === "installed")
+    && model.capabilities?.candidate_filter === true;
+}
+// The single answer to "can the local model review this document?". Settings
+// and the review steps must never disagree about it.
+function localModelUsable(): boolean { return !isLocalModelCloudLeaked() && modelCanFilter(state.model); }
 function modelFilterAvailable(): boolean {
   if (isCloudActive()) return true;
-  return modelCanFilter(state.model);
+  return localModelUsable();
 }
 function fullReviewAvailable(): boolean {
   if (isCloudActive()) return true;
   if (!state.useModel) return false;
-  return modelCanFilter(state.model) && state.model.capabilities?.full_review === true;
+  return localModelUsable() && state.model.capabilities?.full_review === true;
 }
 function clearUnavailableFullReview(): void {
   if (!fullReviewAvailable()) state.fullReview = false;
@@ -707,6 +734,7 @@ function ggufModelCardHtml(installed: boolean, isLocalActive: boolean, controlsL
         </div>
       </div>
       ${trust}
+      ${gpuOffloadNoticeHtml(controlsLocked)}
     </div>`;
   }
 
@@ -728,6 +756,14 @@ function ggufModelCardHtml(installed: boolean, isLocalActive: boolean, controlsL
   </div>`;
 }
 
+// The crash guard can park the app on the CPU for good. Say so, and give the
+// user a way back that is not an environment variable.
+function gpuOffloadNoticeHtml(controlsLocked: boolean): string {
+  const gpu = state.model.gpu;
+  if (!gpu?.blocked) return "";
+  return `<p class="settings-message settings-message--warning" id="gpu-offload-notice" role="status">⚠️ <strong>Đang chạy bằng CPU:</strong> lần nạp model trước không dùng được GPU nên ứng dụng tạm khoá tăng tốc GPU (${escape(gpu.reason)}). Nếu bạn đã cập nhật driver hoặc vừa đổi máy, hãy thử lại. <button class="inline-button" id="gpu-reset-guard" type="button" ${controlsLocked ? "disabled" : ""}>Thử lại GPU</button></p>`;
+}
+
 function isLocalModelCloudLeaked(): boolean {
   if (state.aiConfig?.active_provider === "local") return false;
   const activeCloudConfig = state.aiConfig?.configs.find(c => c.provider === state.aiConfig.active_provider);
@@ -739,10 +775,7 @@ function isLocalModelCloudLeaked(): boolean {
 }
 
 function isProviderReady(provider: ProviderTab): boolean {
-  if (provider === "local") {
-    if (isLocalModelCloudLeaked()) return false;
-    return state.model.state === "ready" || state.model.state === "installed";
-  }
+  if (provider === "local") return localModelUsable();
   const cfg = state.aiConfig?.configs.find(c => c.provider === provider);
   const draft = state.cloudDrafts[provider];
   return Boolean((cfg && (cfg.api_key || cfg.masked_key)) || (draft && draft.apiKey.trim()));
@@ -751,9 +784,15 @@ function isProviderReady(provider: ProviderTab): boolean {
 function providerStatusSubtitle(provider: ProviderTab): string {
   if (provider === "local") {
     const isLeaked = isLocalModelCloudLeaked();
-    const installed = !isLeaked && (state.model.state === "ready" || state.model.state === "installed");
-    if (!installed) return "Chưa nạp file model";
-    const ver = state.model.version && !isLeaked ? `v${state.model.version}` : "";
+    if (!isLeaked && !localModelUsable()) {
+      // A model that failed verification is not the same thing as no model; say
+      // which it is so the user knows whether to re-import or to import at all.
+      const reason = modelStatusReason(state.model);
+      if (reason) return reason;
+      return "Chưa nạp file model";
+    }
+    if (isLeaked) return "Chưa nạp file model";
+    const ver = state.model.version ? `v${state.model.version}` : "";
     return ver ? `Đã cài đặt (${ver})` : "Đã cài đặt model";
   }
   const cfg = state.aiConfig?.configs.find(c => c.provider === provider);
@@ -1207,6 +1246,7 @@ function bind(): void {
   document.querySelector("#cloud-save-active")?.addEventListener("click", () => void saveAndActivateCloud());
 
   document.querySelector("#model-import")?.addEventListener("click", () => void modelImport());
+  document.querySelector("#gpu-reset-guard")?.addEventListener("click", () => void resetGpuGuard());
   document.querySelector("#model-action")?.addEventListener("click", () => void modelAction());
   document.querySelector("#model-remove")?.addEventListener("click", () => { state.modelRemovalPending = true; state.settingsMessage = null; render("#cancel-model-remove"); });
   document.querySelector("#cancel-model-remove")?.addEventListener("click", () => { state.modelRemovalPending = false; state.settingsMessage = null; render("#model-remove"); });
@@ -1894,6 +1934,23 @@ async function setModelEnabled(enabled: boolean): Promise<void> {
   clearUnavailableFullReview();
   if (operation === modelOperationSequence) render("#use-model");
 }
+async function resetGpuGuard(): Promise<void> {
+  if (modelOperationBusy() || state.modelRemovalPending) return;
+  const operation = ++modelOperationSequence;
+  state.settingsMessage = null;
+  try {
+    const next = await api.gpuResetGuard();
+    if (operation !== modelOperationSequence) return;
+    state.model = next;
+    state.settingsMessage = { tone: "status", text: "Đã bỏ khoá GPU. Lần rà soát tới sẽ thử nạp model lên GPU lại." };
+  } catch {
+    if (operation === modelOperationSequence) {
+      state.settingsMessage = { tone: "error", text: "Không bỏ khoá được GPU. Hãy thử lại." };
+    }
+  }
+  if (operation === modelOperationSequence) render("#settings-message");
+}
+
 async function modelImport(): Promise<void> {
   if (modelOperationBusy() || state.modelRemovalPending) return;
   const operation = ++modelOperationSequence;

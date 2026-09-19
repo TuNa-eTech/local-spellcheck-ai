@@ -412,6 +412,53 @@ def test_registry_runs_local_import_with_experimental_full_review(
     assert registry.supports_full_review() is True
 
 
+def test_registry_status_peek_never_unloads_a_live_runtime(tmp_path: Path) -> None:
+    """`activate=False` is a read, not a command to free the runtime.
+
+    The Settings screen issues one on every visit. Unloading there used to drop
+    the model back to "installed" for the rest of the session, which silently
+    downgraded the next job to the rule engine.
+    """
+    active = tmp_path / "active"
+    active.mkdir()
+    model = active / "model.gguf"
+    model.write_bytes(b"test-model")
+    notice = active / "NOTICE.txt"
+    notice.write_text("notice", encoding="utf-8")
+    manifest = {
+        "schema_version": 2,
+        "model_id": "local-model",
+        "version": "local",
+        "engine_protocol": 1,
+        "file": model.name,
+        "size": model.stat().st_size,
+        "sha256": hashlib.sha256(model.read_bytes()).hexdigest(),
+        "license_file": notice.name,
+        "trust": "local_unverified",
+        "capabilities": {"candidate_filter": True, "full_review": True},
+    }
+    (active / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    runtime = Runtime('{"verdicts":[]}')
+    registry = ModelRegistry(tmp_path, lambda *_: runtime)
+
+    # Nothing loaded yet: the package is verified but idle.
+    assert registry.status(activate=False)["state"] == "installed"
+    assert runtime.closed is False
+
+    assert registry.status()["state"] == "ready"
+
+    # Peeking repeatedly must keep reporting the live runtime.
+    for _ in range(3):
+        assert registry.status(activate=False)["state"] == "ready"
+    assert runtime.closed is False
+    assert registry.classifier() is not None
+
+    # Freeing memory stays an explicit act, and drops the peek back to idle.
+    registry.release_runtime()
+    assert runtime.closed is True
+    assert registry.status(activate=False)["state"] == "installed"
+
+
 def test_registry_rejects_legacy_auto_local_signature_but_allows_full_review(
     tmp_path: Path,
 ) -> None:

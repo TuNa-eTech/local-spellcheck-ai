@@ -26,6 +26,13 @@ enum JobUpdate {
     Finished(AppResult<Value>),
 }
 
+/// Must equal `PROTOCOL_VERSION` in `engine/src/soatvan/__init__.py`.
+///
+/// The handshake below rejects any other value, so bumping one side without the
+/// other stops the app from starting at all. `scripts/bump-version.py` compares
+/// the two.
+pub const ENGINE_PROTOCOL_VERSION: u8 = 1;
+
 pub struct EngineBroker {
     child: Mutex<Child>,
     input: Mutex<ChildStdin>,
@@ -63,7 +70,7 @@ impl EngineBroker {
 
     fn handshake(&self) -> AppResult<()> {
         let hello = self.call_raw("engine.hello", json!({}), Duration::from_secs(30))?;
-        if hello.get("protocol") != Some(&Value::from(1)) {
+        if hello.get("protocol") != Some(&Value::from(ENGINE_PROTOCOL_VERSION)) {
             return Err(AppError::EngineProtocol);
         }
         Ok(())

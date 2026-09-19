@@ -9,27 +9,35 @@ Usage:
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from soatvan.checking.domain import Block, Finding
 from soatvan.models.seq2seq_speller import Seq2SeqSpeller, is_transformers_available
+from soatvan.paths import bundle_root, local_data_dir
 from soatvan.workflow.ports import CancellationToken
 
-DEFAULT_MODEL_DIR = Path.home() / ".config" / "soatvan" / "models" / "vn-spell-correction-small"
+MODEL_FOLDER_NAME = "vn-spell-correction-small"
+DEFAULT_MODEL_DIR = Path.home() / ".config" / "soatvan" / "models" / MODEL_FOLDER_NAME
 
 
 def find_default_model_dir() -> Path:
-    """Find the best default path for the vn-spell-correction-small model."""
+    """Find the best default path for the vn-spell-correction-small model.
+
+    Only reached when the user has not saved an explicit directory. The order
+    runs from most specific to least: the folder a portable build was extracted
+    into, the app's own state directory, then the dev-tree and cwd guesses.
+    """
+    bundle = bundle_root()
     candidates = [
-        # Relative to project repo root
-        Path(__file__).resolve().parents[4] / "models" / "vn-spell-correction-small",
-        Path.cwd() / "models" / "vn-spell-correction-small",
-        (
-            Path(os.environ["LOCALAPPDATA"]) / "SoatVan" / "models" / "vn-spell-correction-small"
-            if "LOCALAPPDATA" in os.environ
-            else None
-        ),
+        # A portable release: <root>/SoatVan.exe next to <root>/models/...
+        bundle / "models" / MODEL_FOLDER_NAME if bundle is not None else None,
+        # The real per-user state directory, whatever the host named it. The old
+        # hardcoded "%LOCALAPPDATA%/SoatVan" could never match it — the host
+        # passes %LOCALAPPDATA%/vn.soatvan.desktop.
+        local_data_dir() / "models" / MODEL_FOLDER_NAME,
+        # Running from the source tree.
+        Path(__file__).resolve().parents[4] / "models" / MODEL_FOLDER_NAME,
+        Path.cwd() / "models" / MODEL_FOLDER_NAME,
         DEFAULT_MODEL_DIR,
     ]
     for c in candidates:
