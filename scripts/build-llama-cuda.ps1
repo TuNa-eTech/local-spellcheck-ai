@@ -103,14 +103,19 @@ function Import-VisualStudioEnvironment {
         throw "Khong tim thay $vcvars."
     }
     Write-Step "Nap moi truong MSVC tu $vcvars"
+    $savedPSModulePath = $env:PSModulePath
     $output = & cmd.exe /c "`"$vcvars`" >nul 2>&1 && set"
     if ($LASTEXITCODE -ne 0) {
         throw "vcvars64.bat that bai voi exit code $LASTEXITCODE."
     }
     foreach ($line in $output) {
         if ($line -match '^([^=]+)=(.*)$') {
+            if ($Matches[1] -ieq "PSModulePath") { continue }
             Set-Item -Path "env:$($Matches[1])" -Value $Matches[2] -ErrorAction SilentlyContinue
         }
+    }
+    if ($savedPSModulePath) {
+        $env:PSModulePath = $savedPSModulePath
     }
 }
 
@@ -232,7 +237,11 @@ else {
         finally {
             $ProgressPreference = $progress
         }
-        $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+        $actual = if (Get-Command "Get-FileHash" -ErrorAction SilentlyContinue) {
+            (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+        } else {
+            (& $venvPython -c "import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], 'rb').read()).hexdigest().lower())" $archive).Trim()
+        }
         if ($actual -ne $package.Sha256) {
             throw "sdist sai hash: cho doi $($package.Sha256), nhan duoc $actual."
         }
