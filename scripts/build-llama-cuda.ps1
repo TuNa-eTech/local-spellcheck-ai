@@ -174,15 +174,37 @@ if (-not (Test-Path -LiteralPath $venvPython -PathType Leaf)) {
 
 # --- CUDA Toolkit ---------------------------------------------------------
 $cudaRoot = $env:CUDA_PATH
+if (-not $cudaRoot) {
+    $cudaRoot = [Environment]::GetEnvironmentVariable("CUDA_PATH", "Machine")
+    if (-not $cudaRoot) {
+        $cudaRoot = [Environment]::GetEnvironmentVariable("CUDA_PATH", "User")
+    }
+}
+if (-not $cudaRoot) {
+    foreach ($candidate in @("D:\CUDA_TOOLKIT", "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v*")) {
+        $found = Get-Item -Path $candidate -ErrorAction SilentlyContinue | Select-Object -Last 1
+        if ($found -and (Test-Path (Join-Path $found.FullName "bin\nvcc.exe"))) {
+            $cudaRoot = $found.FullName
+            break
+        }
+    }
+}
 $nvcc = $null
-if ($cudaRoot -and (Test-Path -LiteralPath (Join-Path $cudaRoot "bin\nvcc.exe") -PathType Leaf)) {
-    $nvcc = Join-Path $cudaRoot "bin\nvcc.exe"
+if ($cudaRoot) {
+    if (Test-Path -LiteralPath (Join-Path $cudaRoot "bin\nvcc.exe") -PathType Leaf) {
+        $nvcc = Join-Path $cudaRoot "bin\nvcc.exe"
+    }
+    $env:CUDA_PATH = $cudaRoot
+    if ($env:Path -notmatch [regex]::Escape("$cudaRoot\bin")) {
+        $env:Path = "$cudaRoot\bin;$cudaRoot\bin\x64;$env:Path"
+    }
 }
 else {
     $command = Get-Command "nvcc.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($command) {
         $nvcc = $command.Source
         $cudaRoot = Split-Path -Parent (Split-Path -Parent $nvcc)
+        $env:CUDA_PATH = $cudaRoot
     }
 }
 if (-not $nvcc) {
@@ -310,10 +332,11 @@ if (-not (Test-Path -LiteralPath (Join-Path $libDir "ggml-cuda.dll") -PathType L
     throw "Wheel vua cai khong co ggml-cuda.dll - ban build CUDA that bai."
 }
 foreach ($pattern in @("cudart64_*.dll", "cublas64_*.dll", "cublasLt64_*.dll")) {
-    $redistributable = Get-ChildItem -LiteralPath (Join-Path $cudaRoot "bin") -Filter $pattern -File `
+    $searchDirs = @((Join-Path $cudaRoot "bin"), (Join-Path $cudaRoot "bin\x64")) | Where-Object { Test-Path $_ }
+    $redistributable = Get-ChildItem -LiteralPath $searchDirs -Filter $pattern -File `
         -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $redistributable) {
-        throw "Khong tim thay $pattern trong $cudaRoot\bin (can sub-package cudart/cublas)."
+        throw "Khong tim thay $pattern trong $cudaRoot\bin hoac bin\x64 (can sub-package cudart/cublas)."
     }
     Copy-Item -LiteralPath $redistributable.FullName -Destination $libDir -Force
     Write-Step "Da dong goi $($redistributable.Name) ($([int]($redistributable.Length / 1MB)) MB)"

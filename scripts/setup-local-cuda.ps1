@@ -1,4 +1,4 @@
-﻿# Kiem tra va thiet lap moi truong build CUDA cho SoatVan tren may local.
+# Kiem tra va thiet lap moi truong build CUDA cho SoatVan tren may local.
 
 $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -46,16 +46,26 @@ $nvcc = Get-Command "nvcc" -ErrorAction SilentlyContinue
 $cudaPath = $env:CUDA_PATH
 
 if (-not $nvcc -and -not $cudaPath) {
-    $defaultCudaDir = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA"
-    if (Test-Path $defaultCudaDir) {
-        $found = Get-ChildItem $defaultCudaDir -Directory | Sort-Object Name -Descending | Select-Object -First 1
+    $cudaPath = [Environment]::GetEnvironmentVariable("CUDA_PATH", "Machine")
+    if (-not $cudaPath) {
+        $cudaPath = [Environment]::GetEnvironmentVariable("CUDA_PATH", "User")
+    }
+}
+
+if (-not $nvcc -and -not $cudaPath) {
+    foreach ($cand in @("D:\CUDA_TOOLKIT", "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v*")) {
+        $found = Get-Item -Path $cand -ErrorAction SilentlyContinue | Select-Object -Last 1
         if ($found -and (Test-Path (Join-Path $found.FullName "bin\nvcc.exe"))) {
             $cudaPath = $found.FullName
-            $env:CUDA_PATH = $cudaPath
-            $env:Path = "$cudaPath\bin;$env:Path"
-            Write-Host "  + Tim thay CUDA Toolkit tai: $cudaPath (da them vao PATH phien lam viec nay)" -ForegroundColor Green
+            break
         }
     }
+}
+
+if ($cudaPath) {
+    $env:CUDA_PATH = $cudaPath
+    $env:Path = "$cudaPath\bin;$cudaPath\bin\x64;$env:Path"
+    Write-Host "  + Tim thay CUDA Toolkit tai: $cudaPath (da them vao PATH phien lam viec nay)" -ForegroundColor Green
 }
 
 if ($nvcc -or $cudaPath) {
