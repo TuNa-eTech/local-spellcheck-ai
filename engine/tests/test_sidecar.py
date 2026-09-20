@@ -535,7 +535,7 @@ def test_prompt_budget_answers_from_the_manifest_without_loading_a_model(
     """The prompt editor queries this per keystroke; it must not load a GGUF."""
     monkeypatch.setenv("SOATVAN_DATA_DIR", str(tmp_path))
     engine = Sidecar()
-    manifest = {"context_size": 8192, "review_mode": "lightweight", "max_tokens": 512}
+    manifest = {"context_size": 8192, "max_tokens": 512}
     monkeypatch.setattr(engine.models, "active_manifest", lambda: manifest)
     # status() is what verifies and loads; the budget path must never reach it.
     monkeypatch.setattr(
@@ -546,7 +546,9 @@ def test_prompt_budget_answers_from_the_manifest_without_loading_a_model(
 
     assert budget["exact"] is False
     assert budget["fits"] is True
-    assert budget["input_tokens"] == 5888
+    # 8192 - 700 output reserve - 256 safety. The reserve follows the chunk
+    # size now, so a bigger context no longer inflates it.
+    assert budget["input_tokens"] == 7236
     assert budget["custom_prompt_tokens"] > 0
 
     overflowing = engine.dispatch(

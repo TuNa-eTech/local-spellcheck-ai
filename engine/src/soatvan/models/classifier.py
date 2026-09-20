@@ -22,14 +22,14 @@ from soatvan.workflow.ports import (
 
 from .gpu import OffloadGuard, backend_report, build_id, local_data_dir, offload_allowed
 from .review import (
-    LLM_ONLY_REVIEW_SCHEMA,
     REVIEW_SCHEMA,
     ReviewChunk,
+    ReviewSegment,
     parse_review_content,
     plan_review_chunks,
     prompt_budget_from,
     review_messages,
-    split_llm_only_chunk,
+    split_review_chunk,
 )
 from .review_budget import (
     CHAT_FALLBACK_OVERHEAD_TOKENS,
@@ -38,7 +38,12 @@ from .review_budget import (
     review_budget_from_manifest,
 )
 
-LLM_ONLY_MAX_SPLIT_DEPTH = 3
+REVIEW_MAX_SPLIT_DEPTH = 3
+#: Mild, and deliberately so. At temperature 0 under a JSON grammar the model
+#: cannot end the array by drifting off-format, so a repetition loop runs to the
+#: token cap and the truncated JSON costs a retry. Enough penalty to break the
+#: loop, not enough to distort the Vietnamese it is quoting back.
+REVIEW_REPEAT_PENALTY = 1.05
 #: Never shrink a context below this — under it the review prompt itself no
 #: longer leaves room for document text.
 MIN_RUNTIME_CONTEXT_TOKENS = 2048
@@ -345,9 +350,6 @@ class LlamaCppClassifier:
         self._review_output_tokens = derived.review_output_tokens
         self._context_size = derived.context_tokens
         self._review_budget = derived.budget
-        self._review_candidate_limit = max(
-            1, min(self._batch_size, self._filter_output_tokens // 80)
-        )
         self._runtime = runtime_factory(model_path, self._context_size, self._seed)
         # The factory may have shrunk the context to get the model loaded at
         # all. Budgeting against the manifest's number would then overflow the
@@ -448,7 +450,13 @@ class LlamaCppClassifier:
         cancellation: CancellationToken,
         progress: Callable[[int, int], None] | None = None,
     ) -> FullReviewResult:
-        verdicts: list[ClassifierVerdict] = []
+        """Review every block and report what is wrong with it.
+
+        ``candidates`` is accepted for the ``FullTextReviewer`` protocol and
+        ignored: the review format has no verdict half, and the caller has
+        passed an empty tuple since rule findings became their own layer.
+        """
+        del candidates
         discoveries: list[DiscoveryProposal] = []
         failed_chunks: list[str] = []
         failed_blocks: set[str] = set()
@@ -460,50 +468,46 @@ class LlamaCppClassifier:
         with self._lock:
             chunks = plan_review_chunks(
                 blocks,
-                candidates,
                 custom_prompt,
                 self._review_budget,
                 self._count_tokens,
                 self._count_review_request_tokens,
-                self._review_candidate_limit,
                 cancellation.raise_if_cancelled,
             )
             if not chunks:
                 return FullReviewResult((), (), 0, 0)
             total_chunks = len(chunks)
-            _b = self._review_budget
-            from .review import ReviewSegment as _RS
-            _empty = _RS("diag@0:0", "diag", 0, 0, "", "paragraph")
-            _probe = ReviewChunk("diag", (_empty,), (), (), custom_prompt)
-            _fixed = self._count_review_request_tokens(_probe)
-            _doc_limit = _b.document_limit(_fixed)
-            _total_doc = sum(
-                self._count_tokens(seg.text)
-                for c in chunks for seg in c.targets
+            budget = self._review_budget
+            probe = ReviewSegment("diag@0:0", "diag", 0, 0, "", "paragraph")
+            fixed_tokens = self._count_review_request_tokens(
+                ReviewChunk("diag", (probe,), custom_prompt)
             )
-            _max_seg = max(
-                (self._count_tokens(seg.text) for c in chunks for seg in c.targets),
+            doc_limit = budget.document_limit(fixed_tokens)
+            total_doc = sum(
+                self._count_tokens(segment.text) for c in chunks for segment in c.targets
+            )
+            max_segment = max(
+                (self._count_tokens(segment.text) for c in chunks for segment in c.targets),
                 default=0,
             )
             sys.stderr.write(
                 f"[SoatVan-Diag] "
                 f"context_size={self._context_size} "
                 f"output_tokens={self._review_output_tokens} "
-                f"input_tokens={_b.input_tokens} "
-                f"doc_limit_per_chunk={_doc_limit} "
-                f"total_doc_tokens={_total_doc} "
-                f"max_segment_tokens={_max_seg} "
-                f"avg_doc_per_chunk={_total_doc // max(1, total_chunks)} "
+                f"input_tokens={budget.input_tokens} "
+                f"doc_limit_per_chunk={doc_limit} "
+                f"total_doc_tokens={total_doc} "
+                f"max_segment_tokens={max_segment} "
+                f"avg_doc_per_chunk={total_doc // max(1, total_chunks)} "
                 f"total_blocks={len(blocks)} "
                 f"total_chunks={total_chunks} "
-                f"prompt_overhead={_fixed} "
+                f"prompt_overhead={fixed_tokens} "
                 f"custom_prompt_len={len(custom_prompt)}\n"
             )
             sys.stderr.flush()
             for processed_chunks, chunk in enumerate(chunks, start=1):
                 cancellation.raise_if_cancelled()
                 (
-                    chunk_verdicts,
                     chunk_discoveries,
                     chunk_failures,
                     chunk_retries,
@@ -513,7 +517,6 @@ class LlamaCppClassifier:
                     cancellation,
                     _attempt_activity(progress, processed_chunks - 1, total_chunks),
                 )
-                verdicts.extend(chunk_verdicts)
                 discoveries.extend(chunk_discoveries)
                 retried_chunks += chunk_retries
                 successful_attempts += chunk_successes
@@ -543,7 +546,7 @@ class LlamaCppClassifier:
         if chunks and successful_attempts == 0:
             raise ValueError("MODEL_FULL_REVIEW_FAILED")
         return FullReviewResult(
-            tuple(verdicts),
+            (),
             tuple(discoveries),
             len(chunks),
             reviewed_chunks,
@@ -563,7 +566,6 @@ class LlamaCppClassifier:
         activity: Callable[[], None] | None = None,
         depth: int = 0,
     ) -> tuple[
-        list[ClassifierVerdict],
         list[DiscoveryProposal],
         list[tuple[str, frozenset[str]]],
         int,
@@ -573,17 +575,16 @@ class LlamaCppClassifier:
             activity()
         parsed, failure = self._review_chunk(chunk, cancellation)
         if parsed is not None:
-            parsed_verdicts, parsed_discoveries = parsed
-            return list(parsed_verdicts), list(parsed_discoveries), [], 0, 1
-        if depth >= LLM_ONLY_MAX_SPLIT_DEPTH:
+            return list(parsed), [], 0, 1
+        if depth >= REVIEW_MAX_SPLIT_DEPTH:
             sys.stderr.write(
                 f"[SoatVan-Process] Chunk {chunk.chunk_id} failed ({failure}) "
                 f"at max retry depth {depth}; marking block(s) "
                 f"{sorted(chunk.target_block_ids)} as failed.\n"
             )
             sys.stderr.flush()
-            return [], [], [(failure or "inference_error", chunk.target_block_ids)], 0, 0
-        retries = split_llm_only_chunk(chunk)
+            return [], [(failure or "inference_error", chunk.target_block_ids)], 0, 0
+        retries = split_review_chunk(chunk)
         if not retries:
             sys.stderr.write(
                 f"[SoatVan-Process] Chunk {chunk.chunk_id} failed ({failure}) "
@@ -591,39 +592,33 @@ class LlamaCppClassifier:
                 f"{sorted(chunk.target_block_ids)} as failed.\n"
             )
             sys.stderr.flush()
-            return [], [], [(failure or "inference_error", chunk.target_block_ids)], 0, 0
+            return [], [(failure or "inference_error", chunk.target_block_ids)], 0, 0
         sys.stderr.write(
             f"[SoatVan-Process] Chunk {chunk.chunk_id} failed ({failure}); "
             f"retrying as {len(retries)} sub-chunk(s) (depth={depth + 1}).\n"
         )
         sys.stderr.flush()
 
-        verdicts: list[ClassifierVerdict] = []
         discoveries: list[DiscoveryProposal] = []
         failures: list[tuple[str, frozenset[str]]] = []
         retry_count = 1
         successful_attempts = 0
         for retry in retries:
             (
-                retry_verdicts,
                 retry_discoveries,
                 retry_failures,
                 nested_retries,
                 retry_successes,
             ) = self._review_chunk_with_retries(retry, cancellation, activity, depth + 1)
-            verdicts.extend(retry_verdicts)
             discoveries.extend(retry_discoveries)
             failures.extend(retry_failures)
             retry_count += nested_retries
             successful_attempts += retry_successes
-        return verdicts, discoveries, failures, retry_count, successful_attempts
+        return discoveries, failures, retry_count, successful_attempts
 
     def _review_chunk(
         self, chunk: ReviewChunk, cancellation: CancellationToken
-    ) -> tuple[
-        tuple[tuple[ClassifierVerdict, ...], tuple[DiscoveryProposal, ...]] | None,
-        str | None,
-    ]:
+    ) -> tuple[tuple[DiscoveryProposal, ...] | None, str | None]:
         deadline = time.monotonic() + self._timeout_seconds
         start_time = time.monotonic()
         abort_reason: list[Exception] = []
@@ -631,9 +626,7 @@ class LlamaCppClassifier:
         set_abort = getattr(self._runtime, "set_abort_predicate", None)
         if callable(set_abort):
             set_abort(should_abort)
-        llm_only = not chunk.candidates
         messages = review_messages(chunk)
-        schema = LLM_ONLY_REVIEW_SCHEMA if llm_only else REVIEW_SCHEMA
         request_tokens = self._count_chat_tokens(messages)
         total_request = request_tokens + self._review_output_tokens
         if total_request > self._context_size:
@@ -651,10 +644,11 @@ class LlamaCppClassifier:
                 temperature=0,
                 seed=self._seed,
                 max_tokens=self._review_output_tokens,
+                repeat_penalty=REVIEW_REPEAT_PENALTY,
                 stream=True,
                 response_format={
                     "type": "json_object",
-                    "schema": schema,
+                    "schema": REVIEW_SCHEMA,
                 },
             )
             raw = _collect_stream(completion, cancellation, deadline)

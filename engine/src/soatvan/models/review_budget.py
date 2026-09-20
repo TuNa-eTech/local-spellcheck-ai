@@ -4,11 +4,26 @@ from dataclasses import dataclass
 from typing import Any
 
 MIN_REVIEW_DOCUMENT_TOKENS = 64
-LLM_ONLY_2K_MAX_TOKENS = 768
-LLM_ONLY_4K_MAX_TOKENS = 2048
-LLM_ONLY_8K_MAX_TOKENS = 4096
 REVIEW_SAFETY_TOKENS = 256
 CHAT_FALLBACK_OVERHEAD_TOKENS = 32
+
+#: How much text one inference is allowed to look at, when the manifest does
+#: not say. A chunk is one paragraph, so this is really the size a paragraph
+#: has to exceed before it is split in two and reviewed in halves — which
+#: raises recall rather than lowering it, because the model reports about one
+#: finding per request whatever the request contains.
+DEFAULT_REVIEW_CHUNK_TOKENS = 700
+
+#: The output reserve tracks the chunk, bounded at both ends.
+#:
+#: The ceiling is what stops a repetition loop — at temperature 0 under a
+#: grammar the model cannot end the array by drifting off-format, so it writes
+#: until the budget runs out, and every one of those tokens is paid at the
+#: decode rate. The floor matters just as much in the other direction: a
+#: response cut off mid-item used to cost the whole chunk a second inference
+#: pass, and a model that quotes entire sentences needs real room to finish.
+MIN_REVIEW_OUTPUT_TOKENS = 512
+MAX_REVIEW_OUTPUT_TOKENS = 1024
 
 
 def estimate_tokens(text: str) -> int:
@@ -93,25 +108,31 @@ def review_budget_from_manifest(manifest: dict[str, Any]) -> ReviewRuntimeBudget
     context_tokens = int(manifest.get("context_size") or 2048)
     filter_output_tokens = int(manifest.get("max_tokens") or 512)
 
-    if context_tokens >= 8192:
-        review_output_limit = LLM_ONLY_8K_MAX_TOKENS
-    elif context_tokens >= 4096:
-        review_output_limit = LLM_ONLY_4K_MAX_TOKENS
-    else:
-        review_output_limit = LLM_ONLY_2K_MAX_TOKENS
+    # Keep chunks small enough for the model to focus on each paragraph.
+    # document_limit() will naturally cap this at (input_tokens - prompt_overhead)
+    # so it never overflows, but the planner uses this as the *target* size.
+    configured_doc_tokens = int(
+        manifest.get("review_chunk_tokens") or DEFAULT_REVIEW_CHUNK_TOKENS
+    )
+
+    # The output reserve follows the chunk, not the context window. Deriving it
+    # from ``context_size`` is what let a 16k model reserve 4096 output tokens
+    # for a chunk holding 400 tokens of prose: a tenfold budget the model
+    # eventually filled by repeating itself, only to be truncated mid-JSON and
+    # retried as two sub-chunks.
+    review_output_tokens = max(
+        MIN_REVIEW_OUTPUT_TOKENS,
+        min(MAX_REVIEW_OUTPUT_TOKENS, configured_doc_tokens),
+    )
     review_output_tokens = max(
         32,
         min(
-            review_output_limit,
+            review_output_tokens,
             context_tokens - REVIEW_SAFETY_TOKENS - MIN_REVIEW_DOCUMENT_TOKENS,
         ),
     )
 
     response_tokens = max(filter_output_tokens, review_output_tokens)
-    # Keep chunks small enough for the model to focus on each paragraph.
-    # document_limit() will naturally cap this at (input_tokens - prompt_overhead)
-    # so it never overflows, but the planner uses this as the *target* size.
-    configured_doc_tokens = int(manifest.get("review_chunk_tokens") or 700)
 
     return ReviewRuntimeBudget(
         budget=ReviewBudget(

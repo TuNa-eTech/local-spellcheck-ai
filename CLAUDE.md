@@ -36,9 +36,16 @@ Derived from two booleans on `job.start`, validated both in the IPC schema and i
 |---|---|---|
 | false | — | Rule engine only (fallback "kiểm tra cơ bản") |
 | true | false | AI filter — LLM keeps/drops rule-produced candidates |
-| true | true | AI full review — LLM discovers findings per token-budgeted chunk (default when the model supports it) |
+| true | true | AI full review — LLM discovers findings, one inference per paragraph (default when the model supports it) |
 
-`include_rule_findings=true` requires full review; it adds rule findings as candidates while the LLM still scans the whole text.
+`include_rule_findings=true` requires full review; it adds rule findings to the output while the LLM still scans the whole text independently. Full review never sends candidates to the model.
+
+Full review has exactly one wire format (`models/review.py`). The model is shown numbered paragraph text and answers `[{"l": <line>, "s": "<wrong>", "r": "<fix>"}]`; `parse_review_content` anchors each item and `workflow/process.py::_apply_full_review` narrows it to the minimal edits via `localize_llm_edits`. The verbose per-finding JSON that used to carry `segment_id`/`occurrence_index`/`category`/`reason_code`/`confidence` is gone — it cost ~56 tokens per finding against ~13, and generation is the whole runtime. The heavy prompts survive only in `models/cloud_api.py`, which has its own chunker and parser and is untouched by this.
+
+Two numbers are load-bearing and were measured on gemma-4-e2b, not guessed:
+
+- **One paragraph per chunk.** The model reports roughly one finding per request whatever the request holds, so packing paragraphs together drops findings rather than saving work (8 paragraphs / 7 seeded errors: 1-per-chunk → 7/7 in 52.9s; 8-per-chunk → 2/7 in 12.9s).
+- **The output reserve follows the chunk, never `context_size`.** Deriving it from the context window is what let a 16k model reserve 4096 output tokens for 400 tokens of prose; at temperature 0 under a grammar the model filled that budget by repeating itself, was truncated mid-JSON, and the chunk was re-inferred as two sub-chunks.
 
 Three inference backends coexist: local GGUF via `llama-cpp-python` (`models/classifier.py`, `models/review.py`), cloud API (`models/cloud_api.py` + `llm_transport.py`, OpenAI/Gemini, user-configured), and an optional seq2seq speller (`models/seq2seq_speller.py`) that runs in a **separate subprocess** (`entrypoints/seq2seq_worker.py`) and releases the LLM runtime first so the two never hold memory simultaneously.
 
@@ -46,7 +53,7 @@ Three inference backends coexist: local GGUF via `llama-cpp-python` (`models/cla
 
 These are fail-closed by design — do not "fix" them into leniency:
 
-- A full-review finding is accepted only on exact `paragraph_id + source_text + occurrence_index` match. Anything outside the target chunk or pointing at context-only text is dropped.
+- A full-review finding is accepted only when `source_text` occurs verbatim in the target segment the reported line number selects. If that line is wrong, the fallback anchors only when exactly one segment in the chunk contains the text; ambiguity is dropped rather than guessed. A chunk carries no context segments, so a finding can never land on text the model was not asked to review.
 - Findings that cannot be anchored safely are not written. If none can be, the job fails with `DOCUMENT_FINDINGS_NOT_EXPORTABLE`.
 - Partial coverage must surface as `status: "partial"` with timeout/invalid-output/retry counters — never silently reported as "no errors".
 - No findings → the temp output is deleted and no copy is produced.

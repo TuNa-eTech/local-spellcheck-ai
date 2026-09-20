@@ -21,7 +21,6 @@ from .ports import (
     DocumentPackage,
     FullTextReviewer,
     ProgressSink,
-    ReviewCandidate,
     Seq2SeqProvider,
 )
 

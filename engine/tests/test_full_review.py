@@ -14,8 +14,11 @@ from soatvan.checking.localization import (
     localize_llm_edits,
 )
 from soatvan.models import LlamaCppClassifier
+from soatvan.models.classifier import REVIEW_REPEAT_PENALTY
 from soatvan.models.review import (
-    LLM_ONLY_REVIEW_SYSTEM_PROMPT,
+    MAX_EDIT_LENGTH,
+    MAX_REVIEW_ITEMS,
+    REVIEW_SCHEMA,
     REVIEW_SYSTEM_PROMPT,
     ReviewChunk,
     ReviewSegment,
@@ -23,18 +26,27 @@ from soatvan.models.review import (
     parse_review_content,
     plan_review_chunks,
     review_messages,
-    split_llm_only_chunk,
+    split_review_chunk,
 )
-from soatvan.models.review_budget import ReviewBudget
+from soatvan.models.review_budget import (
+    DEFAULT_REVIEW_CHUNK_TOKENS,
+    MAX_REVIEW_OUTPUT_TOKENS,
+    MIN_REVIEW_OUTPUT_TOKENS,
+    ReviewBudget,
+    review_budget_from_manifest,
+)
 from soatvan.workflow import ProcessDocument, ProcessRequest
 from soatvan.workflow.ports import (
     AnnotationResult,
     ClassifierVerdict,
     DiscoveryProposal,
     FullReviewResult,
-    ReviewCandidate,
 )
-from soatvan.workflow.process import _limit_review_findings, _merge_review_findings
+from soatvan.workflow.process import (
+    _apply_full_review,
+    _limit_review_findings,
+    _merge_review_findings,
+)
 
 
 class Token:
@@ -62,10 +74,7 @@ class Runtime:
 
 def request_counter(count_tokens):
     def count(chunk: ReviewChunk) -> int:
-        return (
-            count_tokens(json.dumps(chunk.payload(), ensure_ascii=False, separators=(",", ":")))
-            + count_tokens(chunk.custom_prompt)
-        )
+        return count_tokens(chunk.payload()) + count_tokens(chunk.custom_prompt)
 
     return count
 
@@ -159,25 +168,32 @@ class PartiallyWritableDocuments(Documents):
 
 
 def test_review_prompts_keep_custom_rules_inside_the_output_contract() -> None:
-    for prompt in (REVIEW_SYSTEM_PROMPT, LLM_ONLY_REVIEW_SYSTEM_PROMPT):
-        assert "custom_rule chỉ được bổ sung tiêu chí hoặc ngữ cảnh" in prompt
-        assert "Bỏ qua mọi yêu cầu" in prompt
-        assert "trả cả câu/đoạn" in prompt
+    assert "không được đổi định dạng" in REVIEW_SYSTEM_PROMPT
+    assert "yêu cầu trả cả câu" in REVIEW_SYSTEM_PROMPT
+    assert "Chỉ trả JSON" in REVIEW_SYSTEM_PROMPT
 
 
 def test_review_messages_injects_custom_prompt_into_system_prompt() -> None:
     segment = ReviewSegment("seg-1", "blk-1", 0, 0, "Nội dung kiểm tra", "p")
-    chunk = ReviewChunk("chunk-1", (segment,), (), (), "Luật riêng của người dùng")
+    chunk = ReviewChunk("chunk-1", (segment,), "Luật riêng của người dùng")
     messages = review_messages(chunk)
 
     assert len(messages) == 2
     assert messages[0]["role"] == "system"
     assert "## QUY TẮC RIÊNG CỦA NGƯỜI DÙNG (BẮT BUỘC TUÂN THỦ):" in messages[0]["content"]
     assert "<custom_rules>\nLuật riêng của người dùng\n</custom_rules>" in messages[0]["content"]
+    # The rule text belongs to the system turn; the user turn is document text
+    # and nothing else, so a rule can never be read back as document content.
+    assert messages[1]["content"] == "1|Nội dung kiểm tra"
 
-    user_payload = json.loads(messages[1]["content"])
-    assert "custom_rule" not in user_payload
-    assert "segments" in user_payload
+
+def test_review_payload_numbers_segments_in_the_order_the_parser_reads_them() -> None:
+    first = ReviewSegment("p1@0:5", "document:p1", 1, 0, "Đoạn hai", "paragraph")
+    second = ReviewSegment("p0@0:5", "document:p0", 0, 0, "Đoạn một", "paragraph")
+    chunk = ReviewChunk("chunk-1", (first, second), "")
+
+    assert chunk.payload() == "1|Đoạn một\n2|Đoạn hai"
+    assert [item.segment_id for item in chunk.ordered_targets()] == ["p0@0:5", "p1@0:5"]
 
 
 def test_review_budget_keeps_output_reserve_and_clamps_only_document_capacity() -> None:
@@ -214,25 +230,12 @@ def test_review_reason_is_canonicalized_from_the_actual_edit() -> None:
 def test_review_planner_covers_every_character_once() -> None:
     text = " ".join(f"từ{i}" for i in range(180))
     blocks = (Block("document:p0", text), Block("document:p1", "Đoạn kết."))
-    candidate_start = text.index("từ80")
-    candidates = (
-        ReviewCandidate(
-            "candidate-1",
-            "document:p0",
-            candidate_start,
-            candidate_start + len("từ80"),
-            "từ80",
-            "từ 80",
-            "test.rule",
-        ),
-    )
 
     def count_tokens(value: str) -> int:
         return max(1, len(value) // 4)
 
     chunks = plan_review_chunks(
         blocks,
-        candidates,
         "",
         review_budget(90),
         count_tokens,
@@ -249,51 +252,30 @@ def test_review_planner_covers_every_character_once() -> None:
     )
     assert rebuilt == text
     assert len({segment.segment_id for segment in target_segments}) == len(target_segments)
-    assert (
-        sum(
-            candidate.candidate_id == "candidate-1"
-            for chunk in chunks
-            for candidate in chunk.candidates
-        )
-        == 1
-    )
 
 
-def test_review_planner_respects_payload_and_candidate_budgets() -> None:
-    text = " ".join(f"token{i}" for i in range(80))
-    candidates = tuple(
-        ReviewCandidate(
-            f"candidate-{index}",
-            "document:p0",
-            (start := text.index(f"token{index * 5}")),
-            start + len(f"token{index * 5}"),
-            f"token{index * 5}",
-            f"từ {index}",
-            "test.rule",
-        )
-        for index in range(10)
-    )
+def test_review_planner_gives_every_paragraph_its_own_inference() -> None:
+    """Packing paragraphs together is what loses findings, not what saves time.
+
+    The model reports about one finding per request whatever the request holds,
+    so two paragraphs in one chunk means one of them goes unreviewed.
+    """
+    blocks = tuple(Block(f"document:p{index}", f"Đoạn số {index}.") for index in range(6))
 
     def count_tokens(value: str) -> int:
         return max(1, len(value) // 4)
 
     chunks = plan_review_chunks(
-        (Block("document:p0", text),),
-        candidates,
+        blocks,
         "",
-        review_budget(120, 240),
+        review_budget(4000, 8000),
         count_tokens,
         request_counter(count_tokens),
-        max_candidates=2,
     )
-    assert all(len(chunk.candidates) <= 2 for chunk in chunks)
-    assert all(
-        count_tokens(json.dumps(chunk.payload(), ensure_ascii=False, separators=(",", ":"))) <= 240
-        for chunk in chunks
-    )
-    assert sorted(
-        candidate.candidate_id for chunk in chunks for candidate in chunk.candidates
-    ) == sorted(candidate.candidate_id for candidate in candidates)
+
+    assert len(chunks) == 6
+    assert all(len(chunk.targets) == 1 for chunk in chunks)
+    assert [chunk.targets[0].block_id for chunk in chunks] == [b.id for b in blocks]
 
 
 def test_review_chunk_budget_caps_document_text_without_subtracting_prompt() -> None:
@@ -302,7 +284,6 @@ def test_review_chunk_budget_caps_document_text_without_subtracting_prompt() -> 
     budget = ReviewBudget(10_000, 768, 256, 64)
     chunks = plan_review_chunks(
         (Block("document:p0", text),),
-        (),
         "quy tắc " * 40,
         budget,
         count_tokens,
@@ -323,44 +304,15 @@ def test_long_custom_rule_keeps_document_boundaries_when_context_is_sufficient()
     budget = ReviewBudget(10_000, 768, 256, 64)
 
     without_rule = plan_review_chunks(
-        (block,), (), "", budget, count_tokens, request_counter(count_tokens)
+        (block,), "", budget, count_tokens, request_counter(count_tokens)
     )
     with_rule = plan_review_chunks(
-        (block,),
-        (),
-        "q" * 1000,
-        budget,
-        count_tokens,
-        request_counter(count_tokens),
+        (block,), "q" * 1000, budget, count_tokens, request_counter(count_tokens)
     )
 
     assert [item.segment_id for chunk in without_rule for item in chunk.targets] == [
         item.segment_id for chunk in with_rule for item in chunk.targets
     ]
-
-
-def test_candidate_longer_than_document_cap_fails_instead_of_expanding_target() -> None:
-    text = "x" * 150
-    candidate = ReviewCandidate(
-        "candidate-1",
-        "document:p0",
-        0,
-        100,
-        text[:100],
-        "replacement",
-        "test.rule",
-    )
-    count_tokens = len
-
-    with pytest.raises(ValueError, match="MODEL_REVIEW_CONTEXT_TOO_SMALL"):
-        plan_review_chunks(
-            (Block("document:p0", text),),
-            (candidate,),
-            "",
-            ReviewBudget(10_000, 768, 256, 64),
-            count_tokens,
-            request_counter(count_tokens),
-        )
 
 
 def test_review_segmenter_prefers_a_sentence_boundary_over_later_spaces() -> None:
@@ -369,7 +321,7 @@ def test_review_segmenter_prefers_a_sentence_boundary_over_later_spaces() -> Non
     assert _preferred_boundary(text, 0, 18) == expected
 
 
-def test_failed_llm_only_chunk_splits_without_losing_source_offsets() -> None:
+def test_failed_review_chunk_splits_without_losing_source_offsets() -> None:
     target = ReviewSegment(
         "document:p0@10:39",
         "document:p0",
@@ -378,50 +330,28 @@ def test_failed_llm_only_chunk_splits_without_losing_source_offsets() -> None:
         "Câu thứ nhất. Câu thứ hai.",
         "paragraph",
     )
-    retries = split_llm_only_chunk(ReviewChunk("chunk-1", (target,), (), (), ""))
+    retries = split_review_chunk(ReviewChunk("chunk-1", (target,), ""))
 
     assert retries
     left, right = retries
-    assert left.context == right.context == ()
     assert left.targets[0].text + right.targets[0].text == target.text
     assert left.targets[0].source_start == target.source_start
     assert left.targets[0].source_end == right.targets[0].source_start
     assert right.targets[0].source_end == target.source_end
 
 
-def test_failed_hybrid_chunk_splits_without_losing_rule_candidates() -> None:
-    text = "Câu thứ nhất. Câu thứ hai."
-    target = ReviewSegment("document:p0@10:39", "document:p0", 0, 10, text, "paragraph")
-    first_local = text.index("nhất")
-    second_local = text.index("hai")
-    candidates = (
-        ReviewCandidate(
-            "first",
-            target.block_id,
-            target.source_start + first_local,
-            target.source_start + first_local + len("nhất"),
-            "nhất",
-            "nhứt",
-            "rule.first",
-        ),
-        ReviewCandidate(
-            "second",
-            target.block_id,
-            target.source_start + second_local,
-            target.source_start + second_local + len("hai"),
-            "hai",
-            "hai",
-            "rule.second",
-        ),
+def test_failed_multi_segment_chunk_splits_down_the_middle() -> None:
+    targets = tuple(
+        ReviewSegment(f"document:p{i}@0:6", f"document:p{i}", i, 0, f"Đoạn {i}", "paragraph")
+        for i in range(4)
     )
-
-    retries = split_llm_only_chunk(ReviewChunk("chunk-1", (target,), (), candidates, ""))
+    retries = split_review_chunk(ReviewChunk("chunk-1", targets, "rule"))
 
     assert retries
     left, right = retries
-    assert [item.candidate_id for item in left.candidates] == ["first"]
-    assert [item.candidate_id for item in right.candidates] == ["second"]
-    assert left.targets[0].source_end == right.targets[0].source_start
+    assert [item.segment_id for item in left.targets] == ["document:p0@0:6", "document:p1@0:6"]
+    assert [item.segment_id for item in right.targets] == ["document:p2@0:6", "document:p3@0:6"]
+    assert left.custom_prompt == right.custom_prompt == "rule"
 
 
 def test_review_planning_can_be_cancelled_between_blocks() -> None:
@@ -436,7 +366,6 @@ def test_review_planning_can_be_cancelled_between_blocks() -> None:
     with pytest.raises(RuntimeError, match="cancelled"):
         plan_review_chunks(
             tuple(Block(f"document:p{index}", "Nội dung") for index in range(10)),
-            (),
             "",
             review_budget(120),
             lambda value: max(1, len(value) // 4),
@@ -445,87 +374,187 @@ def test_review_planning_can_be_cancelled_between_blocks() -> None:
         )
 
 
-def test_review_parser_only_accepts_target_segments_and_exact_quotes() -> None:
-    target = ReviewSegment("p0@0:14", "document:p0", 0, 0, "Tôi dang làm.", "paragraph")
-    context = ReviewSegment("p1@0:12", "document:p1", 1, 0, "Đừng sửa tôi", "paragraph")
-    chunk = ReviewChunk("chunk-1", (target,), (context,), (), "")
-    content = json.dumps(
-        {
-            "discoveries": [
-                {
-                    "segment_id": target.segment_id,
-                    "source_text": "dang",
-                    "occurrence_index": 0,
-                    "suggestion": "đang",
-                    "category": "spelling",
-                    "reason_code": "spelling",
-                    "confidence": 0.96,
-                },
-                {
-                    "segment_id": context.segment_id,
-                    "source_text": "sửa",
-                    "occurrence_index": 0,
-                    "suggestion": "đổi",
-                    "category": "word_choice",
-                    "reason_code": "word_choice",
-                    "confidence": 1,
-                },
-            ],
-        },
-        ensure_ascii=False,
+def test_review_parser_anchors_a_finding_to_the_line_the_model_reported() -> None:
+    first = ReviewSegment("p0@0:13", "document:p0", 0, 0, "Tôi dang làm.", "paragraph")
+    second = ReviewSegment("p1@0:12", "document:p1", 1, 0, "Đừng sửa tôi", "paragraph")
+    chunk = ReviewChunk("chunk-1", (first, second), "")
+
+    discoveries = parse_review_content(
+        json.dumps([{"l": 1, "s": "dang", "r": "đang"}], ensure_ascii=False), chunk
     )
-    parsed = parse_review_content(content, chunk)
-    assert parsed is not None
-    _, discoveries = parsed
+
+    assert discoveries is not None
     assert [(item.block_id, item.start, item.end, item.suggestion) for item in discoveries] == [
         ("document:p0", 4, 8, "đang")
     ]
 
 
-def test_review_parser_accepts_a_chunk_with_missing_candidate_verdict() -> None:
-    target = ReviewSegment("p0@0:12", "document:p0", 0, 0, "Nội dung sai", "paragraph")
-    candidate = ReviewCandidate("candidate-1", "document:p0", 9, 12, "sai", "đúng", "test.rule")
-    chunk = ReviewChunk("chunk-1", (target,), (), (candidate,), "")
-    assert parse_review_content('{"verdicts":[],"discoveries":[]}', chunk) == ((), ())
+def test_review_parser_drops_a_quote_that_appears_in_no_segment() -> None:
+    target = ReviewSegment("p0@0:13", "document:p0", 0, 0, "Tôi dang làm.", "paragraph")
+    chunk = ReviewChunk("chunk-1", (target,), "")
+
+    assert parse_review_content('[{"l":1,"s":"không có","r":"x"}]', chunk) == ()
 
 
-def test_llm_only_review_parser_drops_invalid_discovery_without_failing_chunk() -> None:
+def test_review_parser_recovers_from_a_miscounted_line_only_when_it_is_unambiguous() -> None:
+    first = ReviewSegment("p0@0:13", "document:p0", 0, 0, "Tôi dang làm.", "paragraph")
+    second = ReviewSegment("p1@0:16", "document:p1", 1, 0, "Anh ấy dang đi.", "paragraph")
+    unique = ReviewChunk("chunk-1", (first,), "")
+    ambiguous = ReviewChunk("chunk-2", (first, second), "")
+
+    # Line 9 does not exist. One segment holds the quote, so it still anchors.
+    recovered = parse_review_content('[{"l":9,"s":"dang","r":"đang"}]', unique)
+    assert recovered is not None
+    assert [(item.block_id, item.start) for item in recovered] == [("document:p0", 4)]
+
+    # Two segments hold it, so guessing would scatter highlights. Drop instead.
+    assert parse_review_content('[{"l":9,"s":"dang","r":"đang"}]', ambiguous) == ()
+
+
+def test_review_parser_walks_repeats_onto_successive_occurrences() -> None:
+    text = "Ban hành ban hành ban hành."
+    target = ReviewSegment(f"p0@0:{len(text)}", "document:p0", 0, 0, text, "paragraph")
+    chunk = ReviewChunk("chunk-1", (target,), "")
+
+    discoveries = parse_review_content(
+        json.dumps([{"l": 1, "s": "ban hành", "r": "ban-hành"}] * 2, ensure_ascii=False),
+        chunk,
+    )
+
+    assert discoveries is not None
+    assert [(item.start, item.end) for item in discoveries] == [(9, 17), (18, 26)]
+    assert all(text[item.start : item.end] == item.source_text for item in discoveries)
+
+
+def test_review_parser_deduplicates_an_identical_anchor() -> None:
     target = ReviewSegment("p0@0:12", "document:p0", 0, 0, "Nội dung sai", "paragraph")
-    chunk = ReviewChunk("chunk-1", (target,), (), (), "")
-    parsed = parse_review_content(
+    chunk = ReviewChunk("chunk-1", (target,), "")
+
+    discoveries = parse_review_content(
+        '[{"l":1,"s":"sai","r":"đúng"},{"l":1,"s":"sai","r":"đúng"}]', chunk
+    )
+
+    assert discoveries is not None
+    assert len(discoveries) == 1
+
+
+def test_review_parser_derives_category_from_the_shape_of_the_edit() -> None:
+    text = "Số điện thọai và  khoảng trắng"
+    target = ReviewSegment(f"p0@0:{len(text)}", "document:p0", 0, 0, text, "paragraph")
+    chunk = ReviewChunk("chunk-1", (target,), "")
+
+    discoveries = parse_review_content(
         json.dumps(
-            {
-                "discoveries": [
-                    {
-                        "segment_id": target.segment_id,
-                        "source_text": "sai",
-                        "occurrence_index": 0,
-                        "suggestion": "đúng",
-                        "category": [],
-                        "reason_code": [],
-                        "confidence": 1,
-                    }
-                ],
-            },
+            [
+                {"l": 1, "s": "thọai", "r": "thoại"},
+                {"l": 1, "s": "và  khoảng", "r": "và khoảng"},
+            ],
             ensure_ascii=False,
         ),
         chunk,
     )
-    assert parsed == ((), ())
+
+    assert discoveries is not None
+    assert [(item.category, item.reason_code) for item in discoveries] == [
+        ("spelling", "diacritic"),
+        ("technical", "spacing"),
+    ]
 
 
-def test_llm_only_review_parser_accepts_legacy_empty_verdict_wrapper() -> None:
+def test_review_parser_drops_one_bad_item_without_failing_the_whole_chunk() -> None:
     target = ReviewSegment("p0@0:12", "document:p0", 0, 0, "Nội dung sai", "paragraph")
-    chunk = ReviewChunk("chunk-1", (target,), (), (), "")
+    chunk = ReviewChunk("chunk-1", (target,), "")
 
-    assert parse_review_content('{"verdicts":[],"discoveries":[]}', chunk) == ((), ())
-    assert (
-        parse_review_content(
-            '{"verdicts":[{"candidate_id":"x","verdict":"keep","confidence":1}],"discoveries":[]}',
-            chunk,
-        )
-        is None
+    discoveries = parse_review_content(
+        json.dumps(
+            [
+                {"l": "một", "s": "sai", "r": "đúng"},
+                {"l": 1, "s": "sai", "r": "sai"},
+                {"l": 1, "s": "x" * (MAX_EDIT_LENGTH + 1), "r": "y"},
+                {"l": 1, "s": "sai", "r": "đúng"},
+            ],
+            ensure_ascii=False,
+        ),
+        chunk,
     )
+
+    # A malformed item costs itself, never the chunk: re-running the inference
+    # is the expensive half of this pipeline.
+    assert discoveries is not None
+    assert [(item.source_text, item.suggestion) for item in discoveries] == [("sai", "đúng")]
+
+
+def test_review_parser_returns_none_only_when_the_response_is_unusable() -> None:
+    target = ReviewSegment("p0@0:12", "document:p0", 0, 0, "Nội dung sai", "paragraph")
+    chunk = ReviewChunk("chunk-1", (target,), "")
+
+    assert parse_review_content("not json", chunk) is None
+    assert parse_review_content('{"unexpected": 1}', chunk) is None
+    assert parse_review_content("[]", chunk) == ()
+    # Truncated output is what a runaway generation leaves behind.
+    assert parse_review_content('[{"l":1,"s":"sai","r":"đ', chunk) is None
+
+
+def test_review_parser_keeps_the_finished_items_of_a_truncated_response() -> None:
+    text = "Tôi dang làm. Đơn vị đã bổ xung hồ sơ."
+    target = ReviewSegment(f"p0@0:{len(text)}", "document:p0", 0, 0, text, "paragraph")
+    chunk = ReviewChunk("chunk-1", (target,), "")
+    # What the token cap leaves behind: one finished item, one cut mid-string.
+    truncated = '[{"l":1,"s":"dang","r":"đang"},{"l":1,"s":"bổ xung","r":"bổ s'
+
+    discoveries = parse_review_content(truncated, chunk)
+
+    assert discoveries is not None
+    assert [(item.source_text, item.suggestion) for item in discoveries] == [("dang", "đang")]
+
+
+def test_review_parser_salvage_still_refuses_a_response_with_no_finished_item() -> None:
+    target = ReviewSegment("p0@0:12", "document:p0", 0, 0, "Nội dung sai", "paragraph")
+    chunk = ReviewChunk("chunk-1", (target,), "")
+
+    # Nothing completed, so there is nothing to keep and the chunk must retry.
+    assert parse_review_content('[{"l":1,"s":"sa', chunk) is None
+    assert parse_review_content('{"e":[{"l":1,"s":"sa', chunk) is None
+
+
+def test_review_parser_accepts_the_whole_sentence_quotes_the_model_actually_emits() -> None:
+    # gemma-4-e2b quotes the sentence it found the error in whatever the prompt
+    # asks for, and llama.cpp never turns the schema's maxLength into a grammar
+    # rule. Rejecting those quotes silently dropped every finding it reported.
+    text = "Kính gửi uỷ ban nhân dân thành phố hà nội."
+    target = ReviewSegment(f"p0@0:{len(text)}", "document:p0", 0, 0, text, "paragraph")
+    chunk = ReviewChunk("chunk-1", (target,), "")
+
+    discoveries = parse_review_content(
+        json.dumps(
+            [{"l": 1, "s": text, "r": "Kính gửi Ủy ban nhân dân thành phố Hà Nội."}],
+            ensure_ascii=False,
+        ),
+        chunk,
+    )
+
+    assert discoveries is not None
+    assert len(discoveries) == 1
+    # The parser anchors the quote; _apply_full_review narrows it to the edits.
+    assert text[discoveries[0].start : discoveries[0].end] == text
+
+
+def test_review_parser_rejects_a_response_beyond_the_item_ceiling() -> None:
+    target = ReviewSegment("p0@0:12", "document:p0", 0, 0, "Nội dung sai", "paragraph")
+    chunk = ReviewChunk("chunk-1", (target,), "")
+    flood = [{"l": 1, "s": "sai", "r": "đúng"}] * (MAX_REVIEW_ITEMS + 1)
+
+    assert parse_review_content(json.dumps(flood), chunk) is None
+
+
+def test_review_parser_accepts_a_wrapped_array_from_a_small_model() -> None:
+    target = ReviewSegment("p0@0:12", "document:p0", 0, 0, "Nội dung sai", "paragraph")
+    chunk = ReviewChunk("chunk-1", (target,), "")
+
+    discoveries = parse_review_content('{"e":[{"l":1,"s":"sai","r":"đúng"}]}', chunk)
+
+    assert discoveries is not None
+    assert [item.suggestion for item in discoveries] == ["đúng"]
 
 
 @pytest.mark.parametrize("unsafe_suggestion", ["\ud800", "\ufffe"])
@@ -533,182 +562,86 @@ def test_review_parser_drops_suggestions_that_are_not_valid_xml(
     unsafe_suggestion: str,
 ) -> None:
     target = ReviewSegment("p0@0:12", "document:p0", 0, 0, "Nội dung sai", "paragraph")
-    chunk = ReviewChunk("chunk-1", (target,), (), (), "")
-    parsed = parse_review_content(
-        json.dumps(
-            {
-                "discoveries": [
-                    {
-                        "segment_id": target.segment_id,
-                        "source_text": "sai",
-                        "occurrence_index": 0,
-                        "suggestion": unsafe_suggestion,
-                        "category": "spelling",
-                        "reason_code": "spelling",
-                        "confidence": 1,
-                    }
-                ],
-            }
-        ),
-        chunk,
+    chunk = ReviewChunk("chunk-1", (target,), "")
+
+    discoveries = parse_review_content(
+        json.dumps([{"l": 1, "s": "sai", "r": unsafe_suggestion}]), chunk
     )
-    assert parsed == ((), ())
+
+    assert discoveries == ()
 
 
-def test_review_parser_rejects_unsafe_long_or_semantic_deletions() -> None:
-    target = ReviewSegment(
-        "p0@0:120",
-        "document:p0",
-        0,
-        0,
-        "Nội dung hành chính cần được giữ nguyên trong văn bản.",
-        "paragraph",
+def export_findings(
+    text: str,
+    *edits: tuple[str, str],
+    reason_code: str = "spelling",
+) -> list[Finding]:
+    """Push raw discoveries through the gate that decides what gets written.
+
+    ``parse_review_content`` no longer narrows a quote down to the minimal edit
+    — the compact format has no reason code for it to trust, and the workflow
+    has to re-derive one per edit anyway. ``_apply_full_review`` is where a
+    broad or invented rewrite is now refused, so that is where these cases are
+    asserted.
+    """
+    block = Block("document:p0", text)
+    discoveries = tuple(
+        DiscoveryProposal(
+            "document:p0",
+            text.index(source),
+            text.index(source) + len(source),
+            source,
+            suggestion,
+            "spelling",
+            reason_code,
+            0.99,
+        )
+        for source, suggestion in edits
     )
-    chunk = ReviewChunk("chunk-1", (target,), (), (), "")
-    parsed = parse_review_content(
-        json.dumps(
-            {
-                "discoveries": [
-                    {
-                        "segment_id": target.segment_id,
-                        "source_text": target.text,
-                        "occurrence_index": 0,
-                        "suggestion": "",
-                        "category": "word_choice",
-                        "reason_code": "word_choice",
-                        "confidence": 0.99,
-                    }
-                ],
-            },
-            ensure_ascii=False,
-        ),
-        chunk,
+    reviewer = Reviewer(FullReviewResult((), discoveries, 1, 1))
+    findings, _summary, _failed = _apply_full_review(
+        [], [block], reviewer, "", frozenset(), Token()
     )
-    assert parsed == ((), ())
+    return findings
 
 
-def test_review_parser_rejects_a_broad_sentence_with_a_short_replacement() -> None:
+
+def test_review_export_rejects_unsafe_long_or_semantic_deletions() -> None:
+    text = "Nội dung hành chính cần được giữ nguyên trong văn bản."
+
+    assert export_findings(text, (text, ""), reason_code="word_choice") == []
+
+
+def test_review_export_rejects_a_broad_sentence_with_a_short_replacement() -> None:
     text = (
         "Đề nghị đơn vị ghi chính xác số điện thọai của người tiếp nhận hồ sơ "
         "để thuận tiện liên hệ."
     )
-    target = ReviewSegment(f"p0@0:{len(text)}", "document:p0", 0, 0, text, "paragraph")
-    chunk = ReviewChunk("chunk-1", (target,), (), (), "")
 
-    parsed = parse_review_content(
-        json.dumps(
-            {
-                "discoveries": [
-                    {
-                        "segment_id": target.segment_id,
-                        "source_text": text,
-                        "occurrence_index": 0,
-                        "suggestion": "điện thoại",
-                        "category": "spelling",
-                        "reason_code": "spelling",
-                        "confidence": 0.99,
-                    }
-                ]
-            },
-            ensure_ascii=False,
-        ),
-        chunk,
-    )
-
-    assert parsed == ((), ())
+    assert export_findings(text, (text, "điện thoại")) == []
 
 
-def test_review_parser_safely_localizes_one_edit_with_shared_context() -> None:
+def test_review_export_safely_localizes_one_edit_with_shared_context() -> None:
     text = "Đề nghị ghi số điện thọai để liên hệ."
     corrected = "Đề nghị ghi số điện thoại để liên hệ."
-    target = ReviewSegment(f"p0@0:{len(text)}", "document:p0", 0, 0, text, "paragraph")
-    chunk = ReviewChunk("chunk-1", (target,), (), (), "")
 
-    parsed = parse_review_content(
-        json.dumps(
-            {
-                "discoveries": [
-                    {
-                        "segment_id": target.segment_id,
-                        "source_text": text,
-                        "occurrence_index": 0,
-                        "suggestion": corrected,
-                        "category": "spelling",
-                        "reason_code": "spelling",
-                        "confidence": 0.99,
-                    }
-                ]
-            },
-            ensure_ascii=False,
-        ),
-        chunk,
-    )
+    findings = export_findings(text, (text, corrected))
 
-    assert parsed is not None
-    _, discoveries = parsed
-    assert len(discoveries) == 1
-    discovery = discoveries[0]
-    assert text[discovery.start : discovery.end] == discovery.source_text
-    assert (discovery.source_text, discovery.suggestion) == ("thọai", "thoại")
+    assert [(item.source_text, item.suggestion) for item in findings] == [("thọai", "thoại")]
+    assert all(text[item.start : item.end] == item.source_text for item in findings)
 
 
 @pytest.mark.parametrize("reason_code", ["spelling", "compound_word"])
-def test_review_parser_rejects_a_dissimilar_spelling_replacement(
-    reason_code: str,
-) -> None:
+def test_review_export_rejects_a_dissimilar_spelling_replacement(reason_code: str) -> None:
     text = "Kiểm tra ngẩu nhiên hồ sơ."
-    target = ReviewSegment(f"p0@0:{len(text)}", "document:p0", 0, 0, text, "paragraph")
-    chunk = ReviewChunk("chunk-1", (target,), (), (), "")
 
-    parsed = parse_review_content(
-        json.dumps(
-            {
-                "discoveries": [
-                    {
-                        "segment_id": target.segment_id,
-                        "source_text": "ngẩu nhiên",
-                        "occurrence_index": 0,
-                        "suggestion": "nóng nhiên",
-                        "category": reason_code,
-                        "reason_code": reason_code,
-                        "confidence": 0.99,
-                    }
-                ]
-            },
-            ensure_ascii=False,
-        ),
-        chunk,
-    )
-
-    assert parsed == ((), ())
+    assert export_findings(text, ("ngẩu nhiên", "nóng nhiên"), reason_code=reason_code) == []
 
 
-def test_review_parser_rejects_a_guessed_contextual_orthographic_rewrite() -> None:
+def test_review_export_rejects_a_guessed_contextual_orthographic_rewrite() -> None:
     text = "Nội dung trể hạng cần sửa."
-    target = ReviewSegment(f"p0@0:{len(text)}", "document:p0", 0, 0, text, "paragraph")
-    chunk = ReviewChunk("chunk-1", (target,), (), (), "")
 
-    parsed = parse_review_content(
-        json.dumps(
-            {
-                "discoveries": [
-                    {
-                        "segment_id": target.segment_id,
-                        "source_text": "trể hạng",
-                        "occurrence_index": 0,
-                        "suggestion": "tệ hạng",
-                        "category": "compound_word",
-                        "reason_code": "compound_word",
-                        "confidence": 0.99,
-                    }
-                ]
-            },
-            ensure_ascii=False,
-        ),
-        chunk,
-    )
-
-    assert parsed == ((), ())
+    assert export_findings(text, ("trể hạng", "tệ hạng"), reason_code="compound_word") == []
 
 
 @pytest.mark.parametrize(
@@ -790,40 +723,18 @@ def test_localizer_still_refuses_regions_that_fail_the_per_edit_rules() -> None:
     assert [(item[1], item[2]) for item in edits] == [("sát", "sáp")]
 
 
-def test_review_parser_emits_one_discovery_per_edit_in_a_clause_rewrite() -> None:
+def test_review_export_emits_one_finding_per_edit_in_a_clause_rewrite() -> None:
     text = "Kính gửi uỷ ban nhân dân thành phố hà nội."
-    target = ReviewSegment(f"p0@0:{len(text)}", "document:p0", 0, 0, text, "paragraph")
-    chunk = ReviewChunk("chunk-1", (target,), (), (), "")
+    rewrite = "Kính gửi Ủy ban nhân dân thành phố Hà Nội."
 
-    parsed = parse_review_content(
-        json.dumps(
-            {
-                "discoveries": [
-                    {
-                        "segment_id": target.segment_id,
-                        "source_text": text,
-                        "occurrence_index": 0,
-                        "suggestion": "Kính gửi Ủy ban nhân dân thành phố Hà Nội.",
-                        "category": "technical",
-                        "reason_code": "spelling",
-                        "confidence": 1.0,
-                    }
-                ]
-            },
-            ensure_ascii=False,
-        ),
-        chunk,
-    )
+    findings = export_findings(text, (text, rewrite))
 
-    assert parsed is not None
-    _, discoveries = parsed
-    assert [(item.source_text, item.suggestion) for item in discoveries] == [
+    assert [(item.source_text, item.suggestion) for item in findings] == [
         ("uỷ", "Ủy"),
         ("hà", "Hà"),
         ("nội", "Nội"),
     ]
-    for item in discoveries:
-        assert text[item.start : item.end] == item.source_text
+    assert all(text[item.start : item.end] == item.source_text for item in findings)
 
 
 def test_low_confidence_discovery_is_kept_because_the_signal_is_uncalibrated(
@@ -863,32 +774,10 @@ def test_low_confidence_discovery_is_kept_because_the_signal_is_uncalibrated(
     assert [item.confidence for item in documents.written] == [0.1]
 
 
-def test_review_parser_rejects_unicode_normalization_noop() -> None:
+def test_review_export_rejects_unicode_normalization_noop() -> None:
     text = "xử"
-    target = ReviewSegment("p0@0:2", "document:p0", 0, 0, text, "paragraph")
-    chunk = ReviewChunk("chunk-1", (target,), (), (), "")
 
-    parsed = parse_review_content(
-        json.dumps(
-            {
-                "discoveries": [
-                    {
-                        "segment_id": target.segment_id,
-                        "source_text": text,
-                        "occurrence_index": 0,
-                        "suggestion": unicodedata.normalize("NFD", text),
-                        "category": "spelling",
-                        "reason_code": "spelling",
-                        "confidence": 0.99,
-                    }
-                ]
-            },
-            ensure_ascii=False,
-        ),
-        chunk,
-    )
-
-    assert parsed == ((), ())
+    assert export_findings(text, (text, unicodedata.normalize("NFD", text))) == []
 
 
 @pytest.mark.parametrize(
@@ -901,28 +790,8 @@ def test_localizer_rejects_mixed_spelling_and_boundary_punctuation_edits(
     assert localize_llm_edit(source_text, suggestion, "compound_word") is None
 
 
-def test_classifier_full_review_combines_verdicts_and_discoveries(tmp_path: Path) -> None:
-    runtime = Runtime(
-        json.dumps(
-            {
-                "verdicts": [
-                    {"candidate_id": "candidate-1", "verdict": "drop", "confidence": 0.99}
-                ],
-                "discoveries": [
-                    {
-                        "segment_id": "document:p0@0:26",
-                        "source_text": "dang",
-                        "occurrence_index": 0,
-                        "suggestion": "đang",
-                        "category": "spelling",
-                        "reason_code": "spelling",
-                        "confidence": 0.95,
-                    }
-                ],
-            },
-            ensure_ascii=False,
-        )
-    )
+def test_classifier_review_sends_the_compact_contract(tmp_path: Path) -> None:
+    runtime = Runtime(json.dumps([{"l": 1, "s": "dang", "r": "đang"}], ensure_ascii=False))
     classifier = LlamaCppClassifier(
         tmp_path / "model.gguf",
         {
@@ -934,36 +803,29 @@ def test_classifier_full_review_combines_verdicts_and_discoveries(tmp_path: Path
         lambda *_: runtime,
     )
     block = Block("document:p0", "Tôi dang làm việc  hôm nay")
-    candidate = ReviewCandidate(
-        "candidate-1", "document:p0", 16, 18, "  ", " ", "spacing.multiple.v1"
-    )
-    result = classifier.review((block,), (candidate,), "", Token())
+
+    result = classifier.review((block,), (), "", Token())
+
     assert result.status == "complete"
-    assert [(item.candidate_id, item.verdict) for item in result.verdicts] == [
-        ("candidate-1", "drop")
-    ]
+    assert result.verdicts == ()
     assert [(item.block_id, item.source_text, item.suggestion) for item in result.discoveries] == [
         ("document:p0", "dang", "đang")
     ]
-    assert runtime.calls[0]["response_format"]["schema"]["required"] == [
-        "verdicts",
-        "discoveries",
-    ]
-    assert runtime.calls[0]["max_tokens"] == 2048
+    call = runtime.calls[0]
+    assert call["response_format"]["schema"] is REVIEW_SCHEMA
+    assert call["repeat_penalty"] == REVIEW_REPEAT_PENALTY
+    # The output reserve now follows the chunk, not the context window.
+    assert call["max_tokens"] == 1024
+    assert call["messages"][1]["content"] == "1|Tôi dang làm việc  hôm nay"
     request_tokens = (
-        sum(runtime.count_tokens(message["content"]) for message in runtime.calls[0]["messages"])
-        + 32
+        sum(runtime.count_tokens(message["content"]) for message in call["messages"]) + 32
     )
-    assert request_tokens + runtime.calls[0]["max_tokens"] + 256 <= 4096
-    assert runtime.calls[0]["messages"] in runtime.counted_messages
-    prompt = json.loads(runtime.calls[0]["messages"][1]["content"])
-    assert prompt["segments"][0]["role"] == "target"
-    assert prompt["candidates"][0]["segment_id"] == "document:p0@0:26"
-    assert prompt["candidates"][0]["occurrence_index"] == 0
+    assert request_tokens + call["max_tokens"] + 256 <= 4096
+    assert call["messages"] in runtime.counted_messages
 
 
-def test_classifier_llm_only_review_uses_small_discovery_contract(tmp_path: Path) -> None:
-    runtime = Runtime('{"discoveries":[]}')
+def test_classifier_output_reserve_never_dwarfs_the_chunk(tmp_path: Path) -> None:
+    runtime = Runtime("[]")
     classifier = LlamaCppClassifier(
         tmp_path / "model.gguf",
         {
@@ -979,10 +841,10 @@ def test_classifier_llm_only_review_uses_small_discovery_contract(tmp_path: Path
 
     assert result.status == "complete"
     call = runtime.calls[0]
-    assert call["max_tokens"] == 768
-    assert call["response_format"]["schema"]["required"] == ["discoveries"]
-    prompt = json.loads(call["messages"][1]["content"])
-    assert "candidates" not in prompt
+    # A 500-token chunk lands on the 512 floor — not the 4096 a 16k context
+    # used to hand every chunk regardless of how little it actually held.
+    assert call["max_tokens"] == 512
+    assert call["response_format"]["schema"]["type"] == "array"
     assert "verdict" not in call["messages"][0]["content"]
 
 
@@ -999,7 +861,7 @@ def test_classifier_full_review_fails_when_every_chunk_is_malformed(tmp_path: Pa
 def test_custom_prompt_overflow_fails_before_document_splitting_or_inference(
     tmp_path: Path,
 ) -> None:
-    runtime = PromptOverflowRuntime(base_tokens=400, custom_tokens=1000)
+    runtime = PromptOverflowRuntime(base_tokens=400, custom_tokens=1240)
     classifier = LlamaCppClassifier(
         tmp_path / "model.gguf",
         {
@@ -1032,11 +894,11 @@ def test_prompt_budget_verdict_matches_what_the_planner_enforces(tmp_path: Path)
     }
     blocks = (Block("document:p0", "x"),)
 
-    # input_tokens here is 2048 - 768 response - 256 safety = 1024, so a fixed
-    # cost above 960 leaves less than the 64-token floor for document text.
+    # input_tokens here is 2048 - 512 response - 256 safety = 1280, so a fixed
+    # cost above 1216 leaves less than the 64-token floor for document text.
     for base_tokens, custom_tokens, expected_fits in (
-        (400, 900, True),
-        (400, 1000, False),
+        (400, 1100, True),
+        (400, 1240, False),
     ):
         runtime = PromptOverflowRuntime(base_tokens=base_tokens, custom_tokens=custom_tokens)
         classifier = LlamaCppClassifier(
@@ -1046,7 +908,7 @@ def test_prompt_budget_verdict_matches_what_the_planner_enforces(tmp_path: Path)
         budget = classifier.prompt_budget("rule")
         assert budget.fits is expected_fits
         assert budget.exact is True
-        assert budget.input_tokens == 1024
+        assert budget.input_tokens == 1280
         assert budget.custom_prompt_tokens == custom_tokens - base_tokens
 
         if expected_fits:
@@ -1073,12 +935,13 @@ def test_budget_follows_the_context_the_runtime_actually_loaded(tmp_path: Path) 
             "version": "1",
             "context_size": 8192,
         },
-        lambda *_: ShrunkRuntime('{"discoveries":[]}'),
+        lambda *_: ShrunkRuntime("[]"),
     )
 
     budget = classifier.prompt_budget("")
     assert budget.context_tokens == 4096
-    assert budget.input_tokens == 1792
+    # 4096 - 700 response - 256 safety.
+    assert budget.input_tokens == 3140
 
 
 def test_prompt_budget_is_estimated_without_loading_the_model() -> None:
@@ -1090,8 +953,8 @@ def test_prompt_budget_is_estimated_without_loading_the_model() -> None:
     assert empty.exact is False
     assert empty.fits is True
     assert empty.context_tokens == 8192
-    # 8192 - 4096 response - 256 safety; the figure the UI shows as the ceiling.
-    assert empty.input_tokens == 3840
+    # 8192 - 700 response - 256 safety; the figure the UI shows as the ceiling.
+    assert empty.input_tokens == 7236
     assert empty.custom_prompt_tokens == 0
 
     # With a smaller context, a custom prompt visibly reduces available doc space.
@@ -1106,7 +969,7 @@ def test_prompt_budget_is_estimated_without_loading_the_model() -> None:
 
 
 def test_base_review_prompt_overflow_keeps_model_context_error(tmp_path: Path) -> None:
-    runtime = PromptOverflowRuntime(base_tokens=1000, custom_tokens=1000)
+    runtime = PromptOverflowRuntime(base_tokens=1240, custom_tokens=1240)
     classifier = LlamaCppClassifier(
         tmp_path / "model.gguf",
         {
@@ -1126,7 +989,7 @@ def test_base_review_prompt_overflow_keeps_model_context_error(tmp_path: Path) -
 
 
 def test_2463_character_custom_rule_fits_the_local_4096_context(tmp_path: Path) -> None:
-    runtime = Runtime('{"discoveries":[]}')
+    runtime = Runtime("[]")
     classifier = LlamaCppClassifier(
         tmp_path / "model.gguf",
         {
@@ -1148,7 +1011,7 @@ def test_2463_character_custom_rule_fits_the_local_4096_context(tmp_path: Path) 
     assert result.status == "complete"
     assert runtime.calls
     for call in runtime.calls:
-        assert call["max_tokens"] == 2048
+        assert call["max_tokens"] == 512
         request_tokens = (
             sum(runtime.count_tokens(message["content"]) for message in call["messages"]) + 32
         )
@@ -1703,148 +1566,27 @@ def test_review_limit_reserves_quota_for_ai_discoveries() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_parse_lightweight_basic() -> None:
-    """A simple error list is parsed into correct DiscoveryProposals."""
-    from soatvan.models.review import parse_lightweight_content
-
-    seg = ReviewSegment("b@0:50", "b", 0, 0, "Thực hiện theo quyết địnhh số 123", "paragraph")
-    chunk = ReviewChunk("c1", (seg,), (), (), "")
-    content = '[{"s":"quyết địnhh","r":"quyết định"}]'
-    result = parse_lightweight_content(content, chunk)
-    assert result is not None
-    verdicts, discoveries = result
-    assert len(verdicts) == 0
-    assert len(discoveries) == 1
-    d = discoveries[0]
-    assert d.block_id == "b"
-    assert d.source_text == "quyết địnhh"
-    assert d.suggestion == "quyết định"
-    assert d.start == 15
-    assert d.end == 26
-
-
-def test_parse_lightweight_multiple_occurrences() -> None:
-    """Same error appearing twice in text produces two discoveries."""
-    from soatvan.models.review import parse_lightweight_content
-
-    text = "quyết địnhh số 1 và quyết địnhh số 2"
-    seg = ReviewSegment("b@0:50", "b", 0, 0, text, "paragraph")
-    chunk = ReviewChunk("c1", (seg,), (), (), "")
-    content = '[{"s":"quyết địnhh","r":"quyết định"}]'
-    result = parse_lightweight_content(content, chunk)
-    assert result is not None
-    _, discoveries = result
-    assert len(discoveries) == 2
-    starts = sorted(d.start for d in discoveries)
-    assert starts[0] == 0
-    assert starts[1] == 20
-
-
-def test_parse_lightweight_src_not_found_is_skipped() -> None:
-    """An error whose src text is not found in the segment is silently dropped."""
-    from soatvan.models.review import parse_lightweight_content
-
-    seg = ReviewSegment("b@0:20", "b", 0, 0, "Văn bản đúng hoàn toàn", "paragraph")
-    chunk = ReviewChunk("c1", (seg,), (), (), "")
-    content = '[{"s":"không tồn tại","r":"gì đó"}]'
-    result = parse_lightweight_content(content, chunk)
-    assert result is not None
-    _, discoveries = result
-    assert len(discoveries) == 0
-
-
-def test_parse_lightweight_src_equals_fix_is_skipped() -> None:
-    """An identity edit (src == fix) is rejected."""
-    from soatvan.models.review import parse_lightweight_content
-
-    seg = ReviewSegment("b@0:20", "b", 0, 0, "quyết định số 123", "paragraph")
-    chunk = ReviewChunk("c1", (seg,), (), (), "")
-    content = '[{"s":"quyết định","r":"quyết định"}]'
-    result = parse_lightweight_content(content, chunk)
-    assert result is not None
-    _, discoveries = result
-    assert len(discoveries) == 0
-
-
-def test_parse_lightweight_invalid_json_returns_none() -> None:
-    """Malformed JSON output triggers a retry (returns None)."""
-    from soatvan.models.review import parse_lightweight_content
-
-    seg = ReviewSegment("b@0:20", "b", 0, 0, "bất kỳ", "paragraph")
-    chunk = ReviewChunk("c1", (seg,), (), (), "")
-    assert parse_lightweight_content("not json", chunk) is None
-    assert parse_lightweight_content("{}", chunk) is None
-
-
-def test_parse_lightweight_auto_categorize() -> None:
-    """Category is auto-detected from the edit shape."""
-    from soatvan.models.review import parse_lightweight_content
-
-    seg = ReviewSegment("b@0:30", "b", 0, 0, "Nội  dung văn bản thọai", "paragraph")
-    chunk = ReviewChunk("c1", (seg,), (), (), "")
-    content = '[{"s":"Nội  dung","r":"Nội dung"},{"s":"thọai","r":"thoại"}]'
-    result = parse_lightweight_content(content, chunk)
-    assert result is not None
-    _, discoveries = result
-    cats = {d.source_text: (d.category, d.reason_code) for d in discoveries}
-    assert cats["Nội  dung"] == ("technical", "spacing")
-    assert cats["thọai"] == ("spelling", "diacritic")
-
-
-def test_parse_lightweight_dedup() -> None:
-    """Duplicate items in the LLM output are deduplicated."""
-    from soatvan.models.review import parse_lightweight_content
-
-    seg = ReviewSegment("b@0:30", "b", 0, 0, "quyết địnhh số 123", "paragraph")
-    chunk = ReviewChunk("c1", (seg,), (), (), "")
-    content = '[{"s":"quyết địnhh","r":"quyết định"},{"s":"quyết địnhh","r":"quyết định"}]'
-    result = parse_lightweight_content(content, chunk)
-    assert result is not None
-    _, discoveries = result
-    assert len(discoveries) == 1
-
-
-def test_lightweight_payload_returns_plain_text() -> None:
-    """lightweight_payload() returns only target text, no JSON overhead."""
-    seg1 = ReviewSegment("b@0:10", "b", 0, 0, "Đoạn một", "paragraph")
-    seg2 = ReviewSegment("b@10:20", "b", 0, 10, "Đoạn hai", "paragraph")
-    ctx = ReviewSegment("c@0:10", "c", 1, 0, "Ngữ cảnh", "paragraph")
-    chunk = ReviewChunk("c1", (seg1, seg2), (ctx,), (), "custom")
-    payload = chunk.lightweight_payload()
-    assert "Đoạn một" in payload
-    assert "Đoạn hai" in payload
-    assert "Ngữ cảnh" not in payload  # Context excluded
-
-
-def test_lightweight_messages_include_custom_prompt() -> None:
-    """lightweight_review_messages appends custom prompt to system message."""
-    from soatvan.models.review import LIGHTWEIGHT_REVIEW_SYSTEM_PROMPT, lightweight_review_messages
-
-    seg = ReviewSegment("b@0:10", "b", 0, 0, "Nội dung", "paragraph")
-    chunk = ReviewChunk("c1", (seg,), (), (), "Quy tắc riêng của tôi")
-    messages = lightweight_review_messages(chunk)
-    assert len(messages) == 2
-    assert messages[0]["role"] == "system"
-    assert LIGHTWEIGHT_REVIEW_SYSTEM_PROMPT in messages[0]["content"]
-    assert "Quy tắc riêng của tôi" in messages[0]["content"]
-    assert messages[1]["role"] == "user"
-    assert messages[1]["content"] == "Nội dung"
-
-
-
-def test_classifier_budget_uses_full_input_window() -> None:
-    """Output tokens use the tiered limit; document_tokens use the full input window."""
-    manifest = {
-        "model_id": "test",
-        "version": "1",
-        "context_size": 4096,
-    }
-    runtime = Runtime('{"discoveries":[]}')
-    classifier = LlamaCppClassifier(
-        Path("/fake"), manifest, lambda *_: runtime
+def test_review_output_reserve_is_derived_from_the_chunk_not_the_context() -> None:
+    small = review_budget_from_manifest(
+        {"context_size": 4096, "review_chunk_tokens": 500}
     )
-    # Default output tokens: min(2048, 4096 - 256 - 64) = 2048
-    assert classifier._review_output_tokens == 2048
-    # document_tokens: configured default 700 (clamped by document_limit at runtime)
-    assert classifier._review_budget.document_tokens == 700
+    default = review_budget_from_manifest({"context_size": 16384})
+    large = review_budget_from_manifest(
+        {"context_size": 16384, "review_chunk_tokens": 8000}
+    )
+
+    # A tiny chunk gets the floor, not a share of the window.
+    assert small.review_output_tokens == MIN_REVIEW_OUTPUT_TOKENS
+    # No manifest value means the default target chunk, and half of it.
+    assert default.budget.document_tokens == DEFAULT_REVIEW_CHUNK_TOKENS
+    assert default.review_output_tokens == DEFAULT_REVIEW_CHUNK_TOKENS
+    # A large chunk stops at the ceiling instead of scaling without bound.
+    assert large.review_output_tokens == MAX_REVIEW_OUTPUT_TOKENS
+    # Growing the context alone must never grow the output reserve again.
+    assert (
+        review_budget_from_manifest({"context_size": 32768, "review_chunk_tokens": 500})
+        .review_output_tokens
+        == MIN_REVIEW_OUTPUT_TOKENS
+    )
+
 
