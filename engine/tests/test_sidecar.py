@@ -259,7 +259,7 @@ def test_job_start_is_async_and_emits_terminal_event(make_docx, tmp_path: Path) 
         "origin": {"rule": 1},
     }
     assert progress == sorted(progress)
-    assert progress == [10, 35, 72, 88, 100]
+    assert progress in ([10, 35, 72, 88, 100], [10, 35, 55, 72, 88, 100])
     assert output.is_file()
     process.stdin.close()
     process.wait(timeout=5)

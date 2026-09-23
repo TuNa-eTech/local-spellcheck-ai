@@ -254,11 +254,11 @@ def test_review_planner_covers_every_character_once() -> None:
     assert len({segment.segment_id for segment in target_segments}) == len(target_segments)
 
 
-def test_review_planner_gives_every_paragraph_its_own_inference() -> None:
-    """Packing paragraphs together is what loses findings, not what saves time.
+def test_review_planner_groups_short_paragraphs_adaptively() -> None:
+    """Short adjacent paragraphs are paired adaptively up to 2 per chunk.
 
-    The model reports about one finding per request whatever the request holds,
-    so two paragraphs in one chunk means one of them goes unreviewed.
+    Reduces inference requests by ~50% for documents with many short paragraphs,
+    while staying within safe prompt limits.
     """
     blocks = tuple(Block(f"document:p{index}", f"Đoạn số {index}.") for index in range(6))
 
@@ -273,9 +273,35 @@ def test_review_planner_gives_every_paragraph_its_own_inference() -> None:
         request_counter(count_tokens),
     )
 
-    assert len(chunks) == 6
+    assert len(chunks) == 3
+    assert all(len(chunk.targets) == 2 for chunk in chunks)
+    assert [segment.block_id for chunk in chunks for segment in chunk.targets] == [
+        b.id for b in blocks
+    ]
+
+
+def test_review_planner_keeps_long_paragraphs_as_single_chunks() -> None:
+    """Paragraphs whose combined length exceeds the limit stay as individual chunks."""
+    long_text = "Nội dung đoạn văn bản hành chính dài. " * 20
+    blocks = (
+        Block("document:p0", long_text),
+        Block("document:p1", long_text),
+    )
+
+    def count_tokens(value: str) -> int:
+        return max(1, len(value) // 4)
+
+    chunks = plan_review_chunks(
+        blocks,
+        "",
+        review_budget(4000, 8000),
+        count_tokens,
+        request_counter(count_tokens),
+    )
+
+    assert len(chunks) == 2
     assert all(len(chunk.targets) == 1 for chunk in chunks)
-    assert [chunk.targets[0].block_id for chunk in chunks] == [b.id for b in blocks]
+    assert [chunk.targets[0].block_id for chunk in chunks] == ["document:p0", "document:p1"]
 
 
 def test_review_chunk_budget_caps_document_text_without_subtracting_prompt() -> None:

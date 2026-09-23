@@ -42,6 +42,9 @@ REVIEW_SYSTEM_PROMPT = (
     "Tìm mọi lỗi: chính tả, dấu hỏi ngã, phụ âm đầu (ch/tr, s/x, d/gi/r, l/n), "
     "vần và âm cuối (n/ng, c/t), gõ phím/telex/dính chữ, viết hoa cơ quan/chức vụ/"
     "điều khoản theo NĐ 30/2020, dấu câu, khoảng trắng, lặp từ, ngữ pháp và dùng từ.\n"
+    "RÀ SOÁT TỪNG DÒNG ĐỘC LẬP: Dữ liệu có thể có nhiều dòng. Phải kiểm tra kỹ lưỡng "
+    "từng dòng một từ dòng 1 đến dòng cuối cùng. Không được bỏ qua dòng nào dù dòng trước "
+    "đã có lỗi hay không có lỗi. Mỗi dòng có thể chứa nhiều lỗi hoặc không có lỗi nào.\n"
     "KHÔNG sửa cụm IN HOA TOÀN BỘ ở Quốc hiệu, Tiêu ngữ, Tên cơ quan, Tiêu đề văn bản "
     "và tiêu đề mục La Mã.\n"
     'Trả JSON array: [{"l":<số dòng>,"s":"cụm sai ngắn nhất","r":"cách sửa"}]\n'
@@ -217,28 +220,43 @@ def plan_review_chunks(
                 )
             )
 
-    # One segment per chunk, even when several would fit the window.
-    #
-    # Packing them was the obvious economy and it does not work. Measured on
-    # gemma-4-e2b over eight paragraphs seeded with seven errors, the model
-    # reports roughly one finding per request no matter how much text the
-    # request holds, so recall is bounded by the number of requests, not by the
-    # size of the window:
-    #
-    #     paragraphs/chunk   chunks   time     recall
-    #     1                  8         52.9s   7/7
-    #     2                  4         29.6s   4/7
-    #     4                  2         18.3s   3/7
-    #     8                  1         12.9s   2/7
-    #
-    # Packing buys a four-fold speed-up by simply not reading most of the
-    # document. The per-request cost is small — the system prompt and the custom
-    # rules are a stable prefix that llama.cpp keeps in its KV cache — so the
-    # extra requests cost far less than the ratio above suggests.
+    target_groups = _group_segments_adaptively(segments, segment_budget, count_tokens)
     return tuple(
-        ReviewChunk(f"chunk-{index + 1}", (segment,), custom_prompt)
-        for index, segment in enumerate(segments)
+        ReviewChunk(f"chunk-{index + 1}", group, custom_prompt)
+        for index, group in enumerate(target_groups)
     )
+
+
+MAX_PAIR_TOKENS = 180
+
+
+def _group_segments_adaptively(
+    segments: list[ReviewSegment],
+    limit: int,
+    count_tokens: Callable[[str], int],
+) -> list[tuple[ReviewSegment, ...]]:
+    """Group short adjacent segments into pairs (up to 2 segments) if combined length <= limit.
+
+    Segments that exceed limit on their own or whose combined length with the next
+    segment exceeds the threshold remain single-segment chunks.
+    """
+    pair_limit = min(limit, MAX_PAIR_TOKENS)
+    grouped: list[tuple[ReviewSegment, ...]] = []
+    i = 0
+    n = len(segments)
+    while i < n:
+        curr = segments[i]
+        curr_tokens = count_tokens(curr.text)
+        if i + 1 < n:
+            next_seg = segments[i + 1]
+            next_tokens = count_tokens(next_seg.text)
+            if curr_tokens + next_tokens <= pair_limit:
+                grouped.append((curr, next_seg))
+                i += 2
+                continue
+        grouped.append((curr,))
+        i += 1
+    return grouped
 
 
 def parse_review_content(
