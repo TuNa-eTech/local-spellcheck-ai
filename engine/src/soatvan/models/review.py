@@ -251,12 +251,9 @@ def parse_review_content(
     items that fail a check are dropped, never escalated: one bad item must not
     cost the whole chunk a second inference pass.
     """
-    try:
-        items: Any = json.loads(content)
-    except (TypeError, json.JSONDecodeError):
-        items = _salvage_truncated_array(content)
-        if items is None:
-            return None
+    items = _decode_review_items(content)
+    if items is None:
+        return None
     if isinstance(items, dict):
         # Small models sometimes wrap the array even under a top-level array
         # grammar. Accept the wrapper, never invent one.
@@ -322,6 +319,64 @@ def parse_review_content(
             )
         )
     return tuple(discoveries)
+
+
+def _decode_review_items(content: str) -> Any | None:
+    """Read the model's response, repairing what is cheap to repair.
+
+    Three shapes arrive from a local model, in rising order of damage: valid
+    JSON, JSON holding a character the grammar should have forbidden, and JSON
+    the token cap cut in half. Only the third genuinely needs another inference
+    pass, so the middle one is repaired here rather than escalated.
+    """
+    if not isinstance(content, str):
+        return None
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        pass
+    repaired = _repair_control_characters(content)
+    if repaired != content:
+        try:
+            return json.loads(repaired)
+        except json.JSONDecodeError:
+            pass
+    return _salvage_truncated_array(repaired)
+
+
+def _repair_control_characters(content: str) -> str:
+    """Replace raw control characters inside JSON strings with a space.
+
+    JSON forbids an unescaped character below U+0020 inside a string literal,
+    and llama.cpp does not turn that part of the schema into a grammar rule —
+    the same gap that lets ``maxLength`` through. gemma-4-e2b emits a real
+    newline where it means a space, typically where it wrapped a long quote,
+    and that single byte used to cost the whole chunk a re-inference for
+    nothing. Outside a string literal a control character is legal JSON
+    whitespace, so it is left alone.
+
+    A space, not ``\\n``: the parser anchors a finding by locating ``s``
+    verbatim in the paragraph, and the paragraph has a space there. Guessing
+    wrong is safe — the anchor simply fails and the item is dropped.
+    """
+    out: list[str] = []
+    in_string = False
+    escaped = False
+    for character in content:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            elif ord(character) < 0x20:
+                out.append(" ")
+                continue
+        elif character == '"':
+            in_string = True
+        out.append(character)
+    return "".join(out)
 
 
 def _salvage_truncated_array(content: str) -> list[Any] | None:

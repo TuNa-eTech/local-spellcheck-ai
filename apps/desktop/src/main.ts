@@ -60,7 +60,7 @@ let customRuleOperationSequence = 0;
 let modelStatusRequestSequence = 0;
 let customRuleRequestSequence = 0;
 let modelOperationBaseline: { model: ModelStatus; useModel: boolean } | null = null;
-type SettingsSection = "prompts" | "review-rules" | "models" | "seq2seq" | "output";
+type SettingsSection = "prompts" | "models" | "seq2seq" | "output";
 type ProviderTab = "local" | "openai" | "gemini";
 type AppView =
   | { kind: "workflow" }
@@ -74,48 +74,17 @@ type PendingPromptAction =
 type OutputAction = "open" | "reveal";
 
 const defaultPreset: Preset = "standard";
+// Every rule the engine ships with is always on. There is no UI to turn them
+// off, so nothing is read back from storage either — a stale all-off
+// preference would otherwise be impossible to recover from.
 const defaultRuleOptions: RuleOptions = {
-  technical: false,
-  repeated_words: false,
-  confusions: false,
-  syllables: false,
-  administrative_capitalization: false,
-  dictionary: false,
+  technical: true,
+  repeated_words: true,
+  confusions: true,
+  syllables: true,
+  administrative_capitalization: true,
+  dictionary: true,
 };
-const fixedReviewRules: { id: keyof RuleOptions; name: string; description: string }[] = [
-  { id: "technical", name: "Khoảng trắng và dấu câu", description: "Phát hiện khoảng trắng thừa hoặc thiếu và dấu câu đặt sai vị trí." },
-  { id: "repeated_words", name: "Từ lặp", description: "Phát hiện từ bị lặp liên tiếp ngoài chủ ý." },
-  { id: "confusions", name: "Từ và cụm từ dễ nhầm", description: "Đối chiếu danh sách những cách viết tiếng Việt thường bị nhầm lẫn." },
-  { id: "syllables", name: "Âm tiết tiếng Việt", description: "Phát hiện thận trọng các âm tiết có phụ âm đầu không hợp lệ." },
-  { id: "administrative_capitalization", name: "Viết hoa hành chính", description: "Kiểm tra quy tắc viết hoa theo Nghị định 30/2020, Phụ lục II." },
-];
-const ruleOptionsStorageKey = "soatvan.rule-options.v1";
-
-function loadRuleOptionsPreference(): RuleOptions {
-  try {
-    const raw = localStorage.getItem(ruleOptionsStorageKey);
-    if (!raw) return { ...defaultRuleOptions };
-    const parsed = JSON.parse(raw);
-    return {
-      technical: Boolean(parsed.technical),
-      repeated_words: Boolean(parsed.repeated_words),
-      confusions: Boolean(parsed.confusions),
-      syllables: Boolean(parsed.syllables),
-      administrative_capitalization: Boolean(parsed.administrative_capitalization),
-      dictionary: Boolean(parsed.dictionary ?? parsed.syllables),
-    };
-  } catch {
-    return { ...defaultRuleOptions };
-  }
-}
-
-function saveRuleOptionsPreference(options: RuleOptions): void {
-  try {
-    localStorage.setItem(ruleOptionsStorageKey, JSON.stringify(options));
-  } catch {
-    /* Storage can be unavailable in hardened WebViews. */
-  }
-}
 
 const defaultAiConfigs: Record<string, AiConfigEntry> = {
   openai: {
@@ -237,7 +206,7 @@ const state: {
   appVersion: APP_VERSION,
   appInitializing: true,
   appInitError: null,
-  ruleOptions: loadRuleOptionsPreference(),
+  ruleOptions: { ...defaultRuleOptions },
 };
 
 const customRulePromptLimit = 100000;
@@ -406,7 +375,6 @@ function focusSelectorFor(element: Element | null): string | null {
   if (element.dataset.selectRule) return `[data-select-rule="${element.dataset.selectRule}"]`;
   if (element.dataset.editRule) return `[data-edit-rule="${element.dataset.editRule}"]`;
   if (element.dataset.deleteRule) return `[data-delete-rule="${element.dataset.deleteRule}"]`;
-  if (element.dataset.toggleRule) return `[data-toggle-rule="${element.dataset.toggleRule}"]`;
   return null;
 }
 function documentMetadata(doc: DocumentInfo): string {
@@ -509,13 +477,11 @@ function settingsBusyMessage(): SettingsMessage {
 function settingsSectionHeading(section: SettingsSection): string {
   return section === "prompts"
     ? "#settings-prompts-title"
-    : section === "review-rules"
-      ? "#settings-review-rules-title"
-      : section === "models"
-        ? "#settings-models-title"
-        : section === "seq2seq"
-          ? "#settings-seq2seq-title"
-          : "#settings-output-title";
+    : section === "models"
+      ? "#settings-models-title"
+      : section === "seq2seq"
+        ? "#settings-seq2seq-title"
+        : "#settings-output-title";
 }
 
 
@@ -757,7 +723,6 @@ function settingsHtml(): string {
   const section = state.view.section;
   const sections: [SettingsSection, string][] = [
     ["prompts", "Prompt"],
-    ["review-rules", "Quy tắc"],
     ["models", "Mô hình LLM"],
     ["seq2seq", "Mô hình Chính tả"],
     ["output", "Tệp xuất"],
@@ -767,7 +732,7 @@ function settingsHtml(): string {
   return `<main class="settings-page" id="settings-page" aria-labelledby="settings-title" aria-describedby="settings-description" ${state.settingsLoading ? 'aria-busy="true"' : ""}>
     <header class="settings-page__header">
        <button class="back-button" id="settings-back" type="button" ${operationLocked ? 'aria-disabled="true" aria-describedby="settings-message"' : ""}>← Quay lại rà soát</button>
-      <div><h1 id="settings-title">Cài đặt</h1><p id="settings-description">Quản lý prompt, xem bộ quy tắc cố định và thiết lập nguồn AI.</p></div>
+      <div><h1 id="settings-title">Cài đặt</h1><p id="settings-description">Quản lý prompt và thiết lập nguồn AI.</p></div>
     </header>
     <div class="settings-layout">
        <nav class="settings-nav" aria-label="Mục cài đặt">${sections.map(([id, label]) => `<button class="settings-nav__item" type="button" id="settings-nav-${id}" data-settings-section="${id}" ${section === id ? 'aria-current="page"' : ""} ${state.settingsLoading ? "disabled" : operationLocked ? 'aria-disabled="true" aria-describedby="settings-message"' : ""}>${label}</button>`).join("")}</nav>
@@ -947,15 +912,6 @@ function settingsContent(section: SettingsSection): { body: string; footer: stri
       : `<div class="empty-state"><strong>Chưa có prompt riêng.</strong><span>Tạo một prompt để cung cấp thuật ngữ, ngữ cảnh hoặc tiêu chí kiểm tra riêng cho AI.</span></div>`;
     return {
       body: `<section class="settings-section settings-prompts" id="settings-prompts" aria-labelledby="settings-prompts-title"><header class="settings-section__header"><div class="section-copy"><h2 id="settings-prompts-title">Prompt</h2><p>Mỗi mục là một đoạn hướng dẫn bổ sung cho AI; ứng dụng tự quản lý định dạng kết quả và vị trí bôi vàng.</p></div><button class="button button--secondary" id="new-custom-rule" type="button" ${controlsLocked ? "disabled" : ""}>Prompt mới</button></header><div class="prompt-manager"><div class="prompt-manager__master"><nav class="prompt-list" aria-label="Danh sách prompt" aria-live="polite">${promptList}</nav></div><section class="prompt-manager__detail" aria-labelledby="custom-rule-editor-title"><div class="section-copy"><h3 id="custom-rule-editor-title">${editing ? "Sửa prompt" : "Tạo prompt"}</h3><p>${editing ? "Chỉnh nội dung rồi lưu thay đổi, hoặc huỷ để trở về chế độ tạo mới." : "Mô tả thuật ngữ, ngữ cảnh hoặc tiêu chí mà AI cần chú ý."}</p></div><form class="custom-rule-form" id="custom-rule-form" novalidate><div class="control"><label for="custom-rule-title">Tiêu đề</label><input type="text" id="custom-rule-title" name="title" required maxlength="${customRuleTitleLimit}" aria-describedby="custom-rule-title-help${state.customRuleTitleInvalid ? " settings-message" : ""}" ${state.customRuleTitleInvalid ? 'aria-invalid="true"' : ""} placeholder="Ví dụ: Thuật ngữ khách hàng" value="${escape(state.customRuleTitleDraft)}" ${controlsLocked ? "disabled" : ""}><span class="field__helper" id="custom-rule-title-help">Bắt buộc, tối đa ${customRuleTitleLimit} ký tự. Tiêu đề hiển thị ở bước Chuẩn bị rà soát và không được gửi cho AI.</span></div><div class="control"><label for="custom-rule-prompt">Nội dung prompt</label><textarea id="custom-rule-prompt" name="prompt" rows="7" required maxlength="${customRulePromptLimit}" aria-describedby="custom-rule-help custom-rule-count${state.customRulePromptInvalid ? " settings-message" : ""}" ${state.customRulePromptInvalid ? 'aria-invalid="true"' : ""} placeholder="Ví dụ: Dùng thuật ngữ “khách hàng”, không dùng “client”." ${controlsLocked ? "disabled" : ""}>${escape(state.customRuleDraft)}</textarea><div class="field__meta"><span class="field__helper" id="custom-rule-help">Mô tả thuật ngữ, phong cách hoặc tiêu chuẩn văn bản mà AI cần chú ý. Không giới hạn số lượng prompt.</span><small id="custom-rule-count">${draftLength > 0 ? `${draftLength.toLocaleString("vi-VN")} ký tự` : ""}</small></div>${promptWarningHtml}</div><label class="setting-row"><span><strong>Chọn sẵn ở bước Chuẩn bị rà soát</strong><small>Prompt này sẽ được tick mặc định khi bắt đầu một lần rà soát mới.</small></span><input type="checkbox" id="custom-rule-default" ${state.customRuleDefaultDraft ? "checked" : ""} ${controlsLocked ? "disabled" : ""}></label><div class="prompt-form-actions"><button class="button button--primary" type="submit" form="custom-rule-form" ${saveDisabled ? "disabled" : ""}>${state.customRulePending ? "Đang lưu…" : editing ? "Lưu thay đổi" : "Lưu prompt"}</button>${editing ? `<button class="button button--secondary cancel-rule-edit" id="cancel-rule-edit" type="button" ${controlsLocked ? "disabled" : ""}>Huỷ sửa</button>` : ""}</div></form></section></div></section>`,
-      footer: "",
-    };
-  }
-  if (section === "review-rules") {
-    return {
-      body: `<section class="settings-section settings-review-rules" id="settings-review-rules" aria-labelledby="settings-review-rules-title"><header class="settings-section__header"><div class="section-copy"><h2 id="settings-review-rules-title">Quy tắc rà soát</h2><p>Bật hoặc tắt các quy tắc rà soát bằng logic code. Cấu hình tại đây sẽ tự động áp dụng cho các lần rà soát.</p></div></header><ul class="review-rule-inventory">${fixedReviewRules.map(rule => {
-        const isChecked = Boolean(state.ruleOptions[rule.id]);
-        return `<li class="review-rule-row" data-review-rule="${rule.id}"><div class="review-rule-copy"><strong id="rule-title-${rule.id}">${escape(rule.name)}</strong><span class="review-rule-status">${escape(rule.description)}</span></div><label class="toggle-control" for="toggle-rule-${rule.id}"><input type="checkbox" class="toggle-input sr-only" id="toggle-rule-${rule.id}" data-toggle-rule="${rule.id}" ${isChecked ? "checked" : ""} aria-labelledby="rule-title-${rule.id}"><span class="toggle-switch" aria-hidden="true"></span><span class="toggle-label">${isChecked ? "Bật" : "Tắt"}</span></label></li>`;
-      }).join("")}</ul></section>`,
       footer: "",
     };
   }
@@ -1266,7 +1222,6 @@ function bind(): void {
   document.querySelector("#reveal")?.addEventListener("click", () => void openResult(true));
   document.querySelector("#open-model-settings")?.addEventListener("click", () => void openSettings("models", "#open-model-settings"));
   document.querySelector("#manage-custom-rules")?.addEventListener("click", () => void openSettings("prompts", "#manage-custom-rules"));
-  document.querySelector("#manage-review-rules")?.addEventListener("click", () => void openSettings("review-rules", "#manage-review-rules"));
   document.querySelector<HTMLInputElement>("#use-model")?.addEventListener("change", event => { void setModelEnabled((event.target as HTMLInputElement).checked); });
   document.querySelectorAll<HTMLInputElement>("[data-select-rule]").forEach(input => input.addEventListener("change", () => {
     const id = input.dataset.selectRule!;
@@ -1392,21 +1347,6 @@ function bind(): void {
   });
   document.querySelector("#seq2seq-choose-dir")?.addEventListener("click", () => void chooseSeq2SeqModelDir());
   document.querySelector("#seq2seq-remove")?.addEventListener("click", () => void removeSeq2SeqConfig());
-
-  document.querySelectorAll<HTMLInputElement>("[data-toggle-rule]").forEach(input => {
-    input.addEventListener("change", event => {
-      const target = event.target as HTMLInputElement;
-      const ruleId = target.dataset.toggleRule as keyof RuleOptions;
-      if (!ruleId || !(ruleId in state.ruleOptions)) return;
-      const wantChecked = target.checked;
-      state.ruleOptions[ruleId] = wantChecked;
-      if (ruleId === "syllables") {
-        state.ruleOptions.dictionary = wantChecked;
-      }
-      saveRuleOptionsPreference(state.ruleOptions);
-      render(`#toggle-rule-${ruleId}`);
-    });
-  });
 
   document.querySelectorAll<HTMLInputElement>('input[name="output-mode"]').forEach(radio => {
     radio.addEventListener("change", async () => {

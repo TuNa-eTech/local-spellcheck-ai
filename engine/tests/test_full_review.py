@@ -495,6 +495,60 @@ def test_review_parser_returns_none_only_when_the_response_is_unusable() -> None
     assert parse_review_content('[{"l":1,"s":"sai","r":"đ', chunk) is None
 
 
+def test_review_parser_repairs_a_raw_newline_inside_a_json_string() -> None:
+    """The exact shape that cost chunk-38 a retry, reproduced from the log.
+
+    gemma-4-e2b emitted a real U+000A where it meant a space, inside the quoted
+    source text. The response was complete — it ended in ``"}]`` at 120 of its
+    512 allowed tokens — but ``json.loads`` rejects an unescaped control
+    character, so the chunk was re-inferred as two halves for nothing.
+    """
+    text = "Dịch vụ ăn uống, cà phê, bán lẻ kết hợp dịch vụ tiện ích."
+    target = ReviewSegment(f"p0@0:{len(text)}", "document:p0", 0, 0, text, "paragraph")
+    chunk = ReviewChunk("chunk-1", (target,), "")
+    raw = '[{"l":1,"s":"ăn uống,\ncà phê","r":"ăn uống, cà-phê"}]'
+
+    with pytest.raises(json.JSONDecodeError, match="Invalid control character"):
+        json.loads(raw)
+
+    discoveries = parse_review_content(raw, chunk)
+
+    assert discoveries is not None
+    assert [(item.source_text, item.suggestion) for item in discoveries] == [
+        ("ăn uống, cà phê", "ăn uống, cà-phê")
+    ]
+    assert text[discoveries[0].start : discoveries[0].end] == "ăn uống, cà phê"
+
+
+def test_review_parser_leaves_a_well_formed_response_untouched() -> None:
+    text = "Tôi dang làm."
+    target = ReviewSegment(f"p0@0:{len(text)}", "document:p0", 0, 0, text, "paragraph")
+    chunk = ReviewChunk("chunk-1", (target,), "")
+
+    # Newlines between tokens are legal JSON whitespace and must not be treated
+    # as damage, and an escaped \n inside a string must survive as itself.
+    assert parse_review_content('[\n {"l": 1,\n  "s": "dang",\n  "r": "đang"}\n]', chunk) is not None
+    escaped = parse_review_content('[{"l":1,"s":"dang","r":"đ\\nang"}]', chunk)
+    assert escaped is not None
+    assert [item.suggestion for item in escaped] == ["đ\nang"]
+
+
+def test_review_parser_repairs_a_control_character_in_a_truncated_response() -> None:
+    text = "Tôi dang làm. Đơn vị đã bổ xung hồ sơ."
+    target = ReviewSegment(f"p0@0:{len(text)}", "document:p0", 0, 0, text, "paragraph")
+    chunk = ReviewChunk("chunk-1", (target,), "")
+    # Both faults at once: an illegal newline in the finished item, and the cap
+    # cutting the next one in half.
+    raw = '[{"l":1,"s":"Tôi\ndang","r":"Tôi đang"},{"l":1,"s":"bổ xung","r":"bổ s'
+
+    discoveries = parse_review_content(raw, chunk)
+
+    assert discoveries is not None
+    assert [(item.source_text, item.suggestion) for item in discoveries] == [
+        ("Tôi dang", "Tôi đang")
+    ]
+
+
 def test_review_parser_keeps_the_finished_items_of_a_truncated_response() -> None:
     text = "Tôi dang làm. Đơn vị đã bổ xung hồ sơ."
     target = ReviewSegment(f"p0@0:{len(text)}", "document:p0", 0, 0, text, "paragraph")

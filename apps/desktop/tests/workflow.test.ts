@@ -220,12 +220,12 @@ describe("four-step desktop workflow", () => {
     expect(api.startJob.mock.calls[0][7]).toBe(false);
     expect(api.startJob.mock.calls[0][8]).toBe(false);
     expect(api.startJob.mock.calls[0][5]).toEqual({
-      technical: false,
-      repeated_words: false,
-      confusions: false,
-      syllables: false,
-      administrative_capitalization: false,
-      dictionary: false,
+      technical: true,
+      repeated_words: true,
+      confusions: true,
+      syllables: true,
+      administrative_capitalization: true,
+      dictionary: true,
     });
     expect(api.startJob.mock.calls[0][6]).toEqual([]);
     job.resolve({
@@ -1087,19 +1087,12 @@ describe("four-step desktop workflow", () => {
 
     const localNav = page.querySelector<HTMLElement>('nav.settings-nav[aria-label="Mục cài đặt"]')!;
     const sectionButtons = [...localNav.querySelectorAll<HTMLButtonElement>("[data-settings-section]")];
-    expect(sectionButtons.map(button => button.dataset.settingsSection)).toEqual(["prompts", "review-rules", "models", "seq2seq", "output"]);
+    expect(sectionButtons.map(button => button.dataset.settingsSection)).toEqual(["prompts", "models", "seq2seq", "output"]);
     expect(localNav.querySelectorAll('[aria-current="page"]')).toHaveLength(1);
     expect(localNav.querySelector('[aria-current="page"]')?.getAttribute("data-settings-section")).toBe("prompts");
     expect(page.querySelectorAll(".settings-section")).toHaveLength(1);
     expect(page.querySelector('.prompt-form-actions button[type="submit"][form="custom-rule-form"]')).not.toBeNull();
     expect(page.querySelector(".settings-footer")).toBeNull();
-
-    document.querySelector<HTMLButtonElement>('[data-settings-section="review-rules"]')!.click();
-    await vi.waitFor(() => expect((document.activeElement as HTMLElement | null)?.id).toBe("settings-review-rules-title"));
-    expect(document.querySelector('[data-settings-section="review-rules"]')?.getAttribute("aria-current")).toBe("page");
-    expect(document.querySelectorAll('[aria-current="page"][data-settings-section]')).toHaveLength(1);
-    expect(document.querySelector("#settings-review-rules")?.getAttribute("aria-labelledby")).toBe("settings-review-rules-title");
-    expect(document.querySelectorAll("[data-review-rule]")).toHaveLength(5);
 
     document.querySelector<HTMLButtonElement>('[data-settings-section="models"]')!.click();
     await vi.waitFor(() => expect((document.activeElement as HTMLElement | null)?.id).toBe("settings-models-title"));
@@ -1162,47 +1155,31 @@ describe("four-step desktop workflow", () => {
     expect(document.body.textContent).toContain("nguồn.docx");
   });
 
-  it("allows configuring review rules with toggles, defaults to all off, and preserves workflow review state", async () => {
-    const api = await loadApp({ modelStatus: () => Promise.resolve(signedReadyModel) });
+  it("hides the review-rules settings section and always sends every rule enabled", async () => {
+    const job = deferred<JobResult>();
+    const api = await loadApp({ modelStatus: () => Promise.resolve(signedReadyModel), start: () => job.promise });
     await chooseDocument();
     document.querySelector<HTMLButtonElement>("#settings")!.click();
-    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-settings-section="review-rules"]')?.disabled).toBe(false));
-    document.querySelector<HTMLButtonElement>('[data-settings-section="review-rules"]')!.click();
-    await vi.waitFor(() => expect((document.activeElement as HTMLElement | null)?.id).toBe("settings-review-rules-title"));
-    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>("#settings-back")?.disabled).toBe(false));
-    const inventory = document.querySelector<HTMLElement>("#settings-review-rules")!;
-    expect(inventory.getAttribute("aria-labelledby")).toBe("settings-review-rules-title");
-    const ruleList = inventory.querySelector<HTMLUListElement>("ul.review-rule-inventory")!;
-    expect(ruleList).not.toBeNull();
-    expect(ruleList.querySelectorAll(":scope > li.review-rule-row[data-review-rule]")).toHaveLength(5);
-    expect([...ruleList.children].every(item => item.tagName === "LI")).toBe(true);
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-settings-section="prompts"]')?.disabled).toBe(false));
 
-    // Verify all toggles are OFF by default
-    const toggles = inventory.querySelectorAll<HTMLInputElement>("input[data-toggle-rule]");
-    expect(toggles).toHaveLength(5);
-    toggles.forEach(toggle => {
-      expect(toggle.checked).toBe(false);
-    });
-
-    // Toggle the first rule ("technical") ON
-    toggles[0].click();
-    await vi.waitFor(() => expect(document.querySelector<HTMLInputElement>("#toggle-rule-technical")?.checked).toBe(true));
-    expect(document.querySelector('[data-review-rule="technical"] .toggle-label')?.textContent).toBe("Bật");
-    expect(JSON.parse(localStorage.getItem("soatvan.rule-options.v1") || "{}").technical).toBe(true);
-
-    // Toggle "syllables" ON and verify dictionary is synced
-    const syllablesToggle = document.querySelector<HTMLInputElement>("#toggle-rule-syllables")!;
-    syllablesToggle.click();
-    await vi.waitFor(() => expect(document.querySelector<HTMLInputElement>("#toggle-rule-syllables")?.checked).toBe(true));
-    expect(JSON.parse(localStorage.getItem("soatvan.rule-options.v1") || "{}").syllables).toBe(true);
-    expect(JSON.parse(localStorage.getItem("soatvan.rule-options.v1") || "{}").dictionary).toBe(true);
+    expect(document.querySelector('[data-settings-section="review-rules"]')).toBeNull();
+    expect(document.querySelector("#settings-review-rules")).toBeNull();
+    expect(document.querySelectorAll("[data-review-rule]")).toHaveLength(0);
+    expect(document.querySelectorAll("input[data-toggle-rule]")).toHaveLength(0);
 
     document.querySelector<HTMLButtonElement>("#settings-back")!.click();
     await vi.waitFor(() => expect((document.activeElement as HTMLElement | null)?.id).toBe("settings"));
-    expect(document.querySelector('.stepper li[aria-current="step"]')?.textContent).toContain("Chuẩn bị");
-    expect(document.body.textContent).toContain("nguồn.docx");
-    expect(api.chooseDocument).toHaveBeenCalledOnce();
-    expect(api.inspectDropped).not.toHaveBeenCalled();
+
+    document.querySelector<HTMLButtonElement>("#start")!.click();
+    await vi.waitFor(() => expect(api.startJob).toHaveBeenCalledOnce());
+    expect(api.startJob.mock.calls[0][5]).toEqual({
+      technical: true,
+      repeated_words: true,
+      confusions: true,
+      syllables: true,
+      administrative_capitalization: true,
+      dictionary: true,
+    });
   });
 
   it("ignores Ctrl+O plus HTML and Tauri file drops while Settings is active", async () => {
@@ -1613,7 +1590,7 @@ describe("four-step desktop workflow", () => {
 
     // Verify 4 settings nav items exist
     const navItems = [...document.querySelectorAll<HTMLButtonElement>("[data-settings-section]")];
-    expect(navItems.map(btn => btn.dataset.settingsSection)).toEqual(["prompts", "review-rules", "models", "seq2seq", "output"]);
+    expect(navItems.map(btn => btn.dataset.settingsSection)).toEqual(["prompts", "models", "seq2seq", "output"]);
     expect(document.querySelector('[data-settings-section="seq2seq"]')?.textContent).toBe("Mô hình Chính tả");
     expect(document.querySelector('[data-settings-section="models"]')?.textContent).toBe("Mô hình LLM");
 

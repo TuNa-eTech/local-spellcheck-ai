@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from enum import StrEnum
 from typing import Any
 
@@ -38,7 +38,9 @@ class RuleConfig:
         )
         if set(value) != set(fields) or any(not isinstance(value[field], bool) for field in fields):
             raise ValueError("RULE_CONFIG_INVALID")
-        return cls(**{field: value[field] for field in fields})  # type: ignore[arg-type]
+        config = cls(**{field: value[field] for field in fields})  # type: ignore[arg-type]
+        # The dictionary check is a fail-closed guarantee, never a user preference.
+        return replace(config, dictionary=True)
 
 
 @dataclass(frozen=True, slots=True)
