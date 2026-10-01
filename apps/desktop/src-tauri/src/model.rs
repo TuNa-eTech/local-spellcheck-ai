@@ -1133,6 +1133,7 @@ mod tests {
         manifest.capabilities.full_review = false;
         manifest.quality_gate = None;
         manifest.signature = None;
+        manifest.review_chunk_tokens = None;
         fs::write(
             root.join("active/manifest.json"),
             serde_json::to_vec_pretty(&manifest).unwrap(),
