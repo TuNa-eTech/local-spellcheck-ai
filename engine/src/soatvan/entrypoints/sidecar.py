@@ -839,6 +839,74 @@ def _log_dev_exception(context: str, error: Exception, code: str) -> None:
     )
 
 
+def _missing_cuda_dependencies() -> list[str] | None:
+    """On Windows, list which of ggml-cuda.dll's direct DLL imports are absent.
+
+    When ``import llama_cpp`` fails, the loader error is generic and never names
+    the missing DLL. Parsing the PE import table tells a user whether the GPU
+    backend is simply missing the NVIDIA driver (``nvcuda.dll`` — expected on a
+    machine with no NVIDIA GPU) or whether a runtime DLL never made it into the
+    bundle (a packaging bug). Returns ``None`` when not applicable.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        import importlib.util
+        import struct
+
+        spec = importlib.util.find_spec("llama_cpp")
+        if spec is None or spec.origin is None:
+            return None
+        lib_dir = Path(spec.origin).parent / "lib"
+        cuda_dll = lib_dir / "ggml-cuda.dll"
+        if not cuda_dll.is_file():
+            return None
+        data = cuda_dll.read_bytes()
+        pe_off = struct.unpack_from("<I", data, 0x3C)[0]
+        coff = pe_off + 4
+        nsec = struct.unpack_from("<H", data, coff + 2)[0]
+        size_opt = struct.unpack_from("<H", data, coff + 16)[0]
+        opt = coff + 20
+        magic = struct.unpack_from("<H", data, opt)[0]
+        dd_off = opt + (96 if magic == 0x10B else 112)
+        import_rva, import_size = struct.unpack_from("<II", data, dd_off + 8)
+        if import_rva == 0:
+            return []
+        sec_table = opt + size_opt
+        sections = []
+        for i in range(nsec):
+            s = sec_table + i * 40
+            vsize, rva, _, poff = struct.unpack_from("<IIII", data, s + 8)
+            sections.append((rva, rva + vsize, poff))
+
+        def rva2off(rva: int) -> int | None:
+            for start, end, poff in sections:
+                if start <= rva < end:
+                    return poff + (rva - start)
+            return None
+
+        off = rva2off(import_rva)
+        search = [lib_dir, *(Path(p) for p in os.environ.get("PATH", "").split(os.pathsep) if p)]
+        missing: list[str] = []
+        for _ in range(max(1, import_size // 20)):
+            if off is None:
+                break
+            name_rva = struct.unpack_from("<I", data, off + 12)[0]
+            if name_rva == 0:
+                break
+            name_off = rva2off(name_rva)
+            if name_off is None:
+                break
+            end = data.index(b"\x00", name_off)
+            dep = data[name_off:end].decode("ascii", "replace")
+            if not any((d / dep).is_file() for d in search if d.is_dir()):
+                missing.append(dep)
+            off += 20
+        return missing
+    except Exception:
+        return None
+
+
 def gpu_report() -> int:
     """``soatvan-engine --gpu-report``: what the bundled llama.cpp can see.
 
@@ -857,6 +925,9 @@ def gpu_report() -> int:
     except Exception as error:  # a GPU build missing a runtime DLL fails here
         report["runtime_available"] = False
         report["error"] = f"{type(error).__name__}: {error}"
+        missing = _missing_cuda_dependencies()
+        if missing is not None:
+            report["missing_dependencies"] = missing
     else:
         report["runtime_available"] = True
         report.update(backend_report(llama))

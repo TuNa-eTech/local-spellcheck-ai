@@ -222,7 +222,20 @@ def _verify_gpu_backend(engine: Path, artifacts: Path, expect_cuda: bool) -> Non
     report = json.loads(completed.stdout)
     print(f"[gpu] {json.dumps(report, ensure_ascii=False)}")
     if not report.get("runtime_available"):
-        raise SystemExit(f"packaged engine cannot load llama.cpp: {report.get('error')}")
+        # The CUDA backend (ggml-cuda.dll) links nvcuda.dll, the CUDA Driver
+        # API that ships with the NVIDIA GPU driver — never present on a
+        # GPU-less CI runner. If nvcuda.dll is the ONLY missing dependency the
+        # bundle is fine; build-windows.ps1 already asserts the required DLLs
+        # are physically present. Any other missing DLL is a real packaging bug.
+        missing = [d.lower() for d in report.get("missing_dependencies", [])]
+        non_driver = [d for d in missing if d != "nvcuda.dll"]
+        if missing and not non_driver:
+            print(f"[gpu] runtime unavailable on this GPU-less runner (expected): missing {missing}")
+            return
+        raise SystemExit(
+            f"packaged engine cannot load llama.cpp: {report.get('error')} "
+            f"(missing: {report.get('missing_dependencies')})"
+        )
     if expect_cuda and "CUDA" not in report.get("backends", []):
         raise SystemExit(f"packaged engine reports no CUDA backend: {report}")
 

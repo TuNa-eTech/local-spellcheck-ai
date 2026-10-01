@@ -187,19 +187,28 @@ try {
         throw "PyInstaller khong tao executable $engineExecutable."
     }
 
-    # Hoi chinh engine da dong goi xem no thay backend nao - bat duoc ngay truong
-    # hop wheel CUDA co nhung DLL runtime khong duoc goi vao ban phat hanh.
+    # Engine da dong goi: KHONG the yeu cau no "import llama_cpp" thanh cong o
+    # day. Lam vay se nap ggml-cuda.dll -> can nvcuda.dll (CUDA Driver API) chi
+    # co tren may co GPU NVIDIA. Runner build khong co GPU nen --gpu-report luon
+    # bao runtime_available=false du ban dong goi hoan hao. Chi dung no de LOG,
+    # roi kiem tra TINH rang moi DLL can thiet thuc su nam trong bundle.
     $gpuReport = (& $engineExecutable "--gpu-report") -join "`n"
-    if ($LASTEXITCODE -ne 0) {
-        throw "Engine dong goi khong chay duoc (--gpu-report exit $LASTEXITCODE): $gpuReport"
-    }
     Write-Host "[gpu] $gpuReport"
-    if ($gpuReport -notmatch '"runtime_available":\s*true') {
-        throw "Engine dong goi khong load duoc llama.cpp: $gpuReport"
+
+    $frozenLibDir = Join-Path $engineDistDir "_internal\llama_cpp\lib"
+    if (-not (Test-Path -LiteralPath $frozenLibDir -PathType Container)) {
+        throw "Bundle thieu thu muc llama_cpp\lib: $frozenLibDir"
     }
-    if ($env:SOATVAN_REQUIRE_CUDA -eq "1" -and $gpuReport -notmatch '"CUDA"') {
-        throw "Engine dong goi khong bao cao backend CUDA."
+    $requiredDlls = @("llama.dll", "ggml.dll", "ggml-base.dll", "ggml-cpu.dll")
+    if ($env:SOATVAN_REQUIRE_CUDA -eq "1") {
+        $requiredDlls += @("ggml-cuda.dll", "cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll", "nvrtc64_120_0.dll", "vcomp140.dll")
     }
+    foreach ($dll in $requiredDlls) {
+        if (-not (Test-Path -LiteralPath (Join-Path $frozenLibDir $dll) -PathType Leaf)) {
+            throw "Bundle thieu DLL bat buoc: $dll trong $frozenLibDir"
+        }
+    }
+    Write-Host "[gpu] Bundle co du DLL: $($requiredDlls -join ', ')"
 
     Write-Host "[4/7] Tai certificate ky code tu secret hoac tao self-signed fallback"
     $signingPfxPath = $env:SOATVAN_WINDOWS_CERT_PFX
