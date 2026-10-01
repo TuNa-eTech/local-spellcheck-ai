@@ -2136,7 +2136,9 @@ mod tests {
         assert!(matches!(res, Err(AppError::OutputFileLocked)));
         assert!(!temporary.exists());
 
-        // Restore permissions for tempdir cleanup
+        // Restore permissions for tempdir cleanup. Not a real-world permission
+        // grant: this is a throwaway temp file about to be deleted.
+        #[allow(clippy::permissions_set_readonly_false)]
         perms.set_readonly(false);
         let _ = fs::set_permissions(&source, perms);
     }
