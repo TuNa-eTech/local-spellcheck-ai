@@ -389,6 +389,66 @@ Write-Step "Da dong goi vcomp140.dll tu $vcomp"
 # ngay thay vi phat hanh mot ban "CPU nhung tuong la GPU".
 $systemInfo = & $venvPython -c "import llama_cpp; print(llama_cpp.llama_print_system_info().decode('utf-8', 'replace'))"
 if ($LASTEXITCODE -ne 0) {
+    # Windows' loader doesn't surface which dependency is missing (WinError
+    # 126 is generic), so parse the PE import table ourselves and report
+    # which referenced DLLs aren't present in libDir or system search paths.
+    $diagScript = @'
+import os, struct, sys
+
+def pe_imports(path):
+    with open(path, "rb") as f:
+        data = f.read()
+    pe_off = struct.unpack_from("<I", data, 0x3C)[0]
+    coff = pe_off + 4
+    nsec = struct.unpack_from("<H", data, coff + 2)[0]
+    size_opt = struct.unpack_from("<H", data, coff + 16)[0]
+    opt = coff + 20
+    magic = struct.unpack_from("<H", data, opt)[0]
+    dd_off = opt + (96 if magic == 0x10b else 112)
+    # Data Directory index 1 is the Import Table (index 0 is Export Table).
+    import_rva, import_size = struct.unpack_from("<II", data, dd_off + 8)
+    if import_rva == 0:
+        return []
+    sec_table = opt + size_opt
+    sections = []
+    for i in range(nsec):
+        s = sec_table + i * 40
+        vsize, rva, _, poff = struct.unpack_from("<IIII", data, s + 8)
+        sections.append((rva, rva + vsize, poff))
+    def rva2off(rva):
+        for start, end, poff in sections:
+            if start <= rva < end:
+                return poff + (rva - start)
+        return None
+    off = rva2off(import_rva)
+    max_count = (import_size // 20) if import_size else 1000
+    names = []
+    for _ in range(max(1, max_count)):
+        name_rva = struct.unpack_from("<I", data, off + 12)[0]
+        if name_rva == 0:
+            break
+        no = rva2off(name_rva)
+        end = data.index(b"\x00", no)
+        names.append(data[no:end].decode("ascii", "replace"))
+        off += 20
+    return names
+
+lib_dir, dll_names = sys.argv[1], sys.argv[2:]
+search = [lib_dir] + os.environ.get("PATH", "").split(os.pathsep)
+for dll_name in dll_names:
+    dll_path = os.path.join(lib_dir, dll_name)
+    if not os.path.isfile(dll_path):
+        print(f"{dll_name}: FILE ITSELF MISSING at {dll_path}")
+        continue
+    print(f"=== {dll_name} imports ===")
+    for dep in pe_imports(dll_path):
+        found = any(os.path.isfile(os.path.join(d, dep)) for d in search if d and os.path.isdir(d))
+        print(f"  {dep}: {'ok' if found else 'MISSING'}")
+'@
+    $diagFile = Join-Path ([System.IO.Path]::GetTempPath()) "soatvan-dll-diag.py"
+    Set-Content -LiteralPath $diagFile -Value $diagScript -Encoding utf8
+    & $venvPython $diagFile $libDir "llama.dll" "ggml-cuda.dll" "ggml-base.dll"
+    Remove-Item -LiteralPath $diagFile -Force -ErrorAction SilentlyContinue
     throw "Khong import duoc llama_cpp sau khi cai wheel CUDA."
 }
 Write-Step "llama.cpp system info: $systemInfo"
