@@ -80,7 +80,11 @@ jobs:
   build-windows:
     name: Build Windows x64
     needs: verify
-    runs-on: windows-latest
+    # CUDA 12.8's nvcc/cudafe++ cannot parse the VS2026/v18 toolset that
+    # windows-latest now ships (hard version-check error, then a cudafe++
+    # crash even with -allow-unsupported-compiler). Pin to the Server 2022
+    # image, which still carries the VS2022 toolset CUDA 12.8 supports.
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
 
