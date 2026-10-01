@@ -346,6 +346,29 @@ foreach ($pattern in @("cudart64_*.dll", "cublas64_*.dll", "cublasLt64_*.dll")) 
     Write-Step "Da dong goi $($redistributable.Name) ($([int]($redistributable.Length / 1MB)) MB)"
 }
 
+# ggml duoc bien dich voi -DGGML_USE_OPENMP, nen llama.dll can vcomp140.dll
+# (MSVC OpenMP runtime) luc load, khong chi luc dich. May build co san no
+# trong System32, nhung may test/CI co the thieu - dong goi luon cho chac.
+$vcompCandidates = @(
+    (Join-Path $env:SystemRoot "System32\vcomp140.dll"),
+    (Join-Path $env:SystemRoot "SysWOW64\vcomp140.dll")
+) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }
+if (-not $vcompCandidates) {
+    $vsRedistRoot = Join-Path ${env:ProgramFiles} "Microsoft Visual Studio"
+    if (Test-Path -LiteralPath $vsRedistRoot) {
+        $vcompCandidates = Get-ChildItem -LiteralPath $vsRedistRoot -Recurse -Filter "vcomp140.dll" `
+            -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '\\x64\\' -and $_.FullName -notmatch '\\onecore\\' } |
+            Select-Object -First 1 -ExpandProperty FullName
+    }
+}
+$vcomp = $vcompCandidates | Select-Object -First 1
+if (-not $vcomp) {
+    throw "Khong tim thay vcomp140.dll (MSVC OpenMP runtime) - can de llama.dll nap duoc."
+}
+Copy-Item -LiteralPath $vcomp -Destination $libDir -Force
+Write-Step "Da dong goi vcomp140.dll tu $vcomp"
+
 # --- Kiem chung -----------------------------------------------------------
 # Chay that trong venv: neu backend CUDA khong duoc bien dich vao, dung build
 # ngay thay vi phat hanh mot ban "CPU nhung tuong la GPU".
