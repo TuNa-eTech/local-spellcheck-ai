@@ -278,11 +278,15 @@ else {
 
         # GGML_NATIVE=off: mot ban phat hanh khong duoc bake -march=native cua
         # may build vao kernel CPU. LLAVA_BUILD=off bo phan multimodal khong dung.
+        # CMAKE_CUDA_FLAGS=-allow-unsupported-compiler: CUDA 12.8's nvcc hard-
+        # rejects MSVC toolsets newer than VS2022 (e.g. the VS2026/v18 toolset
+        # on current GitHub Windows runners) with a version-check error even
+        # though the binary is compatible; this flag only disables that check.
         $cmakeArgs = if ($env:SOATVAN_LLAMA_CMAKE_ARGS) {
             $env:SOATVAN_LLAMA_CMAKE_ARGS
         }
         else {
-            "-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=$architectures -DGGML_NATIVE=off -DGGML_CCACHE=off -DLLAVA_BUILD=off"
+            "-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=$architectures -DGGML_NATIVE=off -DGGML_CCACHE=off -DLLAVA_BUILD=off -DCMAKE_CUDA_FLAGS=-allow-unsupported-compiler"
         }
         Write-Step "CMAKE_ARGS = $cmakeArgs"
         $previousCmakeArgs = $env:CMAKE_ARGS
