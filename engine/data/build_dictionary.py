@@ -12,6 +12,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import re
 import unicodedata
 import urllib.request
 from pathlib import Path
@@ -22,6 +23,21 @@ UNDERTHESEA_URL = "https://raw.githubusercontent.com/undertheseanlp/dictionary/m
 VIET39K_URL = "https://raw.githubusercontent.com/duyet/vietnamese-wordlist/master/Viet39K.txt"
 
 OUTPUT_DIR = Path(__file__).resolve().parent.parent / "src" / "soatvan" / "checking" / "data"
+
+# Vocabulary lookups in soatvan.checking.vocabulary only ever query single
+# letter-only syllables and exact two-word ("head tail") compounds. Anything
+# else (punctuation remnants, digits, hyphenated multi-token entries, 3+ word
+# idioms/proverbs) can never be matched by any lookup path and is dead weight.
+_SYLLABLE_RE = re.compile(r"[a-zA-ZÀ-ỹĐđ]+")
+_COMPOUND_RE = re.compile(r"[a-zA-ZÀ-ỹĐđ]+ [a-zA-ZÀ-ỹĐđ]+")
+
+
+def _is_clean_syllable(word: str) -> bool:
+    return bool(_SYLLABLE_RE.fullmatch(word))
+
+
+def _is_clean_compound(phrase: str) -> bool:
+    return bool(_COMPOUND_RE.fullmatch(phrase))
 
 
 def _normalize(text: str) -> str:
@@ -118,8 +134,14 @@ def main() -> None:
 
     # 3. Merge
     print("\n[3/4] Merging...")
-    all_syllables = hunspell_syllables | underthesea_syllables | viet39k_syllables
-    all_compounds = underthesea_compounds | viet39k_compounds
+    all_syllables = {
+        s for s in hunspell_syllables | underthesea_syllables | viet39k_syllables
+        if _is_clean_syllable(s)
+    }
+    all_compounds = {
+        c for c in underthesea_compounds | viet39k_compounds
+        if _is_clean_compound(c)
+    }
 
     print(f"  Total unique syllables: {len(all_syllables):,}")
     print(f"  Total unique compounds: {len(all_compounds):,}")

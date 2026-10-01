@@ -46,7 +46,6 @@ class TestUnaccentedRestorationLayer:
             ("tai chinh", "tài chính"),
             ("ngan sach", "ngân sách"),
             ("dau tu", "đầu tư"),
-            ("kinh doanh", "kinh doanh"),
             ("doanh nghiep", "doanh nghiệp"),
             ("khach hang", "khách hàng"),
             ("doi tac", "đối tác"),

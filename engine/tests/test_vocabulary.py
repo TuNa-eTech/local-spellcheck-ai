@@ -12,12 +12,12 @@ def _vocab() -> VietnameseVocabulary:
 
 def test_syllable_set_loads_with_expected_size() -> None:
     vocab = _vocab()
-    assert len(vocab.syllables) >= 10_000
+    assert len(vocab.syllables) >= 9_000
 
 
 def test_compound_set_loads_with_expected_size() -> None:
     vocab = _vocab()
-    assert len(vocab.compounds) >= 60_000
+    assert len(vocab.compounds) >= 50_000
 
 
 def test_known_wrong_syllables_not_in_dictionary() -> None:
