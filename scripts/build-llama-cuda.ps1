@@ -335,10 +335,15 @@ if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $libDir -PathType Conta
 if (-not (Test-Path -LiteralPath (Join-Path $libDir "ggml-cuda.dll") -PathType Leaf)) {
     throw "Wheel vua cai khong co ggml-cuda.dll - ban build CUDA that bai."
 }
+# CUDA ships nvrtc64_<ver>_0.alt.dll alongside the real nvrtc64_<ver>_0.dll;
+# the "*.dll" glob can match the .alt variant first and that one isn't what
+# ggml-cuda.dll links against, so it's excluded explicitly.
 foreach ($pattern in @("cudart64_*.dll", "cublas64_*.dll", "cublasLt64_*.dll", "nvrtc64_*.dll")) {
     $searchDirs = @((Join-Path $cudaRoot "bin"), (Join-Path $cudaRoot "bin\x64")) | Where-Object { Test-Path $_ }
     $redistributable = Get-ChildItem -LiteralPath $searchDirs -Filter $pattern -File `
-        -ErrorAction SilentlyContinue | Select-Object -First 1
+        -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -notlike "*.alt.dll" } |
+        Select-Object -First 1
     if (-not $redistributable) {
         throw "Khong tim thay $pattern trong $cudaRoot\bin hoac bin\x64 (can sub-package cudart/cublas/nvrtc)."
     }
