@@ -385,14 +385,13 @@ Copy-Item -LiteralPath $vcomp -Destination $libDir -Force
 Write-Step "Da dong goi vcomp140.dll tu $vcomp"
 
 # --- Kiem chung -----------------------------------------------------------
-# Chay that trong venv: neu backend CUDA khong duoc bien dich vao, dung build
-# ngay thay vi phat hanh mot ban "CPU nhung tuong la GPU".
-$systemInfo = & $venvPython -c "import llama_cpp; print(llama_cpp.llama_print_system_info().decode('utf-8', 'replace'))"
-if ($LASTEXITCODE -ne 0) {
-    # Windows' loader doesn't surface which dependency is missing (WinError
-    # 126 is generic), so parse the PE import table ourselves and report
-    # which referenced DLLs aren't present in libDir or system search paths.
-    $diagScript = @'
+# KHONG import llama_cpp o day: lam vay se nap ggml-cuda.dll, va DLL do phu
+# thuoc nvcuda.dll (CUDA Driver API) chi co tren may co GPU NVIDIA + driver.
+# Runner CI khong co GPU nen import se luon that bai du ban build hoan hao.
+# Thay vao do kiem tra tinh: ggml-cuda.dll ton tai va that su link CUDA
+# runtime (cudart/cublas), chung minh backend CUDA da duoc bien dich vao
+# ma khong can nap driver. Driver se co san tren may nguoi dung co GPU.
+$verifyScript = @'
 import os, struct, sys
 
 def pe_imports(path):
@@ -433,26 +432,24 @@ def pe_imports(path):
         off += 20
     return names
 
-lib_dir, dll_names = sys.argv[1], sys.argv[2:]
-search = [lib_dir] + os.environ.get("PATH", "").split(os.pathsep)
-for dll_name in dll_names:
-    dll_path = os.path.join(lib_dir, dll_name)
-    if not os.path.isfile(dll_path):
-        print(f"{dll_name}: FILE ITSELF MISSING at {dll_path}")
-        continue
-    print(f"=== {dll_name} imports ===")
-    for dep in pe_imports(dll_path):
-        found = any(os.path.isfile(os.path.join(d, dep)) for d in search if d and os.path.isdir(d))
-        print(f"  {dep}: {'ok' if found else 'MISSING'}")
+lib_dir = sys.argv[1]
+cuda_dll = os.path.join(lib_dir, "ggml-cuda.dll")
+if not os.path.isfile(cuda_dll):
+    print(f"MISSING ggml-cuda.dll tai {cuda_dll}", file=sys.stderr)
+    sys.exit(2)
+imports = [d.lower() for d in pe_imports(cuda_dll)]
+needs = [d for d in imports if d.startswith("cudart64") or d.startswith("cublas64")]
+if not needs:
+    print(f"ggml-cuda.dll KHONG link CUDA runtime: {imports}", file=sys.stderr)
+    sys.exit(3)
+print("ggml-cuda.dll link: " + ", ".join(needs))
 '@
-    $diagFile = Join-Path ([System.IO.Path]::GetTempPath()) "soatvan-dll-diag.py"
-    Set-Content -LiteralPath $diagFile -Value $diagScript -Encoding utf8
-    & $venvPython $diagFile $libDir "llama.dll" "ggml-cuda.dll" "ggml-base.dll"
-    Remove-Item -LiteralPath $diagFile -Force -ErrorAction SilentlyContinue
-    throw "Khong import duoc llama_cpp sau khi cai wheel CUDA."
+$verifyFile = Join-Path ([System.IO.Path]::GetTempPath()) "soatvan-cuda-verify.py"
+Set-Content -LiteralPath $verifyFile -Value $verifyScript -Encoding utf8
+$cudaLink = & $venvPython $verifyFile $libDir
+$verifyExit = $LASTEXITCODE
+Remove-Item -LiteralPath $verifyFile -Force -ErrorAction SilentlyContinue
+if ($verifyExit -ne 0) {
+    throw "llama.cpp da cai KHONG co backend CUDA (ggml-cuda.dll thieu hoac khong link cudart/cublas)."
 }
-Write-Step "llama.cpp system info: $systemInfo"
-if ($systemInfo -notmatch 'CUDA\s*:') {
-    throw "llama.cpp da cai KHONG co backend CUDA: $systemInfo"
-}
-Write-Step "Da bat backend CUDA cho llama.cpp."
+Write-Step "Da xac nhan backend CUDA: $cudaLink"
