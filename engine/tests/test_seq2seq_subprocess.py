@@ -150,4 +150,4 @@ def test_bundle_root_is_none_unless_frozen(monkeypatch: pytest.MonkeyPatch) -> N
 
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(sys, "executable", "/opt/SoatVan/engine/soatvan-engine")
-    assert paths.bundle_root() == Path("/opt/SoatVan")
+    assert paths.bundle_root() == Path("/opt/SoatVan").resolve()
