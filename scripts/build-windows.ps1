@@ -226,6 +226,22 @@ try {
         }
     }
 
+    if ([string]::IsNullOrWhiteSpace($signingPfxPath)) {
+        $localPfxCandidate = Join-Path $repoRoot ".tools\signing\SoatVan-Personal-CodeSigning.pfx"
+        if (Test-Path -LiteralPath $localPfxCandidate -PathType Leaf) {
+            $signingPfxPath = $localPfxCandidate
+            if ([string]::IsNullOrWhiteSpace($env:SOATVAN_WINDOWS_CERT_PASSWORD)) {
+                $infoTxt = Join-Path $repoRoot ".tools\signing\signing-info.txt"
+                if (Test-Path -LiteralPath $infoTxt -PathType Leaf) {
+                    $passMatch = Select-String -Path $infoTxt -Pattern "^PFX password:\s*(.+)$"
+                    if ($passMatch) {
+                        $env:SOATVAN_WINDOWS_CERT_PASSWORD = $passMatch.Matches[0].Groups[1].Value.Trim()
+                    }
+                }
+            }
+        }
+    }
+
     if (-not [string]::IsNullOrWhiteSpace($signingPfxPath) -and (Test-Path -LiteralPath $signingPfxPath -PathType Leaf) -and -not [string]::IsNullOrWhiteSpace($env:SOATVAN_WINDOWS_CERT_PASSWORD)) {
         $keyFlags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::UserKeySet -bor `
             [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistKeySet

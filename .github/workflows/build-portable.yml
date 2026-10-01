@@ -1,4 +1,4 @@
-﻿name: build-portable
+name: build-portable
 
 on:
   workflow_dispatch:
@@ -63,12 +63,17 @@ jobs:
         env:
           SOATVAN_CUDA: ${{ inputs.cuda && 'on' || 'off' }}
           SOATVAN_REQUIRE_CUDA: ${{ inputs.cuda && '1' || '0' }}
+          SOATVAN_MODEL_PUBLIC_KEY: ${{ vars.SOATVAN_MODEL_PUBLIC_KEY }}
+          SOATVAN_WINDOWS_CERT_PFX_BASE64: ${{ secrets.SOATVAN_WINDOWS_CERT_PFX_BASE64 }}
+          SOATVAN_WINDOWS_CERT_PASSWORD: ${{ secrets.SOATVAN_WINDOWS_CERT_PASSWORD }}
         run: npm run build:portable
 
       - name: Upload Portable Zip Artifact
         uses: actions/upload-artifact@v4
         with:
           name: SoatVan-Windows-x64-Portable
-          path: dist/*-Portable.zip
-          if-no-files-found: error
+          path: |
+            dist/*-Portable.zip
+            dist/SoatVan-Personal-CodeSigning.cer
+          if-no-files-found: warn
           retention-days: 14
