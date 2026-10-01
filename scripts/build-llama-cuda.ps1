@@ -335,15 +335,25 @@ if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $libDir -PathType Conta
 if (-not (Test-Path -LiteralPath (Join-Path $libDir "ggml-cuda.dll") -PathType Leaf)) {
     throw "Wheel vua cai khong co ggml-cuda.dll - ban build CUDA that bai."
 }
-foreach ($pattern in @("cudart64_*.dll", "cublas64_*.dll", "cublasLt64_*.dll")) {
+foreach ($pattern in @("cudart64_*.dll", "cublas64_*.dll", "cublasLt64_*.dll", "nvrtc64_*.dll")) {
     $searchDirs = @((Join-Path $cudaRoot "bin"), (Join-Path $cudaRoot "bin\x64")) | Where-Object { Test-Path $_ }
     $redistributable = Get-ChildItem -LiteralPath $searchDirs -Filter $pattern -File `
         -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $redistributable) {
-        throw "Khong tim thay $pattern trong $cudaRoot\bin hoac bin\x64 (can sub-package cudart/cublas)."
+        throw "Khong tim thay $pattern trong $cudaRoot\bin hoac bin\x64 (can sub-package cudart/cublas/nvrtc)."
     }
     Copy-Item -LiteralPath $redistributable.FullName -Destination $libDir -Force
     Write-Step "Da dong goi $($redistributable.Name) ($([int]($redistributable.Length / 1MB)) MB)"
+}
+# nvrtc-builtins co trong may ban CUDA de NVRTC bien dich include builtin
+# headers; khong phai moi toolkit deu co rieng file nay nen khong throw.
+foreach ($searchDir in @((Join-Path $cudaRoot "bin"), (Join-Path $cudaRoot "bin\x64")) | Where-Object { Test-Path $_ }) {
+    $builtins = Get-ChildItem -LiteralPath $searchDir -Filter "nvrtc-builtins64_*.dll" -File -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($builtins) {
+        Copy-Item -LiteralPath $builtins.FullName -Destination $libDir -Force
+        Write-Step "Da dong goi $($builtins.Name) ($([int]($builtins.Length / 1MB)) MB)"
+        break
+    }
 }
 
 # ggml duoc bien dich voi -DGGML_USE_OPENMP, nen llama.dll can vcomp140.dll

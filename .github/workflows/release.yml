@@ -121,7 +121,7 @@ jobs:
         with:
           cuda: "12.8.1"
           method: network
-          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "nvrtc", "thrust", "visual_studio_integration"]'
 
       # Bien dich llama.cpp + CUDA mat 15-40 phut, nen wheel duoc cache theo
       # phien ban khoa trong uv.lock va danh sach kien truc.
