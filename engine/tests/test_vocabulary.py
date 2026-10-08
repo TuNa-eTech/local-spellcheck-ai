@@ -31,7 +31,7 @@ def test_missing_data_dir_fails_closed(tmp_path, monkeypatch) -> None:
     VietnameseVocabulary._instance = None
     try:
         with pytest.raises(vocabulary.VocabularyDataMissingError):
-            VietnameseVocabulary()
+            VietnameseVocabulary().is_valid_syllable("việt")
     finally:
         VietnameseVocabulary._instance = None
 

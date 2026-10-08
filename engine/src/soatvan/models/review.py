@@ -227,7 +227,7 @@ def plan_review_chunks(
     )
 
 
-MAX_PAIR_TOKENS = 180
+MAX_PAIR_TOKENS = 400
 
 
 def _group_segments_adaptively(

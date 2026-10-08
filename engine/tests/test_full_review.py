@@ -282,7 +282,7 @@ def test_review_planner_groups_short_paragraphs_adaptively() -> None:
 
 def test_review_planner_keeps_long_paragraphs_as_single_chunks() -> None:
     """Paragraphs whose combined length exceeds the limit stay as individual chunks."""
-    long_text = "Nội dung đoạn văn bản hành chính dài. " * 20
+    long_text = "Nội dung đoạn văn bản hành chính dài. " * 30
     blocks = (
         Block("document:p0", long_text),
         Block("document:p1", long_text),
