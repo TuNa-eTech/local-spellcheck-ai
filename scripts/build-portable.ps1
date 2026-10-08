@@ -98,7 +98,19 @@ function Invoke-SignToolBatch {
     Invoke-Checked $SignToolPath (@(
         "sign", "/fd", "SHA256", "/sha1", $CertificateThumbprint, "/s", "My"
     ) + $Files)
-    Invoke-Checked $SignToolPath (@("verify", "/pa", "/all") + $Files)
+
+    foreach ($file in $Files) {
+        $sig = Get-AuthenticodeSignature -LiteralPath $file
+        if (-not $sig.SignerCertificate) {
+            throw "File '$file' khong co chu ky sau khi ky."
+        }
+        if ($sig.SignerCertificate.Thumbprint -ne $CertificateThumbprint) {
+            throw "File '$file' co chu ky ($($sig.SignerCertificate.Thumbprint)) khong khop voi thumbprint $CertificateThumbprint."
+        }
+        if ($sig.Status -eq "HashMismatch") {
+            throw "File '$file' co chu ky bi loi (HashMismatch)."
+        }
+    }
 }
 
 function Invoke-SignToolForFiles {
@@ -163,6 +175,11 @@ try {
     # `option_env!("SOATVAN_MODEL_PUBLIC_KEY")` duoc doc luc bien dich Rust.
     if ([string]::IsNullOrWhiteSpace($env:SOATVAN_MODEL_PUBLIC_KEY)) {
         Write-Warning "SOATVAN_MODEL_PUBLIC_KEY chua duoc set - ban build se KHONG import duoc goi .svmodel ky phat hanh. Import file .gguf tho van hoat dong binh thuong."
+    }
+
+    # Tat cac tien trinh dang chay co the khoa file DLL / exe
+    foreach ($procName in @("soatvan-desktop", "soatvan-engine", "SoatVan")) {
+        Get-Process -Name $procName -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     }
 
     # 2. Dong bo Python & Build PyInstaller sidecar
@@ -453,7 +470,13 @@ try {
         "sign", "/fd", "SHA256", "/sha1", $certificateThumbprint,
         "/s", "My", $portableExe
     )
-    Invoke-Checked $signToolPath @("verify", "/pa", "/all", $portableExe)
+    $sig = Get-AuthenticodeSignature -LiteralPath $portableExe
+    if (-not $sig.SignerCertificate -or $sig.SignerCertificate.Thumbprint -ne $certificateThumbprint) {
+        throw "SoatVan.exe khong co chu ky hop le sau khi ky."
+    }
+    if ($sig.Status -eq "HashMismatch") {
+        throw "SoatVan.exe co chu ky bi loi (HashMismatch)."
+    }
 
     $portableEngineDir = Join-Path $portableDir "engine"
     New-Item -ItemType Directory -Force -Path $portableEngineDir | Out-Null

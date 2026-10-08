@@ -7,7 +7,7 @@ on:
         description: "Build with CUDA support (CUDA + CPU fallback)"
         required: true
         type: boolean
-        default: true
+        default: false
 
 permissions:
   contents: read
@@ -20,9 +20,7 @@ env:
 jobs:
   build-portable-windows:
     name: Build Windows x64 Portable
-    # See release.yml: CUDA 12.8's nvcc/cudafe++ cannot build against the
-    # VS2026/v18 toolset windows-latest now ships; pin to Server 2022.
-    runs-on: windows-2022
+    runs-on: ${{ inputs.cuda && 'windows-2022' || 'windows-latest' }}
     steps:
       - uses: actions/checkout@v4
 

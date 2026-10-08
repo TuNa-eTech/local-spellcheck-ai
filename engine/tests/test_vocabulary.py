@@ -20,6 +20,22 @@ def test_compound_set_loads_with_expected_size() -> None:
     assert len(vocab.compounds) >= 50_000
 
 
+def test_missing_data_dir_fails_closed(tmp_path, monkeypatch) -> None:
+    # An empty vocabulary flags every Vietnamese word as unknown; a build that
+    # drops the data must raise instead of silently degrading.
+    import pytest
+
+    from soatvan.checking import vocabulary
+
+    monkeypatch.setattr(vocabulary, "_DATA_DIR", tmp_path)
+    VietnameseVocabulary._instance = None
+    try:
+        with pytest.raises(vocabulary.VocabularyDataMissingError):
+            VietnameseVocabulary()
+    finally:
+        VietnameseVocabulary._instance = None
+
+
 def test_known_wrong_syllables_not_in_dictionary() -> None:
     vocab = _vocab()
     wrong = ["xữ", "trử", "giửa", "đựơc", "trể", "bãn", "lổi", "mổi"]

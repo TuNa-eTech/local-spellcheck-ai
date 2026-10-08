@@ -319,6 +319,9 @@ else {
 }
 
 # --- Cai de len ban CPU ---------------------------------------------------
+foreach ($procName in @("soatvan-desktop", "soatvan-engine", "SoatVan")) {
+    Get-Process -Name $procName -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+}
 Write-Step "Cai $($wheel.Name) vao venv engine"
 Invoke-Checked "uv" @(
     "pip", "install", "--python", $venvPython,

@@ -9,6 +9,22 @@ binaries = collect_dynamic_libs("lxml")
 datas = []
 hiddenimports = []
 
+# The rule engine's dictionary/confusion/administrative data. `pathex=["src"]`
+# only gathers Python modules, so without this the frozen engine ran with an
+# empty vocabulary and flagged every Vietnamese word as unknown.
+CHECKING_DATA_DIR = Path("src/soatvan/checking/data")
+CHECKING_DATA_FILES = (
+    "syllables.txt",
+    "compounds.txt",
+    "confusions.json",
+    "rep_rules.json",
+    "administrative_entities.json",
+)
+for _name in CHECKING_DATA_FILES:
+    if not (CHECKING_DATA_DIR / _name).is_file():
+        raise SystemExit(f"Missing rule engine data file: {CHECKING_DATA_DIR / _name}")
+datas.append((str(CHECKING_DATA_DIR), "soatvan/checking/data"))
+
 # The CUDA backend imports these by name; without them beside `ggml-cuda.dll`
 # the whole llama.cpp stack fails to load, not just the GPU path.
 CUDA_REDISTRIBUTABLES = ("cudart64_*.dll", "cublas64_*.dll", "cublasLt64_*.dll")

@@ -55,8 +55,13 @@ class _AdminEntitiesRegistry:
         self._load()
 
     def _load(self) -> None:
-        if not _DATA_PATH.exists():
-            return
+        if not _DATA_PATH.is_file():
+            # A build that dropped soatvan/checking/data would otherwise silently
+            # disable every administrative capitalization rule.
+            raise RuntimeError(
+                f"VOCABULARY_DATA_MISSING: {_DATA_PATH} not found; the engine "
+                "build is missing soatvan/checking/data."
+            )
         data = json.loads(_DATA_PATH.read_text(encoding="utf-8"))
 
         # 1. Central agencies

@@ -251,48 +251,58 @@ class VietnameseVocabulary:
         return None
 
 
-def _load_syllables() -> frozenset[str]:
-    path = _DATA_DIR / "syllables.txt"
-    if not path.exists():
-        return frozenset()
-    return frozenset(
+class VocabularyDataMissingError(RuntimeError):
+    """Bundled dictionary data is absent (e.g. a frozen build that dropped it).
+
+    Silently continuing with an empty vocabulary would make the dictionary
+    check flag every Vietnamese word, so the engine fails closed instead.
+    """
+
+
+def _require_data_file(name: str) -> Path:
+    path = _DATA_DIR / name
+    if not path.is_file():
+        raise VocabularyDataMissingError(
+            f"VOCABULARY_DATA_MISSING: {path} not found; the engine build is "
+            "missing soatvan/checking/data."
+        )
+    return path
+
+
+def _load_word_list(name: str) -> frozenset[str]:
+    path = _require_data_file(name)
+    words = frozenset(
         line.strip()
         for line in path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     )
+    if not words:
+        raise VocabularyDataMissingError(f"VOCABULARY_DATA_MISSING: {path} is empty.")
+    return words
+
+
+def _load_syllables() -> frozenset[str]:
+    return _load_word_list("syllables.txt")
 
 
 def _load_compounds() -> frozenset[str]:
-    path = _DATA_DIR / "compounds.txt"
-    if not path.exists():
-        return frozenset()
-    return frozenset(
-        line.strip()
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    )
+    return _load_word_list("compounds.txt")
 
 
 def _load_confusions() -> dict[str, tuple[str, str]]:
-    path = _DATA_DIR / "confusions.json"
-    if not path.exists():
-        return {}
+    path = _require_data_file("confusions.json")
     data = json.loads(path.read_text(encoding="utf-8"))
     return {k: (v[0], v[1]) for k, v in data.items() if isinstance(v, list) and len(v) >= 2}
 
 
 def _load_rep_rules() -> list[tuple[str, str]]:
-    path = _DATA_DIR / "rep_rules.json"
-    if not path.exists():
-        return []
+    path = _require_data_file("rep_rules.json")
     data = json.loads(path.read_text(encoding="utf-8"))
     return [(r["from"], r["to"]) for r in data.get("replacements", [])]
 
 
 def _load_tone_map() -> dict[str, str]:
-    path = _DATA_DIR / "rep_rules.json"
-    if not path.exists():
-        return {}
+    path = _require_data_file("rep_rules.json")
     data = json.loads(path.read_text(encoding="utf-8"))
     tone_data = data.get("tone_map", {})
     return {str(k): str(v) for k, v in tone_data.items()}

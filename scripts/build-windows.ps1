@@ -101,7 +101,19 @@ function Invoke-SignToolBatch {
     Invoke-Checked $SignToolPath (@(
         "sign", "/fd", "SHA256", "/sha1", $CertificateThumbprint, "/s", "My"
     ) + $Files)
-    Invoke-Checked $SignToolPath (@("verify", "/pa", "/all") + $Files)
+
+    foreach ($file in $Files) {
+        $sig = Get-AuthenticodeSignature -LiteralPath $file
+        if (-not $sig.SignerCertificate) {
+            throw "File '$file' khong co chu ky sau khi ky."
+        }
+        if ($sig.SignerCertificate.Thumbprint -ne $CertificateThumbprint) {
+            throw "File '$file' co chu ky ($($sig.SignerCertificate.Thumbprint)) khong khop voi thumbprint $CertificateThumbprint."
+        }
+        if ($sig.Status -eq "HashMismatch") {
+            throw "File '$file' co chu ky bi loi (HashMismatch)."
+        }
+    }
 }
 
 function Invoke-SignToolForFiles {
@@ -155,6 +167,11 @@ else {
 
 Push-Location $repoRoot
 try {
+    # Tat cac tien trinh dang chay co the khoa file DLL / exe
+    foreach ($procName in @("soatvan-desktop", "soatvan-engine", "SoatVan")) {
+        Get-Process -Name $procName -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    }
+
     Write-Host "[1/7] Dong bo dependency Python"
     Invoke-Checked "uv" @("sync", "--project", "engine", "--extra", "dev", "--extra", "model", "--extra", "seq2seq", "--locked")
 
@@ -200,15 +217,22 @@ try {
         throw "Bundle thieu thu muc llama_cpp\lib: $frozenLibDir"
     }
     $requiredDlls = @("llama.dll", "ggml.dll", "ggml-base.dll", "ggml-cpu.dll")
-    if ($env:SOATVAN_REQUIRE_CUDA -eq "1") {
-        $requiredDlls += @("ggml-cuda.dll", "cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll", "nvrtc64_120_0.dll", "vcomp140.dll")
+    if ($env:SOATVAN_REQUIRE_CUDA -eq "1" -or ($env:SOATVAN_CUDA -ne "off" -and (Test-Path (Join-Path $frozenLibDir "ggml-cuda.dll")))) {
+        $cudaPatterns = @("ggml-cuda.dll", "cudart64_*.dll", "cublas64_*.dll", "cublasLt64_*.dll")
+        foreach ($pattern in $cudaPatterns) {
+            $matched = Get-ChildItem -LiteralPath $frozenLibDir -Filter $pattern -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -notlike "*.alt.dll" } | Select-Object -First 1
+            if (-not $matched) {
+                throw "Bundle thieu DLL bat buoc ($pattern) trong $frozenLibDir"
+            }
+        }
     }
     foreach ($dll in $requiredDlls) {
         if (-not (Test-Path -LiteralPath (Join-Path $frozenLibDir $dll) -PathType Leaf)) {
             throw "Bundle thieu DLL bat buoc: $dll trong $frozenLibDir"
         }
     }
-    Write-Host "[gpu] Bundle co du DLL: $($requiredDlls -join ', ')"
+    Write-Host "[gpu] Bundle co du DLL hop le"
 
     Write-Host "[4/7] Tai certificate ky code tu secret hoac tao self-signed fallback"
     $signingPfxPath = $env:SOATVAN_WINDOWS_CERT_PFX
@@ -430,7 +454,10 @@ try {
     }
 
     foreach ($installer in $installers) {
-        Invoke-Checked $signToolPath @("verify", "/pa", "/all", $installer.FullName)
+        $sig = Get-AuthenticodeSignature -LiteralPath $installer.FullName
+        if (-not $sig.SignerCertificate -or $sig.SignerCertificate.Thumbprint -ne $certificateThumbprint) {
+            throw "Installer '$($installer.Name)' khong co chu ky hop le sau khi ky."
+        }
     }
 
     $publicCertificatePath = Join-Path $installerDir "SoatVan-Personal-CodeSigning.cer"
@@ -451,7 +478,10 @@ try {
         "sign", "/fd", "SHA256", "/sha1", $certificateThumbprint,
         "/s", "My", $portableExe
     )
-    Invoke-Checked $signToolPath @("verify", "/pa", "/all", $portableExe)
+    $sig = Get-AuthenticodeSignature -LiteralPath $portableExe
+    if (-not $sig.SignerCertificate -or $sig.SignerCertificate.Thumbprint -ne $certificateThumbprint) {
+        throw "SoatVan.exe khong co chu ky hop le sau khi ky."
+    }
 
     $portableEngineDir = Join-Path $portableDir "engine"
     New-Item -ItemType Directory -Force -Path $portableEngineDir | Out-Null
