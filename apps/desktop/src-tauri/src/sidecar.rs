@@ -69,7 +69,12 @@ impl EngineBroker {
     }
 
     fn handshake(&self) -> AppResult<()> {
-        let hello = self.call_raw("engine.hello", json!({}), Duration::from_secs(30))?;
+        let timeout = if cfg!(debug_assertions) {
+            Duration::from_secs(300)
+        } else {
+            Duration::from_secs(30)
+        };
+        let hello = self.call_raw("engine.hello", json!({}), timeout)?;
         if hello.get("protocol") != Some(&Value::from(ENGINE_PROTOCOL_VERSION)) {
             return Err(AppError::EngineProtocol);
         }
