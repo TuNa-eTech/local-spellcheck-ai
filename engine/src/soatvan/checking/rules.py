@@ -106,7 +106,8 @@ def _syllable_repair(word: str) -> tuple[str, str] | None:
         reason = "Âm tiết đứng trước i, e, ê phải dùng phụ âm đầu “ngh”."
     elif (
         lowered.startswith("g")
-        and not lowered.startswith(("gh", "gi"))
+        and not lowered.startswith("gh")
+        and _base_character(lowered[1:2]) != "i"
         and lowered[1:2] in FRONT_VOWELS
     ):
         replacement = word[:1] + ("H" if word[:1].isupper() else "h") + word[1:]

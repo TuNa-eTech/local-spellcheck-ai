@@ -30,19 +30,53 @@ def _highlight_color(finding: Finding) -> str:
     return "red" if finding.confidence >= CERTAIN_CONFIDENCE_THRESHOLD else "yellow"
 
 
+_INLINE_RUN_CONTAINERS = frozenset({
+    f"{{{W}}}hyperlink",
+    f"{{{W}}}sdtContent",
+    f"{{{W}}}ins",
+    f"{{{W}}}smartTag",
+    f"{{{W}}}dir",
+    f"{{{W}}}bdo",
+    f"{{{W}}}customXml",
+})
+
+_XML_ILLEGAL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _sanitize_xml_text(value: str) -> str:
+    return _XML_ILLEGAL_CHARS.sub("", value)
+
+
 def _comment_text(finding: Finding) -> str:
     """Build the human-readable comment body for one finding.
 
-    The commented span is highlighted in the document, so a finding that only
-    needs text removed (repeated words, or stray punctuation/spacing from the AI
-    review) gets an explicit "delete" instruction instead of a cryptic
-    placeholder such as ``(xoá)``. Leading/trailing whitespace is trimmed from
-    the quoted span so a repeated-word finding reads ``“và”`` rather than
-    ``“ và”`` — unless the span is whitespace only, where the original is kept.
+    The commented span is highlighted in the document. A finding that only
+    needs text removed (e.g. repeated words) gets an explicit "delete" instruction.
+    Unknown words/unrecognized terms prompt the user to check rather than blindly
+    instructing them to delete the text.
     """
-    marked = finding.source_text.strip() or finding.source_text
-    if finding.suggestion:
-        return f"Sai: “{marked}” → Đề xuất: “{finding.suggestion}”"
+    source_text = _sanitize_xml_text(finding.source_text)
+    suggestion = _sanitize_xml_text(finding.suggestion)
+    reason = _sanitize_xml_text(finding.reason)
+
+    marked = source_text.strip() or source_text
+    if marked == suggestion and source_text != suggestion:
+        marked = source_text
+
+    if suggestion:
+        if finding.detector_id.startswith("punctuation.leading_space"):
+            return f"Sai: “{marked}” (thừa khoảng trắng trước dấu câu) → Đề xuất: “{suggestion}”"
+        return f"Sai: “{marked}” → Đề xuất: “{suggestion}”"
+
+    if finding.detector_id.startswith("word.repeated.") or finding.category == "repetition":
+        return f"Sai: “{marked}” → Đề xuất: xoá phần được bôi màu"
+
+    if finding.detector_id.startswith("dictionary.unknown"):
+        return f"Lưu ý: “{marked}” → Từ chưa có trong từ điển tiếng Việt (kiểm tra lại chính tả hoặc tên riêng)"
+
+    if reason:
+        return f"Lưu ý: “{marked}” → {reason}"
+
     return f"Sai: “{marked}” → Đề xuất: xoá phần được bôi màu"
 
 
@@ -221,6 +255,7 @@ class DocxPackage:
             if index >= len(paragraphs):
                 continue
             paragraph = paragraphs[index]
+            self._normalize_compound_runs(paragraph)
             for finding in sorted(items, key=lambda item: item.start, reverse=True):
                 if cancellation:
                     cancellation.raise_if_cancelled()
@@ -228,6 +263,31 @@ class DocxPackage:
                     next_id += 1
                     written_ids.append(finding.id)
         return written_ids
+
+    @staticmethod
+    def _normalize_compound_runs(paragraph: etree._Element) -> None:
+        """Split runs with multiple content children into consecutive single-content runs.
+
+        Word documents frequently pack multiple <w:t>, <w:br>, <w:tab> or other elements
+        inside a single <w:r> (both directly under paragraph and inside hyperlinks/content controls).
+        Splitting them ensures every text run has exactly one <w:t> child and only isolatable content.
+        """
+        runs = list(paragraph.xpath(".//w:r", namespaces=NS))
+        for run in runs:
+            content_children = [child for child in run if child.tag != f"{{{W}}}rPr"]
+            if len(content_children) > 1 and any(child.tag == f"{{{W}}}t" for child in content_children):
+                parent = run.getparent()
+                if parent is None:
+                    continue
+                idx = list(parent).index(run)
+                r_pr = run.find(f"{{{W}}}rPr")
+                parent.remove(run)
+                for offset, child in enumerate(content_children):
+                    new_run = etree.Element(f"{{{W}}}r", attrib=dict(run.attrib))
+                    if r_pr is not None:
+                        new_run.append(copy.deepcopy(r_pr))
+                    new_run.append(child)
+                    parent.insert(idx + offset, new_run)
 
     def _annotate_one(
         self, paragraph: etree._Element, comments: etree._Element, finding: Finding, comment_id: int
@@ -242,19 +302,17 @@ class DocxPackage:
             value = _projected_node_text(node)
             full_text_parts.append(value)
             run = node.getparent()
-            if (
-                node.tag == f"{{{W}}}t"
-                and run is not None
+            valid_parent = (
+                run is not None
                 and run.tag == f"{{{W}}}r"
-                and run.getparent() is paragraph
+                and (
+                    run.getparent() is paragraph
+                    or (run.getparent() is not None and run.getparent().tag in _INLINE_RUN_CONTAINERS)
+                )
                 and len(run.xpath("./w:t", namespaces=NS)) == 1
                 and _run_has_only_isolatable_content(run)
-            ):
-                # A paragraph can mix ordinary runs with structures whose
-                # anchoring rules are more complex (hyperlinks, tracked changes
-                # and content controls). Keep their text in the global offset
-                # map, but only mutate a finding that is wholly covered by flat
-                # direct-child runs.
+            )
+            if node.tag == f"{{{W}}}t" and valid_parent:
                 spans.append((run, cursor, cursor + len(value), 0, len(value)))
             cursor += len(value)
         full_text = "".join(full_text_parts)
@@ -288,6 +346,8 @@ class DocxPackage:
                 highlight = etree.SubElement(props, f"{{{W}}}highlight")
             highlight.set(f"{{{W}}}val", _highlight_color(finding))
         first, last = selected[0], selected[-1]
+        if first.getparent() is not last.getparent():
+            return False
         start_marker = etree.Element(f"{{{W}}}commentRangeStart")
         start_marker.set(f"{{{W}}}id", str(comment_id))
         first.addprevious(start_marker)

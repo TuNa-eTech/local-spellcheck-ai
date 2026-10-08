@@ -10,7 +10,7 @@ WORD_PATTERN = re.compile(r"[^\W_]+", flags=re.UNICODE)
 _TOKEN_SPLIT = re.compile(r"(\s+)")
 _DELETION_REASON_CODES = frozenset({"punctuation", "repetition", "spacing", "technical"})
 _WORD_LEVEL_REASON_CODES = frozenset(
-    {"spelling", "capitalization", "word_choice"}
+    {"spelling", "capitalization", "word_choice", "diacritic"}
 )
 _ORTHOGRAPHIC_REASON_CODES = frozenset(
     {"spelling", "compound_word", "capitalization"}

@@ -148,3 +148,16 @@ def test_suggest_split_recovers_glued_words_with_typos() -> None:
     assert vocab.suggest_split("thịchấn") == "thị trấn"
     assert vocab.suggest_split("bổxung") == "bổ sung"
 
+
+def test_suggest_corrections_tone_variants() -> None:
+    vocab = _vocab()
+    # Missing tone or tone variants
+    assert "nghiệp" in vocab.suggest_corrections("nghiêp")
+    assert "hợp" in vocab.suggest_corrections("hơp")
+    assert "đắk" in vocab.suggest_corrections("đăk")
+
+
+def test_suggest_corrections_double_horn() -> None:
+    vocab = _vocab()
+    # Typing slip where horn + tone are split across vowels (e.g. "thừơng" -> "thường")
+    assert "thường" in vocab.suggest_corrections("thừơng")

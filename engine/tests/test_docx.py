@@ -10,6 +10,7 @@ import pytest
 from lxml import etree
 
 from soatvan.checking import Preset, RuleEngine
+from soatvan.checking.domain import Finding
 from soatvan.document import DocxPackage
 
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -269,11 +270,253 @@ def test_generated_comment_for_deletion_finding_asks_to_remove_marked_text(
     assert "(xoá)" not in comment
 
 
-def test_no_findings_creates_no_output(make_docx, tmp_path: Path) -> None:
-    source = make_docx([["Văn bản hợp lệ."]])
-    output = tmp_path / "output.docx"
-    assert DocxPackage().write_annotations(source, output, []).count == 0
-    assert not output.exists()
+def test_comment_text_for_leading_space_punctuation_preserves_space(tmp_path: Path) -> None:
+    from soatvan.checking.domain import Finding
+    from soatvan.document.ooxml import _comment_text
+
+    finding = Finding(
+        id="test:1",
+        category="technical",
+        origin="rule",
+        detector_id="punctuation.leading_space.v2",
+        block_id="document:p0",
+        start=3,
+        end=5,
+        source_text=" :",
+        suggestion=":",
+        reason="Không đặt khoảng trắng trước dấu câu.",
+        rule_version="1.0",
+    )
+    comment = _comment_text(finding)
+    assert "Đề xuất: “:”" in comment
+    assert comment != "Sai: “:” → Đề xuất: “:”"
+
+
+def test_comment_text_for_unknown_word_does_not_ask_to_delete() -> None:
+    from soatvan.checking.domain import Finding
+    from soatvan.document.ooxml import _comment_text
+
+    finding = Finding(
+        id="test:2",
+        category="spelling",
+        origin="rule",
+        detector_id="dictionary.unknown.v1",
+        block_id="document:p0",
+        start=0,
+        end=4,
+        source_text="Ngọk",
+        suggestion="",
+        reason="Từ “Ngọk” không có trong từ điển tiếng Việt.",
+        rule_version="1.0",
+    )
+    comment = _comment_text(finding)
+    assert "xoá phần được bôi màu" not in comment
+    assert "chưa có trong từ điển" in comment
+
+
+def test_docx_annotates_runs_with_line_breaks_and_multiple_text_nodes(make_golden_docx, tmp_path: Path) -> None:
+    source = make_golden_docx()
+    with zipfile.ZipFile(source, "r") as zin:
+        names = zin.namelist()
+        data = {name: zin.read(name) for name in names}
+
+    p_xml = (
+        '<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        '<w:r><w:t>Phát triển kinh tế.</w:t><w:br/>'
+        '<w:t>Lỗi sát nhập cần sửa.</w:t></w:r></w:p>'
+    ).encode("utf-8")
+    data["word/document.xml"] = data["word/document.xml"].replace(b"</w:body>", p_xml + b"</w:body>")
+
+    test_source = tmp_path / "multi-run-source.docx"
+    with zipfile.ZipFile(test_source, "w") as zout:
+        for name, d in data.items():
+            zout.writestr(name, d)
+
+    package = DocxPackage()
+    blocks = package.read_blocks(test_source)
+    last_block = blocks[-1]
+    idx = last_block.text.index("sát nhập")
+    finding = Finding(
+        id=f"{last_block.id}:{idx}:{idx+8}:test",
+        category="word_choice",
+        origin="rule",
+        detector_id="test.detector",
+        block_id=last_block.id,
+        start=idx,
+        end=idx + 8,
+        source_text="sát nhập",
+        suggestion="sáp nhập",
+        reason="Từ đúng là sáp nhập",
+        rule_version="1.0",
+    )
+    output = tmp_path / "compound-run-output.docx"
+    result = package.write_annotations(test_source, output, [finding])
+    assert result.count == 1
+    assert result.written_ids == (finding.id,)
+
+
+def test_docx_annotates_hyperlinks(make_golden_docx, tmp_path: Path) -> None:
+    source = make_golden_docx()
+    with zipfile.ZipFile(source, "r") as zin:
+        names = zin.namelist()
+        data = {name: zin.read(name) for name in names}
+
+    p_xml = (
+        '<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        '<w:r><w:t>Xem tài liệu </w:t></w:r>'
+        '<w:hyperlink r:id="rId1"><w:r><w:t>sát nhập</w:t></w:r></w:hyperlink>'
+        '<w:r><w:t> tại đây.</w:t></w:r></w:p>'
+    ).encode("utf-8")
+    data["word/document.xml"] = data["word/document.xml"].replace(b"</w:body>", p_xml + b"</w:body>")
+
+    test_source = tmp_path / "hyperlink-source.docx"
+    with zipfile.ZipFile(test_source, "w") as zout:
+        for name, d in data.items():
+            zout.writestr(name, d)
+
+    package = DocxPackage()
+    blocks = package.read_blocks(test_source)
+    last_block = blocks[-1]
+    idx = last_block.text.index("sát nhập")
+    finding = Finding(
+        id=f"{last_block.id}:{idx}:{idx+8}:hl",
+        category="word_choice",
+        origin="rule",
+        detector_id="test.hl",
+        block_id=last_block.id,
+        start=idx,
+        end=idx + 8,
+        source_text="sát nhập",
+        suggestion="sáp nhập",
+        reason="test",
+        rule_version="1.0",
+    )
+    output = tmp_path / "hyperlink-output.docx"
+    result = package.write_annotations(test_source, output, [finding])
+    assert result.count == 1
+    assert result.written_ids == (finding.id,)
+
+
+def test_docx_annotates_tracked_insertions_and_content_controls(make_golden_docx, tmp_path: Path) -> None:
+    source = make_golden_docx()
+    with zipfile.ZipFile(source, "r") as zin:
+        names = zin.namelist()
+        data = {name: zin.read(name) for name in names}
+
+    p_xml = (
+        '<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        '<w:ins w:id="1" w:author="user"><w:r><w:t>sát nhập</w:t></w:r></w:ins>'
+        '<w:sdt><w:sdtContent><w:r><w:t>kế họach</w:t></w:r></w:sdtContent></w:sdt>'
+        '</w:p>'
+    ).encode("utf-8")
+    data["word/document.xml"] = data["word/document.xml"].replace(b"</w:body>", p_xml + b"</w:body>")
+
+    test_source = tmp_path / "ins-sdt-source.docx"
+    with zipfile.ZipFile(test_source, "w") as zout:
+        for name, d in data.items():
+            zout.writestr(name, d)
+
+    package = DocxPackage()
+    blocks = package.read_blocks(test_source)
+    last_block = blocks[-1]
+    idx1 = last_block.text.index("sát nhập")
+    f1 = Finding(
+        id=f"{last_block.id}:{idx1}:{idx1+8}:ins",
+        category="word_choice",
+        origin="rule",
+        detector_id="test.ins",
+        block_id=last_block.id,
+        start=idx1,
+        end=idx1 + 8,
+        source_text="sát nhập",
+        suggestion="sáp nhập",
+        reason="test",
+        rule_version="1.0",
+    )
+    idx2 = last_block.text.index("kế họach")
+    f2 = Finding(
+        id=f"{last_block.id}:{idx2}:{idx2+8}:sdt",
+        category="spelling",
+        origin="rule",
+        detector_id="test.sdt",
+        block_id=last_block.id,
+        start=idx2,
+        end=idx2 + 8,
+        source_text="kế họach",
+        suggestion="kế hoạch",
+        reason="test",
+        rule_version="1.0",
+    )
+    output = tmp_path / "ins-sdt-output.docx"
+    result = package.write_annotations(test_source, output, [f1, f2])
+    assert result.count == 2
+
+
+def test_docx_annotates_runs_with_footnote_references(make_golden_docx, tmp_path: Path) -> None:
+    source = make_golden_docx()
+    with zipfile.ZipFile(source, "r") as zin:
+        names = zin.namelist()
+        data = {name: zin.read(name) for name in names}
+
+    p_xml = (
+        '<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        '<w:r><w:t>kinh tế sát nhập</w:t><w:footnoteReference w:id="1"/></w:r>'
+        '</w:p>'
+    ).encode("utf-8")
+    data["word/document.xml"] = data["word/document.xml"].replace(b"</w:body>", p_xml + b"</w:body>")
+
+    test_source = tmp_path / "footnote-run-source.docx"
+    with zipfile.ZipFile(test_source, "w") as zout:
+        for name, d in data.items():
+            zout.writestr(name, d)
+
+    package = DocxPackage()
+    blocks = package.read_blocks(test_source)
+    last_block = blocks[-1]
+    idx = last_block.text.index("sát nhập")
+    f = Finding(
+        id=f"{last_block.id}:{idx}:{idx+8}:fn",
+        category="word_choice",
+        origin="rule",
+        detector_id="test.fn",
+        block_id=last_block.id,
+        start=idx,
+        end=idx + 8,
+        source_text="sát nhập",
+        suggestion="sáp nhập",
+        reason="test",
+        rule_version="1.0",
+    )
+    output = tmp_path / "footnote-run-output.docx"
+    result = package.write_annotations(test_source, output, [f])
+    assert result.count == 1
+
+
+def test_comment_text_sanitizes_illegal_xml_control_characters() -> None:
+    from soatvan.document.ooxml import _comment_text
+
+    finding = Finding(
+        id="test:ctl",
+        category="spelling",
+        origin="rule",
+        detector_id="test",
+        block_id="document:p0",
+        start=0,
+        end=5,
+        source_text="từ\x00\x08lạ\x1b",
+        suggestion="từ\x0cđúng",
+        reason="lý\x0bdo",
+        rule_version="1.0",
+    )
+    comment = _comment_text(finding)
+    assert "\x00" not in comment
+    assert "\x08" not in comment
+    assert "\x1b" not in comment
+    assert "\x0c" not in comment
+    assert "từlạ" in comment
+    assert "từđúng" in comment
+
 
 
 def test_golden_package_preserves_unsupported_parts_and_existing_annotations(

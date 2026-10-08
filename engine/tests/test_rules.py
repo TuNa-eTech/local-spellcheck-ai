@@ -254,6 +254,13 @@ def test_unaccented_administrative_phrases_detection() -> None:
     assert results.get("quy trinh") == "quy trình"
 
 
-
+def test_syllable_onset_gi_words_not_flagged() -> None:
+    text = "giữ gìn trật tự, không có gì khó, gí sát vào"
+    findings = RuleEngine().check(
+        [Block("document:p0", text)],
+        Preset.STANDARD,
+    )
+    onset_findings = [f for f in findings if f.detector_id == "syllable.onset.v2"]
+    assert onset_findings == []
 
 

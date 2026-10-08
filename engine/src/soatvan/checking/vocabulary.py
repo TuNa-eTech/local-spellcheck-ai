@@ -13,6 +13,28 @@ _VIETNAMESE_MARKERS = frozenset(
     "àáảãạèéẻẽẹìíỉĩịòóỏõọùúủũụỳýỷỹỵ"
 )
 
+_TONE_FAMILIES: tuple[tuple[str, ...], ...] = (
+    ("a", "à", "á", "ả", "ã", "ạ"),
+    ("ă", "ằ", "ắ", "ẳ", "ẵ", "ặ"),
+    ("â", "ầ", "ấ", "ẩ", "ẫ", "ậ"),
+    ("e", "è", "é", "ẻ", "ẽ", "ẹ"),
+    ("ê", "ề", "ế", "ể", "ễ", "ệ"),
+    ("i", "ì", "í", "ỉ", "ĩ", "ị"),
+    ("o", "ò", "ó", "ỏ", "õ", "ọ"),
+    ("ô", "ồ", "ố", "ổ", "ỗ", "ộ"),
+    ("ơ", "ờ", "ớ", "ở", "ỡ", "ợ"),
+    ("u", "ù", "ú", "ủ", "ũ", "ụ"),
+    ("ư", "ừ", "ứ", "ử", "ữ", "ự"),
+    ("y", "ỳ", "ý", "ỷ", "ỹ", "ỵ"),
+)
+_CHAR_TO_TONE_FAMILY: dict[str, tuple[str, ...]] = {
+    c: fam for fam in _TONE_FAMILIES for c in fam
+}
+_DOUBLE_HORN_MAP: dict[str, str] = {
+    "ừơ": "ườ", "ứơ": "ướ", "ửơ": "ưở", "ữơ": "ưỡ", "ựơ": "ượ",
+    "ườ": "ườ", "ướ": "ướ", "ưở": "ưở", "ưỡ": "ưỡ", "ượ": "ượ",
+}
+
 
 def _normalize(text: str) -> str:
     return unicodedata.normalize("NFC", text).strip().casefold()
@@ -104,13 +126,32 @@ class VietnameseVocabulary:
             suggestions.append(tone_swapped)
             seen.add(tone_swapped)
 
-        # 2. Try REP rules (ch↔tr, s↔x, d↔gi, ng↔ngh, etc.)
+        # 2. Try common double-horn typing slips (e.g. "thừơng" -> "thường")
+        for old, new in _DOUBLE_HORN_MAP.items():
+            if old in normalized:
+                cand = normalized.replace(old, new)
+                if cand not in seen and cand in self._syllables:
+                    suggestions.append(cand)
+                    seen.add(cand)
+
+        # 3. Try REP rules (ch↔tr, s↔x, d↔gi, ng↔ngh, etc.)
         for old, new in self._rep_rules:
             if old in normalized:
                 candidate = normalized.replace(old, new, 1)
                 if candidate not in seen and candidate in self._syllables:
                     suggestions.append(candidate)
                     seen.add(candidate)
+
+        # 4. Try tone variations (missing tone or wrong tone, e.g. "nghiêp" -> "nghiệp", "đăk" -> "đắk", "hơp" -> "hợp")
+        for idx, ch in enumerate(normalized):
+            family = _CHAR_TO_TONE_FAMILY.get(ch)
+            if family:
+                for alt in family:
+                    if alt != ch:
+                        cand = normalized[:idx] + alt + normalized[idx + 1 :]
+                        if cand not in seen and cand in self._syllables:
+                            suggestions.append(cand)
+                            seen.add(cand)
 
         return suggestions
 
